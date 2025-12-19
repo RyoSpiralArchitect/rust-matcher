@@ -1,5 +1,11 @@
 use super::ko_unified::KoDecision;
-use crate::{Project, Talent};
+use crate::{
+    Project, Talent,
+    corrections::{
+        remote_onsite::{correct_remote_onsite, normalize_remote_onsite},
+        todofuken::{correct_todofuken, correct_work_area},
+    },
+};
 
 #[derive(Debug, Clone)]
 pub struct LocationEvaluation {
@@ -8,11 +14,42 @@ pub struct LocationEvaluation {
     pub details: String,
 }
 
+/// 正規化済みの Project/Talent を返す（勤務地/エリア/リモート形態のみ）
+pub fn normalize_for_matching(project: &Project, talent: &Talent) -> (Project, Talent) {
+    let normalized_project = Project {
+        work_todofuken: project
+            .work_todofuken
+            .as_deref()
+            .and_then(correct_todofuken),
+        work_area: project.work_area.as_deref().and_then(correct_work_area),
+        remote_onsite: project.remote_onsite.as_deref().map(|v| {
+            let normalized = normalize_remote_onsite(v);
+            correct_remote_onsite(&normalized).unwrap_or(normalized)
+        }),
+    };
+
+    let normalized_talent = Talent {
+        residential_todofuken: talent
+            .residential_todofuken
+            .as_deref()
+            .and_then(correct_todofuken),
+        residential_area: talent
+            .residential_area
+            .as_deref()
+            .and_then(correct_work_area),
+    };
+
+    (normalized_project, normalized_talent)
+}
+
 /// 【唯一の勤務地判定関数】
 /// KO判定・prefilter・スコアリング全てがこの関数を呼ぶこと。
 pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluation {
+    let (project, talent) = normalize_for_matching(project, talent);
+    let remote_mode = project.remote_onsite.as_deref();
+
     // 1. フルリモート → 勤務地KOなし、スコア1.0
-    if project.remote_onsite.as_deref() == Some("フルリモート") {
+    if remote_mode == Some("フルリモート") {
         return LocationEvaluation {
             ko_decision: KoDecision::Pass,
             score: 1.0,
@@ -25,7 +62,7 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         project.work_todofuken.as_deref(),
         talent.residential_todofuken.as_deref(),
     ) {
-        return evaluate_by_todofuken(p_pref, t_pref);
+        return evaluate_by_todofuken(p_pref, t_pref, remote_mode);
     }
 
     // 3. 片方でも都道府県がない → エリアで粗く判定
@@ -33,7 +70,7 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         project.work_area.as_deref(),
         talent.residential_area.as_deref(),
     ) {
-        return evaluate_by_area(p_area, t_area);
+        return evaluate_by_area(p_area, t_area, remote_mode);
     }
 
     // 4. どっちも取れない → SoftKo（手動レビューへ）
@@ -42,54 +79,118 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
             reason: "location_unknown: 勤務地情報不足のため要手動確認".into(),
         },
         score: 0.5, // 中立
-        details: "勤務地情報なし - 手動確認必要".into(),
+        details: format!(
+            "勤務地情報なし - 手動確認必要 (remote_onsite={:?})",
+            remote_mode
+        ),
     }
 }
 
-fn evaluate_by_todofuken(project_pref: &str, talent_pref: &str) -> LocationEvaluation {
+fn evaluate_by_todofuken(
+    project_pref: &str,
+    talent_pref: &str,
+    remote_mode: Option<&str>,
+) -> LocationEvaluation {
     if project_pref == talent_pref {
         // 同一都道府県
         LocationEvaluation {
             ko_decision: KoDecision::Pass,
-            score: 1.0,
-            details: format!("都道府県一致: {}", project_pref),
+            score: if remote_mode == Some("リモート併用") {
+                0.95
+            } else {
+                1.0
+            },
+            details: format!(
+                "都道府県一致: {} (remote_onsite={:?})",
+                project_pref, remote_mode
+            ),
         }
     } else if is_adjacent_prefecture(project_pref, talent_pref) {
         // 隣接都道府県（通勤圏内）
         LocationEvaluation {
             ko_decision: KoDecision::Pass,
-            score: 0.7,
-            details: format!("隣接都道府県: {} ↔ {}", talent_pref, project_pref),
+            score: match remote_mode {
+                Some("フル出社") => 0.6,
+                Some("リモート併用") => 0.75,
+                _ => 0.7,
+            },
+            details: format!(
+                "隣接都道府県: {} ↔ {} (remote_onsite={:?})",
+                talent_pref, project_pref, remote_mode
+            ),
         }
     } else {
         // 遠隔（HardKoではなくSoftKo: リモート併用なら通えるかも）
         LocationEvaluation {
-            ko_decision: KoDecision::SoftKo {
-                reason: format!(
-                    "location_distant: {} → {} は通勤困難の可能性",
-                    talent_pref, project_pref
-                ),
+            ko_decision: if remote_mode == Some("フル出社") {
+                KoDecision::HardKo {
+                    reason: format!(
+                        "location_mismatch: {} → {} はフル出社案件で通勤困難",
+                        talent_pref, project_pref
+                    ),
+                }
+            } else {
+                KoDecision::SoftKo {
+                    reason: format!(
+                        "location_distant: {} → {} は通勤困難の可能性",
+                        talent_pref, project_pref
+                    ),
+                }
             },
-            score: 0.2,
-            details: format!("都道府県不一致: {} ≠ {}", talent_pref, project_pref),
+            score: if remote_mode == Some("フル出社") {
+                0.0
+            } else {
+                0.2
+            },
+            details: format!(
+                "都道府県不一致: {} ≠ {} (remote_onsite={:?})",
+                talent_pref, project_pref, remote_mode
+            ),
         }
     }
 }
 
-fn evaluate_by_area(project_area: &str, talent_area: &str) -> LocationEvaluation {
+fn evaluate_by_area(
+    project_area: &str,
+    talent_area: &str,
+    remote_mode: Option<&str>,
+) -> LocationEvaluation {
     if project_area == talent_area {
         LocationEvaluation {
             ko_decision: KoDecision::Pass,
-            score: 0.8, // 都道府県より粗いので0.8
-            details: format!("エリア一致: {}", project_area),
+            score: if remote_mode == Some("リモート併用") {
+                0.85
+            } else {
+                0.8
+            },
+            details: format!(
+                "エリア一致: {} (remote_onsite={:?})",
+                project_area, remote_mode
+            ),
         }
     } else {
         LocationEvaluation {
-            ko_decision: KoDecision::SoftKo {
-                reason: format!("area_mismatch: {} ≠ {}", talent_area, project_area),
+            ko_decision: if remote_mode == Some("フル出社") {
+                KoDecision::HardKo {
+                    reason: format!(
+                        "area_mismatch: {} ≠ {} (フル出社案件)",
+                        talent_area, project_area
+                    ),
+                }
+            } else {
+                KoDecision::SoftKo {
+                    reason: format!("area_mismatch: {} ≠ {}", talent_area, project_area),
+                }
             },
-            score: 0.3,
-            details: format!("エリア不一致: {} ≠ {}", talent_area, project_area),
+            score: if remote_mode == Some("フル出社") {
+                0.0
+            } else {
+                0.3
+            },
+            details: format!(
+                "エリア不一致: {} ≠ {} (remote_onsite={:?})",
+                talent_area, project_area, remote_mode
+            ),
         }
     }
 }

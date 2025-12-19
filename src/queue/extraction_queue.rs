@@ -4,10 +4,26 @@ use serde_json::Value;
 
 /// キュー状態（3状態のみ: failed は廃止）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum QueueStatus {
     Pending,
     Processing,
     Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecommendedMethod {
+    RustRecommended,
+    LlmRecommended,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalMethod {
+    RustCompleted,
+    LlmCompleted,
+    ManualReview,
 }
 
 impl QueueStatus {
@@ -16,6 +32,25 @@ impl QueueStatus {
             QueueStatus::Pending => "pending",
             QueueStatus::Processing => "processing",
             QueueStatus::Completed => "completed",
+        }
+    }
+}
+
+impl RecommendedMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RecommendedMethod::RustRecommended => "rust_recommended",
+            RecommendedMethod::LlmRecommended => "llm_recommended",
+        }
+    }
+}
+
+impl FinalMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FinalMethod::RustCompleted => "rust_completed",
+            FinalMethod::LlmCompleted => "llm_completed",
+            FinalMethod::ManualReview => "manual_review",
         }
     }
 }
@@ -36,8 +71,8 @@ pub struct ExtractionJob {
     pub last_error: Option<String>,
     pub partial_fields: Option<Value>,
     pub decision_reason: Option<String>,
-    pub recommended_method: Option<String>,
-    pub final_method: Option<String>,
+    pub recommended_method: Option<RecommendedMethod>,
+    pub final_method: Option<FinalMethod>,
     pub extractor_version: Option<String>,
     pub rule_version: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -47,7 +82,6 @@ pub struct ExtractionJob {
     pub llm_latency_ms: Option<i32>,
     pub requires_manual_review: bool,
     pub canary_target: bool,
-    pub manual_review_reason: Option<String>,
 }
 
 impl ExtractionJob {
@@ -83,7 +117,6 @@ impl ExtractionJob {
             llm_latency_ms: None,
             requires_manual_review: false,
             canary_target: false,
-            manual_review_reason: None,
         }
     }
 }
@@ -95,17 +128,15 @@ pub enum JobError {
     },
     Permanent {
         message: String,
-        manual_review_reason: Option<String>,
     },
 }
 
 pub struct JobOutcome {
-    pub final_method: String,
+    pub final_method: FinalMethod,
     pub partial_fields: Option<Value>,
     pub decision_reason: Option<String>,
     pub llm_latency_ms: Option<i32>,
     pub requires_manual_review: bool,
-    pub manual_review_reason: Option<String>,
 }
 
 /// シンプルなインメモリ extraction_queue worker
@@ -137,7 +168,11 @@ impl ExtractionQueue {
                 job.status == QueueStatus::Pending
                     && job.next_retry_at.map(|ts| ts <= now).unwrap_or(true)
             })
-            .max_by_key(|(_, job)| job.priority)
+            .max_by(|(_, a), (_, b)| {
+                a.priority
+                    .cmp(&b.priority)
+                    .then(std::cmp::Reverse(a.id).cmp(&std::cmp::Reverse(b.id)))
+            })
             .map(|(idx, _)| idx)
     }
 
@@ -162,19 +197,15 @@ impl ExtractionQueue {
                 job.completed_at = Some(now);
                 job.updated_at = now;
                 job.requires_manual_review = outcome.requires_manual_review;
-                job.manual_review_reason = outcome.manual_review_reason;
             }
-            Err(JobError::Permanent {
-                message,
-                manual_review_reason,
-            }) => {
+            Err(JobError::Permanent { message }) => {
                 job.status = QueueStatus::Completed;
-                job.final_method = Some("manual_review".to_string());
-                job.last_error = Some(message);
+                job.final_method = Some(FinalMethod::ManualReview);
+                job.last_error = Some(message.clone());
+                job.decision_reason = Some(message);
                 job.completed_at = Some(now);
                 job.updated_at = now;
                 job.requires_manual_review = true;
-                job.manual_review_reason = manual_review_reason;
             }
             Err(JobError::Retryable {
                 message,
@@ -208,12 +239,11 @@ mod tests {
 
         let status = queue.process_next(|_| {
             Ok(JobOutcome {
-                final_method: "rust_completed".into(),
+                final_method: FinalMethod::RustCompleted,
                 partial_fields: None,
                 decision_reason: Some("ok".into()),
                 llm_latency_ms: Some(1200),
                 requires_manual_review: false,
-                manual_review_reason: None,
             })
         });
 
@@ -221,7 +251,7 @@ mod tests {
         let job = queue.jobs.first().unwrap();
         assert_eq!(job.status, QueueStatus::Completed);
         assert_eq!(job.retry_count, 0);
-        assert_eq!(job.final_method.as_deref(), Some("rust_completed"));
+        assert_eq!(job.final_method, Some(FinalMethod::RustCompleted));
     }
 
     #[test]
@@ -251,15 +281,14 @@ mod tests {
         let status = queue.process_next(|_| {
             Err(JobError::Permanent {
                 message: "bad request".into(),
-                manual_review_reason: Some("missing body".into()),
             })
         });
 
         assert_eq!(status, Some(QueueStatus::Completed));
         let job = queue.jobs.first().unwrap();
         assert_eq!(job.status, QueueStatus::Completed);
-        assert_eq!(job.final_method.as_deref(), Some("manual_review"));
+        assert_eq!(job.final_method, Some(FinalMethod::ManualReview));
         assert!(job.requires_manual_review);
-        assert!(job.manual_review_reason.is_some());
+        assert!(job.decision_reason.is_some());
     }
 }

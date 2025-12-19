@@ -42,25 +42,28 @@ pub fn correct_flow_dept(input: &str) -> String {
 }
 
 /// 人材商流ENUM補正
-pub fn correct_talent_flow_depth(input: &str) -> String {
+pub fn correct_talent_flow_depth(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return "1社先".to_string();
+        return None;
     }
 
-    let valid = ["1社先", "2社先", "3社先以上"];
+    let valid = ["SPONTO直人材", "1社先", "2社先", "3社先以上"];
     if valid.contains(&trimmed) {
-        return trimmed.to_string();
+        return Some(trimmed.to_string());
     }
 
     if trimmed.contains('3') || trimmed.contains('３') || trimmed.contains("以上") {
-        return "3社先以上".to_string();
+        return Some("3社先以上".to_string());
     }
     if trimmed.contains('2') || trimmed.contains('２') {
-        return "2社先".to_string();
+        return Some("2社先".to_string());
+    }
+    if trimmed.contains("直") || trimmed.contains("自社") || trimmed.contains("貴社直") {
+        return Some("SPONTO直人材".to_string());
     }
 
-    "1社先".to_string()
+    None
 }
 
 /// 商流制限ENUM補正
@@ -103,13 +106,13 @@ pub fn parse_project_flow_depth(flow_dept: &str) -> Option<FlowDepth> {
 
 /// 人材側: 商流位置 → depth（1社先=1次の位置）
 pub fn parse_talent_flow_depth(flow_depth: &str) -> Option<FlowDepth> {
-    match correct_talent_flow_depth(flow_depth).as_str() {
+    correct_talent_flow_depth(flow_depth).and_then(|depth| match depth.as_str() {
         "SPONTO直人材" => Some(0),
         "1社先" => Some(1),
         "2社先" => Some(2),
         "3社先以上" => Some(3),
         _ => None,
-    }
+    })
 }
 
 /// 案件側: 人材商流制限 → 許容最大depth
@@ -155,7 +158,10 @@ mod tests {
     #[test]
     fn corrects_flow_enums() {
         assert_eq!(correct_flow_dept("元請案件"), "1次請け");
-        assert_eq!(correct_talent_flow_depth("３社先"), "3社先以上");
+        assert_eq!(
+            correct_talent_flow_depth("３社先"),
+            Some("3社先以上".to_string())
+        );
         assert_eq!(correct_jinzai_flow_limit("制限なし"), "商流制限なし");
     }
 }

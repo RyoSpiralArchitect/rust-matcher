@@ -158,11 +158,6 @@ impl MatchResult {
     }
 }
 
-#[deprecated(note = "KoDecision を直接使用すること。このwrapperは移行完了後に削除予定")]
-pub fn check_knockout_bool(decision: &KoDecision) -> bool {
-    matches!(decision, KoDecision::HardKo { .. })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
