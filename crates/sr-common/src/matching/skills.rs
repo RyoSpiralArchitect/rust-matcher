@@ -15,6 +15,7 @@ pub struct SkillMatchResult {
     pub match_percentage: f64,
     pub matched_skills: Vec<String>,
     pub reason: String,
+    pub requires_manual_review: bool,
 }
 
 /// 必須スキルのマッチング判定（strategy.py の _check_required_skills 相当）
@@ -39,6 +40,7 @@ fn check_required_skills_with_threshold(
             match_percentage: 1.0,
             matched_skills: vec![],
             reason: "必須スキル要件なし".to_string(),
+            requires_manual_review: true,
         };
     }
 
@@ -72,6 +74,7 @@ fn check_required_skills_with_threshold(
                 match_percentage * 100.0
             )
         },
+        requires_manual_review: false,
     }
 }
 
@@ -84,6 +87,7 @@ mod tests {
         let result = check_required_skills(&[], &[]);
         assert!(!result.is_knockout);
         assert_eq!(result.match_percentage, 1.0);
+        assert!(result.requires_manual_review);
     }
 
     #[test]
@@ -97,6 +101,7 @@ mod tests {
         assert!((result.match_percentage - 0.5).abs() < f64::EPSILON);
         assert!(result.is_knockout);
         assert!(result.reason.contains("60%"));
+        assert!(!result.requires_manual_review);
     }
 
     #[test]
@@ -109,5 +114,6 @@ mod tests {
 
         assert!(!result.is_knockout);
         assert!((result.match_percentage - 1.0).abs() < f64::EPSILON);
+        assert!(!result.requires_manual_review);
     }
 }

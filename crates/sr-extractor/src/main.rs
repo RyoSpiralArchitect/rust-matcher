@@ -10,12 +10,12 @@ use sr_common::queue::{
 
 const RULE_VERSION: &str = "2025-01-15-r1";
 
-fn main() {
+pub fn run_sample_flow() -> ExtractionQueue {
     let mut queue = ExtractionQueue::default();
 
     let body_text = r#"
 【案件概要】
-月額70〜90万円、即日から参画できるフルリモート案件です。
+月額70〜90万円、即日から参画できるフルリモート案件です（勤務地: 東京都）。
 "#;
 
     let mut partial = PartialFields::default();
@@ -66,6 +66,12 @@ fn main() {
         })
     });
 
+    queue
+}
+
+fn main() {
+    let queue = run_sample_flow();
+
     for job in queue.jobs.iter() {
         println!(
             "job {} status={} recommended={:?} final={:?}",
@@ -74,5 +80,23 @@ fn main() {
             job.recommended_method,
             job.final_method
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_flow_enqueues_and_processes_job() {
+        let queue = run_sample_flow();
+
+        assert_eq!(queue.jobs.len(), 1);
+        let job = &queue.jobs[0];
+        assert_eq!(job.status.as_str(), "completed");
+        assert_eq!(job.final_method, Some(FinalMethod::RustCompleted));
+        assert!(job.decision_reason.is_some());
+        assert_eq!(job.recommended_method, Some(RecommendedMethod::RustRecommended));
+        assert!(job.email_subject.contains("stub"));
     }
 }

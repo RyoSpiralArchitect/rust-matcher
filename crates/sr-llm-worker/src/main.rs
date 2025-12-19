@@ -4,7 +4,7 @@ use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, RecommendedMethod,
 };
 
-fn main() {
+pub fn run_sample_flow() -> ExtractionQueue {
     let mut queue = ExtractionQueue::default();
 
     let mut job = ExtractionJob::new(
@@ -37,6 +37,12 @@ fn main() {
         }
     });
 
+    queue
+}
+
+fn main() {
+    let queue = run_sample_flow();
+
     for job in queue.jobs.iter() {
         println!(
             "job {} status={} recommended={:?} final={:?} manual_review={}",
@@ -46,5 +52,26 @@ fn main() {
             job.final_method,
             job.requires_manual_review,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_job_is_marked_completed() {
+        let queue = run_sample_flow();
+
+        assert_eq!(queue.jobs.len(), 1);
+        let job = &queue.jobs[0];
+        assert_eq!(job.final_method, Some(FinalMethod::LlmCompleted));
+        assert_eq!(job.status.as_str(), "completed");
+        assert!(!job.requires_manual_review);
+        assert!(job
+            .decision_reason
+            .as_ref()
+            .map(|r| r.contains("sr-llm-worker"))
+            .unwrap_or(false));
     }
 }

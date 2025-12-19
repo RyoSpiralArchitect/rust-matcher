@@ -392,6 +392,14 @@ mod tests {
     }
 
     #[test]
+    fn missing_prefecture_and_area_results_in_softko() {
+        let result = evaluate_location(&project(None, None, None), &talent(None, None));
+
+        assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
+        assert!(result.details.contains("勤務地情報なし"));
+    }
+
+    #[test]
     fn cross_level_prefecture_to_area_completion_passes() {
         let result = evaluate_location(
             &project(None, Some("関東"), None),
