@@ -1,7 +1,10 @@
+pub mod calculation;
 pub mod corrections;
+pub mod date;
 pub mod matching;
 pub mod queue;
 pub mod schema;
+pub mod skill_normalizer;
 
 // Commonly used data models for matching functions.
 #[derive(Debug, Clone, Default, PartialEq)]

@@ -33,10 +33,10 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> (Project, T
             (None, None) => None,
         };
 
-        let normalized_remote = normalize_remote_onsite(project.remote_onsite.as_deref().unwrap_or(""));
-        let remote_onsite = Some(
-            correct_remote_onsite(&normalized_remote).unwrap_or(normalized_remote),
-        );
+        let normalized_remote =
+            normalize_remote_onsite(project.remote_onsite.as_deref().unwrap_or(""));
+        let remote_onsite =
+            Some(correct_remote_onsite(&normalized_remote).unwrap_or(normalized_remote));
 
         Project {
             work_todofuken,
