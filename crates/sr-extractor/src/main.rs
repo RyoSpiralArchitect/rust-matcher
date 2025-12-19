@@ -1,9 +1,12 @@
 use chrono::Utc;
 use sr_common::extraction::{
-    calculate_priority, evaluate_quality, extract_flow_dept, extract_remote_onsite,
-    extract_start_date_raw, extract_tanka, extract_work_todofuken, PartialFields,
+    PartialFields, calculate_priority, evaluate_quality, extract_flow_dept, extract_remote_onsite,
+    extract_start_date_raw, extract_tanka, extract_work_todofuken,
 };
-use sr_common::queue::{ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod};
+use sr_common::normalize::{calculate_subject_hash, normalize_subject};
+use sr_common::queue::{
+    ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod,
+};
 
 const RULE_VERSION: &str = "2025-01-15-r1";
 
@@ -29,12 +32,14 @@ fn main() {
     let (quality, decision) = evaluate_quality(&partial);
     let priority = calculate_priority(&quality);
 
+    let subject = "stub subject";
     let mut job = ExtractionJob::new(
         "message-1",
-        "stub subject",
+        subject,
         Utc::now(),
-        "subject-hash-stub",
+        &calculate_subject_hash(subject),
     );
+    job.email_subject = normalize_subject(subject);
     job.recommended_method = Some(decision.recommended_method);
     job.decision_reason = Some(decision.reason.clone());
     job.priority = priority;
@@ -54,7 +59,10 @@ fn main() {
             partial_fields: partial,
             decision_reason: job.decision_reason.clone(),
             llm_latency_ms: None,
-            requires_manual_review: matches!(job.recommended_method, Some(RecommendedMethod::LlmRecommended)),
+            requires_manual_review: matches!(
+                job.recommended_method,
+                Some(RecommendedMethod::LlmRecommended)
+            ),
         })
     });
 
