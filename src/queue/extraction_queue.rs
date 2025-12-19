@@ -81,6 +81,8 @@ pub struct ExtractionJob {
     pub updated_at: DateTime<Utc>,
     pub llm_latency_ms: Option<i32>,
     pub requires_manual_review: bool,
+    pub manual_review_reason: Option<String>,
+    pub reprocess_after: Option<DateTime<Utc>>,
     pub canary_target: bool,
 }
 
@@ -116,6 +118,8 @@ impl ExtractionJob {
             updated_at: now,
             llm_latency_ms: None,
             requires_manual_review: false,
+            manual_review_reason: None,
+            reprocess_after: None,
             canary_target: false,
         }
     }
@@ -199,18 +203,22 @@ impl ExtractionQueue {
                 job.partial_fields = outcome.partial_fields;
                 job.decision_reason = outcome.decision_reason;
                 job.llm_latency_ms = outcome.llm_latency_ms;
-                job.completed_at = Some(now);
-                job.updated_at = now;
+                let finished_at = Utc::now();
+                job.completed_at = Some(finished_at);
+                job.updated_at = finished_at;
                 job.requires_manual_review = outcome.requires_manual_review;
+                job.locked_by = None;
             }
             Err(JobError::Permanent { message }) => {
                 job.status = QueueStatus::Completed;
                 job.final_method = Some(FinalMethod::ManualReview);
                 job.last_error = Some(message.clone());
                 job.decision_reason = Some(message);
-                job.completed_at = Some(now);
-                job.updated_at = now;
+                let finished_at = Utc::now();
+                job.completed_at = Some(finished_at);
+                job.updated_at = finished_at;
                 job.requires_manual_review = true;
+                job.locked_by = None;
             }
             Err(JobError::Retryable {
                 message,
@@ -218,9 +226,12 @@ impl ExtractionQueue {
             }) => {
                 job.status = QueueStatus::Pending;
                 job.retry_count += 1;
-                job.next_retry_at = Some(now + retry_after.unwrap_or_else(|| Duration::minutes(5)));
+                let finished_at = Utc::now();
+                job.next_retry_at =
+                    Some(finished_at + retry_after.unwrap_or_else(|| Duration::minutes(5)));
                 job.last_error = Some(message);
-                job.updated_at = now;
+                job.updated_at = finished_at;
+                job.locked_by = None;
             }
         }
 
@@ -257,8 +268,13 @@ mod tests {
         assert_eq!(job.status, QueueStatus::Completed);
         assert_eq!(job.retry_count, 0);
         assert_eq!(job.final_method, Some(FinalMethod::RustCompleted));
-        assert_eq!(job.locked_by.as_deref(), Some("worker_stub"));
+        assert_eq!(job.locked_by, None);
         assert!(job.processing_started_at.is_some());
+        assert!(job
+            .completed_at
+            .zip(job.processing_started_at)
+            .map(|(completed, started)| completed >= started)
+            .unwrap_or(false));
     }
 
     #[test]
@@ -278,6 +294,7 @@ mod tests {
         assert_eq!(job.status, QueueStatus::Pending);
         assert_eq!(job.retry_count, 1);
         assert!(job.next_retry_at.is_some());
+        assert!(job.locked_by.is_none());
     }
 
     #[test]
@@ -297,5 +314,6 @@ mod tests {
         assert_eq!(job.final_method, Some(FinalMethod::ManualReview));
         assert!(job.requires_manual_review);
         assert!(job.decision_reason.is_some());
+        assert!(job.locked_by.is_none());
     }
 }

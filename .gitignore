@@ -24,3 +24,6 @@ target
 # Added by cargo
 
 /target
+
+# Keep Cargo.lock under version control for reproducible builds
+# (explicitly not ignored)

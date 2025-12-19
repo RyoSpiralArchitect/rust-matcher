@@ -15,19 +15,34 @@ pub struct LocationEvaluation {
 }
 
 /// 正規化済みの Project/Talent を返す（勤務地/エリア/リモート形態のみ）
-pub fn normalize_for_matching(project: &Project, talent: &Talent) -> (Project, Talent) {
+#[derive(Debug, Clone)]
+pub struct NormalizedLocation {
+    pub project: Project,
+    pub talent: Talent,
+    pub conflicts: Vec<String>,
+}
+
+pub fn normalize_for_matching(project: &Project, talent: &Talent) -> NormalizedLocation {
+    let mut conflicts = Vec::new();
+
     let normalized_project = {
         let work_todofuken = project
             .work_todofuken
             .as_deref()
             .and_then(correct_todofuken);
-        let work_area = match (
-            project.work_area.as_deref().and_then(correct_work_area),
-            work_todofuken
-                .as_deref()
-                .and_then(correct_work_area)
-                .map(|s| s.to_string()),
-        ) {
+        let given_area = project.work_area.as_deref().and_then(correct_work_area);
+        let derived_area = work_todofuken
+            .as_deref()
+            .and_then(correct_work_area)
+            .map(|s| s.to_string());
+        let work_area = match (given_area, derived_area.clone()) {
+            (Some(area), Some(derived)) if area != derived => {
+                conflicts.push(format!(
+                    "project_area_conflict: given={} vs derived={}",
+                    area, derived
+                ));
+                Some(derived)
+            }
             (Some(area), derived) => Some(derived.unwrap_or_else(|| area.to_string())),
             (None, Some(derived)) => Some(derived),
             (None, None) => None,
@@ -50,16 +65,22 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> (Project, T
             .residential_todofuken
             .as_deref()
             .and_then(correct_todofuken);
-        let residential_area = match (
-            talent
-                .residential_area
-                .as_deref()
-                .and_then(correct_work_area),
-            residential_todofuken
-                .as_deref()
-                .and_then(correct_work_area)
-                .map(|s| s.to_string()),
-        ) {
+        let given_area = talent
+            .residential_area
+            .as_deref()
+            .and_then(correct_work_area);
+        let derived_area = residential_todofuken
+            .as_deref()
+            .and_then(correct_work_area)
+            .map(|s| s.to_string());
+        let residential_area = match (given_area, derived_area.clone()) {
+            (Some(area), Some(derived)) if area != derived => {
+                conflicts.push(format!(
+                    "talent_area_conflict: given={} vs derived={}",
+                    area, derived
+                ));
+                Some(derived)
+            }
             (Some(area), derived) => Some(derived.unwrap_or_else(|| area.to_string())),
             (None, Some(derived)) => Some(derived),
             (None, None) => None,
@@ -71,14 +92,18 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> (Project, T
         }
     };
 
-    (normalized_project, normalized_talent)
+    NormalizedLocation {
+        project: normalized_project,
+        talent: normalized_talent,
+        conflicts,
+    }
 }
 
 /// 【唯一の勤務地判定関数】
 /// KO判定・prefilter・スコアリング全てがこの関数を呼ぶこと。
 pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluation {
-    let (project, talent) = normalize_for_matching(project, talent);
-    let remote_mode = project.remote_onsite.as_deref();
+    let normalized = normalize_for_matching(project, talent);
+    let remote_mode = normalized.project.remote_onsite.as_deref();
 
     // 1. フルリモート → 勤務地KOなし、スコア1.0
     if remote_mode == Some("フルリモート") {
@@ -91,31 +116,69 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
 
     // 2. 都道府県が双方ある → 都道府県ロジック
     if let (Some(p_pref), Some(t_pref)) = (
-        project.work_todofuken.as_deref(),
-        talent.residential_todofuken.as_deref(),
+        normalized.project.work_todofuken.as_deref(),
+        normalized.talent.residential_todofuken.as_deref(),
     ) {
-        return evaluate_by_todofuken(p_pref, t_pref, remote_mode);
+        return apply_conflict_notes(
+            evaluate_by_todofuken(p_pref, t_pref, remote_mode),
+            &normalized.conflicts,
+        );
     }
 
     // 3. 片方でも都道府県がない → エリアで粗く判定
     if let (Some(p_area), Some(t_area)) = (
-        project.work_area.as_deref(),
-        talent.residential_area.as_deref(),
+        normalized.project.work_area.as_deref(),
+        normalized.talent.residential_area.as_deref(),
     ) {
-        return evaluate_by_area(p_area, t_area, remote_mode);
+        return apply_conflict_notes(
+            evaluate_by_area(p_area, t_area, remote_mode),
+            &normalized.conflicts,
+        );
     }
 
     // 4. どっちも取れない → SoftKo（手動レビューへ）
-    LocationEvaluation {
-        ko_decision: KoDecision::SoftKo {
-            reason: "location_unknown: 勤務地情報不足のため要手動確認".into(),
+    apply_conflict_notes(
+        LocationEvaluation {
+            ko_decision: KoDecision::SoftKo {
+                reason: "location_unknown: 勤務地情報不足のため要手動確認".into(),
+            },
+            score: 0.5, // 中立
+            details: format!(
+                "勤務地情報なし - 手動確認必要 (remote_onsite={:?})",
+                remote_mode
+            ),
         },
-        score: 0.5, // 中立
-        details: format!(
-            "勤務地情報なし - 手動確認必要 (remote_onsite={:?})",
-            remote_mode
-        ),
+        &normalized.conflicts,
+    )
+}
+
+fn apply_conflict_notes(
+    mut evaluation: LocationEvaluation,
+    conflicts: &[String],
+) -> LocationEvaluation {
+    if conflicts.is_empty() {
+        return evaluation;
     }
+
+    let note = format!("area_conflict: {}", conflicts.join("; "));
+    evaluation.details = format!("{} | {}", evaluation.details, note);
+
+    match &mut evaluation.ko_decision {
+        KoDecision::Pass => {
+            evaluation.ko_decision = KoDecision::SoftKo {
+                reason: note,
+            };
+            evaluation.score = evaluation.score.min(0.6);
+        }
+        KoDecision::SoftKo { reason } => {
+            if !reason.contains(&note) {
+                reason.push_str(&format!("; {}", note));
+            }
+        }
+        KoDecision::HardKo { .. } => {}
+    }
+
+    evaluation
 }
 
 fn evaluate_by_todofuken(
@@ -337,5 +400,16 @@ mod tests {
 
         assert!(matches!(result.ko_decision, KoDecision::Pass));
         assert!(result.score > 0.7);
+    }
+
+    #[test]
+    fn conflicts_between_given_and_derived_area_trigger_softko() {
+        let result = evaluate_location(
+            &project(Some("東京都"), Some("近畿"), None),
+            &talent(Some("東京都"), None),
+        );
+
+        assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
+        assert!(result.details.contains("area_conflict"));
     }
 }
