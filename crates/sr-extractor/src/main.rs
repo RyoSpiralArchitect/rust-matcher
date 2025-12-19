@@ -1,9 +1,29 @@
 use chrono::Utc;
-use serde_json::json;
+use sr_common::extraction::{
+    calculate_priority, evaluate_quality, extract_start_date_raw, extract_tanka, PartialFields,
+};
 use sr_common::queue::{ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod};
+
+const RULE_VERSION: &str = "2025-01-15-r1";
 
 fn main() {
     let mut queue = ExtractionQueue::default();
+
+    let body_text = r#"
+【案件概要】
+月額70〜90万円、即日から参画できるフルリモート案件です。
+"#;
+
+    let mut partial = PartialFields::default();
+    if let Some((min, max)) = extract_tanka(body_text) {
+        partial.monthly_tanka_min = Some(min);
+        partial.monthly_tanka_max = Some(max);
+    }
+    partial.start_date_raw = extract_start_date_raw(body_text);
+    partial.outcome_tag = Some("unknown".to_string());
+
+    let (quality, decision) = evaluate_quality(&partial);
+    let priority = calculate_priority(&quality);
 
     let mut job = ExtractionJob::new(
         "message-1",
@@ -11,23 +31,26 @@ fn main() {
         Utc::now(),
         "subject-hash-stub",
     );
-    job.recommended_method = Some(RecommendedMethod::RustRecommended);
-    job.extractor_version = Some("sr-extractor-stub".into());
+    job.recommended_method = Some(decision.recommended_method);
+    job.decision_reason = Some(decision.reason.clone());
+    job.priority = priority;
+    job.extractor_version = Some(env!("CARGO_PKG_VERSION").into());
+    job.rule_version = Some(RULE_VERSION.into());
 
     queue.enqueue(job);
 
     queue.process_next(|job| {
-        let partial = json!({
-            "message_id": job.message_id,
-            "email_subject": job.email_subject,
-        });
+        let partial = serde_json::to_value(&partial).ok();
 
         Ok(JobOutcome {
-            final_method: FinalMethod::RustCompleted,
-            partial_fields: Some(partial),
-            decision_reason: Some("extracted via sr-extractor stub".into()),
+            final_method: match job.recommended_method {
+                Some(RecommendedMethod::RustRecommended) => FinalMethod::RustCompleted,
+                _ => FinalMethod::ManualReview,
+            },
+            partial_fields: partial,
+            decision_reason: job.decision_reason.clone(),
             llm_latency_ms: None,
-            requires_manual_review: false,
+            requires_manual_review: matches!(job.recommended_method, Some(RecommendedMethod::LlmRecommended)),
         })
     });
 
