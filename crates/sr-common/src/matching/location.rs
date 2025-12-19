@@ -57,6 +57,7 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> NormalizedL
             work_todofuken,
             work_area,
             remote_onsite,
+            ..Project::default()
         }
     };
 
@@ -89,6 +90,7 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> NormalizedL
         Talent {
             residential_todofuken,
             residential_area,
+            ..Talent::default()
         }
     };
 
@@ -318,6 +320,7 @@ mod tests {
             work_todofuken: pref.map(|s| s.to_string()),
             work_area: area.map(|s| s.to_string()),
             remote_onsite: remote.map(|s| s.to_string()),
+            ..Project::default()
         }
     }
 
@@ -325,6 +328,7 @@ mod tests {
         Talent {
             residential_todofuken: pref.map(|s| s.to_string()),
             residential_area: area.map(|s| s.to_string()),
+            ..Talent::default()
         }
     }
 

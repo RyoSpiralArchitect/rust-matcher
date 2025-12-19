@@ -1,4 +1,5 @@
-use chrono::{Datelike, NaiveDate, Utc, DateTime};
+use super::DatePrecision;
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use lazy_static::lazy_static;
 use regex::Regex;
 
@@ -11,13 +12,20 @@ pub enum StartDatePrecision {
     ApproximateMonth,
     /// 即日・ASAP など「できるだけ早く」
     Asap,
+    /// 四半期（年が省略された場合は基準年で補完）
+    Quarter,
+    /// 応相談など日時未確定
+    Negotiable,
+    /// 判別不能
+    Unknown,
 }
 
 /// 正規化済み開始日
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedStartDate {
-    pub date: NaiveDate,
+    pub date: Option<NaiveDate>,
     pub precision: StartDatePrecision,
+    pub interpretation_note: Option<String>,
 }
 
 lazy_static! {
@@ -26,6 +34,11 @@ lazy_static! {
     static ref MONTH_ONLY_RE: Regex = Regex::new(r"(\d{1,2})月").unwrap();
     static ref NEXT_MONTH_RE: Regex = Regex::new(r"来月").unwrap();
     static ref ASAP_RE: Regex = Regex::new(r"(?i)(即日|即時|ASAP)").unwrap();
+    static ref QUARTER_RE: Regex =
+        Regex::new(r"(?i)(?:(\d{4})\s*[-/]?\s*)?(?:q([1-4])|([1-4])q|第\s*([1-4])\s*四半期)")
+            .unwrap();
+    static ref NEGOTIABLE_RE: Regex =
+        Regex::new(r"(?i)(応相談|要相談|調整(?:可|可能)|negotiable)").unwrap();
 }
 
 /// 開始日テキストを受領日時を基準に正規化する
@@ -35,7 +48,12 @@ lazy_static! {
 /// - "1月上旬" などの部分指定: 5/15/25 日に丸め、過去月なら翌年に繰り上げ
 /// - "12月" など月のみ: 1日始まりで ApproximateMonth
 /// - "来月": 翌月1日開始（年跨ぎ対応）
-pub fn normalize_start_date(raw: &str, base_received_at: DateTime<Utc>) -> Option<NormalizedStartDate> {
+/// - "2025Q2" / "第3四半期" など四半期指定: 四半期の初日を Quarter 精度で返す（年欠落時は基準年補完）
+/// - "応相談" など未確定: Negotiable として date=None
+pub fn normalize_start_date(
+    raw: &str,
+    base_received_at: DateTime<Utc>,
+) -> Option<NormalizedStartDate> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -45,8 +63,9 @@ pub fn normalize_start_date(raw: &str, base_received_at: DateTime<Utc>) -> Optio
 
     if ASAP_RE.is_match(trimmed) {
         return Some(NormalizedStartDate {
-            date: base_date,
+            date: Some(base_date),
             precision: StartDatePrecision::Asap,
+            interpretation_note: None,
         });
     }
 
@@ -57,8 +76,9 @@ pub fn normalize_start_date(raw: &str, base_received_at: DateTime<Utc>) -> Optio
         let date = NaiveDate::from_ymd_opt(year, month, day)?;
 
         return Some(NormalizedStartDate {
-            date,
+            date: Some(date),
             precision: StartDatePrecision::ExactDay,
+            interpretation_note: None,
         });
     }
 
@@ -70,8 +90,43 @@ pub fn normalize_start_date(raw: &str, base_received_at: DateTime<Utc>) -> Optio
         }?;
 
         return Some(NormalizedStartDate {
-            date: next_month,
+            date: Some(next_month),
             precision: StartDatePrecision::ApproximateMonth,
+            interpretation_note: None,
+        });
+    }
+
+    if let Some(caps) = QUARTER_RE.captures(trimmed) {
+        let year = caps
+            .get(1)
+            .and_then(|m| m.as_str().parse::<i32>().ok())
+            .unwrap_or(base_date.year());
+
+        let quarter_str = caps
+            .get(2)
+            .or_else(|| caps.get(3))
+            .or_else(|| caps.get(4))
+            .map(|m| m.as_str())?;
+        let quarter: u32 = quarter_str.parse().ok()?;
+
+        let month = match quarter {
+            1 => 1,
+            2 => 4,
+            3 => 7,
+            4 => 10,
+            _ => return None,
+        };
+
+        let date = NaiveDate::from_ymd_opt(year, month, 1)?;
+        let interpretation_note = caps
+            .get(1)
+            .is_none()
+            .then(|| format!("year assumed from received_at {}", base_date));
+
+        return Some(NormalizedStartDate {
+            date: Some(date),
+            precision: StartDatePrecision::Quarter,
+            interpretation_note,
         });
     }
 
@@ -93,8 +148,9 @@ pub fn normalize_start_date(raw: &str, base_received_at: DateTime<Utc>) -> Optio
         let date = NaiveDate::from_ymd_opt(year, month, day)?;
 
         return Some(NormalizedStartDate {
-            date,
+            date: Some(date),
             precision: StartDatePrecision::ApproximateMonth,
+            interpretation_note: None,
         });
     }
 
@@ -108,12 +164,38 @@ pub fn normalize_start_date(raw: &str, base_received_at: DateTime<Utc>) -> Optio
         let date = NaiveDate::from_ymd_opt(year, month, 1)?;
 
         return Some(NormalizedStartDate {
-            date,
+            date: Some(date),
             precision: StartDatePrecision::ApproximateMonth,
+            interpretation_note: None,
         });
     }
 
-    None
+    if NEGOTIABLE_RE.is_match(trimmed) {
+        return Some(NormalizedStartDate {
+            date: None,
+            precision: StartDatePrecision::Negotiable,
+            interpretation_note: Some("start date negotiable/unspecified".into()),
+        });
+    }
+
+    Some(NormalizedStartDate {
+        date: None,
+        precision: StartDatePrecision::Unknown,
+        interpretation_note: Some("could not normalize start date".into()),
+    })
+}
+
+impl From<StartDatePrecision> for DatePrecision {
+    fn from(value: StartDatePrecision) -> Self {
+        match value {
+            StartDatePrecision::ExactDay => DatePrecision::Exact,
+            StartDatePrecision::ApproximateMonth => DatePrecision::Month,
+            StartDatePrecision::Asap => DatePrecision::Asap,
+            StartDatePrecision::Quarter => DatePrecision::Quarter,
+            StartDatePrecision::Negotiable => DatePrecision::Negotiable,
+            StartDatePrecision::Unknown => DatePrecision::Unknown,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -126,11 +208,14 @@ mod tests {
         let base = Utc.with_ymd_and_hms(2025, 1, 10, 0, 0, 0).unwrap();
 
         let asap = normalize_start_date("即日", base).unwrap();
-        assert_eq!(asap.date, base.date_naive());
+        assert_eq!(asap.date, Some(base.date_naive()));
         assert_eq!(asap.precision, StartDatePrecision::Asap);
 
         let exact = normalize_start_date("2025/02/15", base).unwrap();
-        assert_eq!(exact.date, NaiveDate::from_ymd_opt(2025, 2, 15).unwrap());
+        assert_eq!(
+            exact.date,
+            Some(NaiveDate::from_ymd_opt(2025, 2, 15).unwrap())
+        );
         assert_eq!(exact.precision, StartDatePrecision::ExactDay);
     }
 
@@ -139,11 +224,17 @@ mod tests {
         let base = Utc.with_ymd_and_hms(2025, 1, 28, 0, 0, 0).unwrap();
 
         let next_month = normalize_start_date("来月", base).unwrap();
-        assert_eq!(next_month.date, NaiveDate::from_ymd_opt(2025, 2, 1).unwrap());
+        assert_eq!(
+            next_month.date,
+            Some(NaiveDate::from_ymd_opt(2025, 2, 1).unwrap())
+        );
         assert_eq!(next_month.precision, StartDatePrecision::ApproximateMonth);
 
         let late = normalize_start_date("3月下旬", base).unwrap();
-        assert_eq!(late.date, NaiveDate::from_ymd_opt(2025, 3, 25).unwrap());
+        assert_eq!(
+            late.date,
+            Some(NaiveDate::from_ymd_opt(2025, 3, 25).unwrap())
+        );
         assert_eq!(late.precision, StartDatePrecision::ApproximateMonth);
     }
 
@@ -152,9 +243,46 @@ mod tests {
         let base = Utc.with_ymd_and_hms(2025, 12, 15, 0, 0, 0).unwrap();
 
         let next_month = normalize_start_date("来月", base).unwrap();
-        assert_eq!(next_month.date, NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+        assert_eq!(
+            next_month.date,
+            Some(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap())
+        );
 
         let november = normalize_start_date("11月", base).unwrap();
-        assert_eq!(november.date, NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
+        assert_eq!(
+            november.date,
+            Some(NaiveDate::from_ymd_opt(2026, 11, 1).unwrap())
+        );
+    }
+
+    #[test]
+    fn parses_quarter_and_negotiable_cases() {
+        let base = Utc.with_ymd_and_hms(2025, 1, 10, 0, 0, 0).unwrap();
+
+        let q2 = normalize_start_date("2026Q2", base).unwrap();
+        assert_eq!(q2.date, Some(NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()));
+        assert_eq!(q2.precision, StartDatePrecision::Quarter);
+        assert!(q2.interpretation_note.is_none());
+
+        let q3 = normalize_start_date("第3四半期", base).unwrap();
+        assert_eq!(q3.date, Some(NaiveDate::from_ymd_opt(2025, 7, 1).unwrap()));
+        assert_eq!(q3.precision, StartDatePrecision::Quarter);
+        assert!(
+            q3.interpretation_note
+                .as_ref()
+                .map(|n| n.contains("received_at"))
+                .unwrap_or(false)
+        );
+
+        let negotiable = normalize_start_date("参画時期は応相談です", base).unwrap();
+        assert_eq!(negotiable.date, None);
+        assert_eq!(negotiable.precision, StartDatePrecision::Negotiable);
+        assert!(
+            negotiable
+                .interpretation_note
+                .as_ref()
+                .map(|n| n.contains("negotiable"))
+                .unwrap_or(false)
+        );
     }
 }
