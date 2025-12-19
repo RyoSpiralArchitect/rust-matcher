@@ -184,8 +184,13 @@ impl ExtractionQueue {
         let idx = self.poll_next(now)?;
         let mut job = self.jobs[idx].clone();
         job.status = QueueStatus::Processing;
+        job.locked_by = Some("worker_stub".into());
         job.processing_started_at = Some(now);
         job.updated_at = now;
+
+        // Update the queue before running the handler so external observers can see the
+        // pending → processing transition.
+        self.jobs[idx] = job.clone();
 
         match handler(&job) {
             Ok(outcome) => {
@@ -252,6 +257,8 @@ mod tests {
         assert_eq!(job.status, QueueStatus::Completed);
         assert_eq!(job.retry_count, 0);
         assert_eq!(job.final_method, Some(FinalMethod::RustCompleted));
+        assert_eq!(job.locked_by.as_deref(), Some("worker_stub"));
+        assert!(job.processing_started_at.is_some());
     }
 
     #[test]

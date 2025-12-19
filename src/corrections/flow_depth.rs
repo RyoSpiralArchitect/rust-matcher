@@ -119,7 +119,7 @@ pub fn parse_talent_flow_depth(flow_depth: &str) -> Option<FlowDepth> {
 /// ⚠️ DDL ses.jinzai_flow_limit_enum は3値: SPONTO直人材, SPONTO一社先まで, 商流制限なし
 /// #4修正: 2025-12-18 存在しない「SPONTO二社先まで」を削除
 pub fn parse_flow_limit(jinzai_flow_limit: &str) -> Option<FlowDepth> {
-    match jinzai_flow_limit.trim() {
+    match correct_jinzai_flow_limit(jinzai_flow_limit).as_str() {
         "SPONTO直人材" => Some(0),       // 直人材のみ
         "SPONTO一社先まで" => Some(1),   // 1次まで
         "商流制限なし" => Some(u8::MAX), // 制限なし
@@ -163,5 +163,11 @@ mod tests {
             Some("3社先以上".to_string())
         );
         assert_eq!(correct_jinzai_flow_limit("制限なし"), "商流制限なし");
+    }
+
+    #[test]
+    fn parse_flow_limit_includes_corrections() {
+        assert_eq!(parse_flow_limit(" 制限なし"), Some(u8::MAX));
+        assert_eq!(parse_flow_limit("sponto一社先まで"), Some(1));
     }
 }

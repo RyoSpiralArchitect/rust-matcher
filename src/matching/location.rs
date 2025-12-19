@@ -21,11 +21,17 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> (Project, T
             .work_todofuken
             .as_deref()
             .and_then(correct_todofuken);
-        let work_area = project
-            .work_area
-            .as_deref()
-            .and_then(correct_work_area)
-            .or_else(|| work_todofuken.as_deref().and_then(correct_work_area));
+        let work_area = match (
+            project.work_area.as_deref().and_then(correct_work_area),
+            work_todofuken
+                .as_deref()
+                .and_then(correct_work_area)
+                .map(|s| s.to_string()),
+        ) {
+            (Some(area), derived) => Some(derived.unwrap_or_else(|| area.to_string())),
+            (None, Some(derived)) => Some(derived),
+            (None, None) => None,
+        };
 
         let normalized_remote = normalize_remote_onsite(project.remote_onsite.as_deref().unwrap_or(""));
         let remote_onsite = Some(
@@ -44,11 +50,20 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> (Project, T
             .residential_todofuken
             .as_deref()
             .and_then(correct_todofuken);
-        let residential_area = talent
-            .residential_area
-            .as_deref()
-            .and_then(correct_work_area)
-            .or_else(|| residential_todofuken.as_deref().and_then(correct_work_area));
+        let residential_area = match (
+            talent
+                .residential_area
+                .as_deref()
+                .and_then(correct_work_area),
+            residential_todofuken
+                .as_deref()
+                .and_then(correct_work_area)
+                .map(|s| s.to_string()),
+        ) {
+            (Some(area), derived) => Some(derived.unwrap_or_else(|| area.to_string())),
+            (None, Some(derived)) => Some(derived),
+            (None, None) => None,
+        };
 
         Talent {
             residential_todofuken,
@@ -300,5 +315,27 @@ mod tests {
 
         assert!(matches!(result.ko_decision, KoDecision::Pass));
         assert!(result.details.contains("リモート併用"));
+    }
+
+    #[test]
+    fn full_onsite_and_distant_prefecture_is_hard_ko() {
+        let result = evaluate_location(
+            &project(Some("東京都"), None, Some("フル出社")),
+            &talent(Some("大阪府"), None),
+        );
+
+        assert!(matches!(result.ko_decision, KoDecision::HardKo { .. }));
+        assert_eq!(result.score, 0.0);
+    }
+
+    #[test]
+    fn cross_level_prefecture_to_area_completion_passes() {
+        let result = evaluate_location(
+            &project(None, Some("関東"), None),
+            &talent(Some("東京都"), None),
+        );
+
+        assert!(matches!(result.ko_decision, KoDecision::Pass));
+        assert!(result.score > 0.7);
     }
 }
