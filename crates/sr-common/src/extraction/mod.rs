@@ -2,6 +2,11 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::corrections::{
+    flow_depth::correct_flow_dept,
+    remote_onsite::correct_remote_onsite,
+    todofuken::{correct_todofuken, TODOFUKEN_TO_AREA},
+};
 use crate::queue::RecommendedMethod;
 
 /// sr-extractor がメール本文から拾う項目（MVP 範囲）
@@ -57,6 +62,22 @@ lazy_static! {
     static ref EXACT_DATE_RE: Regex = Regex::new(r"\d{4}[/-]\d{1,2}[/-]\d{1,2}").unwrap();
     // 〇月のみ（解像度は低いが Tier1 を埋める）
     static ref MONTH_ONLY_RE: Regex = Regex::new(r"\d{1,2}月").unwrap();
+
+    // リモート/出社キーワード
+    static ref FULL_REMOTE_RE: Regex =
+        Regex::new(r"(?i)(フルリモート|完全在宅|常時リモート|full\s*remote)").unwrap();
+    static ref HYBRID_REMOTE_RE: Regex = Regex::new(
+        r"(?i)(週\s*[1-4１-４一二三四]\s*リモート|リモート可|リモート併用|ハイブリッド)"
+    )
+    .unwrap();
+    static ref ONSITE_RE: Regex = Regex::new(r"(?i)(フル出社|常駐|客先|出社のみ|出社必須)").unwrap();
+
+    // 商流キーワード
+    static ref END_DIRECT_RE: Regex = Regex::new(r"(?i)(エンド直|直請け)").unwrap();
+    static ref ONE_HOP_RE: Regex = Regex::new(r"(?i)(1次|一次|元請|プライム)").unwrap();
+    static ref TWO_HOP_RE: Regex = Regex::new(r"(?i)(2次|二次)").unwrap();
+    static ref THREE_HOP_RE: Regex = Regex::new(r"(?i)(3次|三次)").unwrap();
+    static ref FOUR_PLUS_RE: Regex = Regex::new(r"(?i)(4次|四次|4次以上|四次以上)").unwrap();
 }
 
 /// 月単価抽出（レンジ/下限のみ/上限のみ/単発に対応）
@@ -127,6 +148,62 @@ pub fn extract_start_date_raw(body_text: &str) -> Option<String> {
     }
 
     None
+}
+
+/// メール本文から都道府県を最初に見つかったものだけ抽出
+pub fn extract_work_todofuken(body_text: &str) -> Option<String> {
+    if body_text.trim().is_empty() {
+        return None;
+    }
+
+    TODOFUKEN_TO_AREA
+        .keys()
+        .filter(|pref| body_text.contains(*pref))
+        .max_by_key(|pref| pref.len())
+        .and_then(|pref| correct_todofuken(pref))
+}
+
+/// メール本文からリモート/出社形態を抽出して ENUM 補正
+pub fn extract_remote_onsite(body_text: &str) -> Option<String> {
+    if FULL_REMOTE_RE.is_match(body_text) {
+        return Some("フルリモート".to_string());
+    }
+
+    if HYBRID_REMOTE_RE.is_match(body_text) {
+        return Some("リモート併用".to_string());
+    }
+
+    if ONSITE_RE.is_match(body_text) {
+        return correct_remote_onsite("フル出社");
+    }
+
+    correct_remote_onsite(body_text)
+}
+
+/// メール本文から商流を抽出して ENUM 補正
+pub fn extract_flow_dept(body_text: &str) -> Option<String> {
+    if END_DIRECT_RE.is_match(body_text) {
+        return Some("エンド直".to_string());
+    }
+    if ONE_HOP_RE.is_match(body_text) {
+        return Some("1次請け".to_string());
+    }
+    if TWO_HOP_RE.is_match(body_text) {
+        return Some("2次請け".to_string());
+    }
+    if THREE_HOP_RE.is_match(body_text) {
+        return Some("3次請け".to_string());
+    }
+    if FOUR_PLUS_RE.is_match(body_text) {
+        return Some("4次請け以上".to_string());
+    }
+
+    let corrected = correct_flow_dept(body_text);
+    if corrected == "不明" {
+        None
+    } else {
+        Some(corrected)
+    }
 }
 
 /// Tier 充足度をカウント
@@ -259,5 +336,19 @@ mod tests {
         let (quality2, decision2) = evaluate_quality(&partial);
         assert_eq!(quality2.tier2_extracted, 2);
         assert_eq!(decision2.recommended_method, RecommendedMethod::RustRecommended);
+    }
+
+    #[test]
+    fn extracts_prefecture_remote_and_flow_patterns() {
+        let text = "勤務地：東京都千代田区\n週3リモート、元請案件です";
+        assert_eq!(extract_work_todofuken(text), Some("東京都".to_string()));
+        assert_eq!(extract_remote_onsite(text), Some("リモート併用".to_string()));
+        assert_eq!(extract_flow_dept(text), Some("1次請け".to_string()));
+
+        let onsite = "勤務地: 大阪府\nフル出社（客先常駐）";
+        assert_eq!(extract_remote_onsite(onsite), Some("フル出社".to_string()));
+
+        let deep = "4次以上の商流です";
+        assert_eq!(extract_flow_dept(deep), Some("4次請け以上".to_string()));
     }
 }

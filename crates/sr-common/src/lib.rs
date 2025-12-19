@@ -3,6 +3,7 @@ pub mod corrections;
 pub mod date;
 pub mod extraction;
 pub mod matching;
+pub mod normalize;
 pub mod queue;
 pub mod schema;
 pub mod skill_normalizer;
