@@ -1,11 +1,15 @@
-[package]
-name = "rust-matcher"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = [
+    "crates/sr-common",
+    "crates/sr-extractor",
+    "crates/sr-llm-worker",
+    "crates/sr-queue-recovery",
+]
+resolver = "2"
 
-[dependencies]
-chrono = { version = "0.4", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-lazy_static = "1"
-thiserror = "1"
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+authors = []
+license = ""
+publish = false

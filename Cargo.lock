@@ -163,17 +163,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-matcher"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "lazy_static",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -233,6 +222,43 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "sr-common"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "lazy_static",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "sr-extractor"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "sr-common",
+]
+
+[[package]]
+name = "sr-llm-worker"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "sr-common",
+]
+
+[[package]]
+name = "sr-queue-recovery"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "sr-common",
+]
 
 [[package]]
 name = "syn"
