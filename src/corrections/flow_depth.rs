@@ -3,9 +3,95 @@ use crate::matching::ko_unified::KoDecision;
 /// 商流depth（0=エンド直, 1=1次, 2=2次, ...）
 pub type FlowDepth = u8;
 
+/// 案件商流ENUM補正
+pub fn correct_flow_dept(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return "不明".to_string();
+    }
+
+    let valid = [
+        "エンド直",
+        "1次請け",
+        "2次請け",
+        "3次請け",
+        "4次請け以上",
+        "不明",
+    ];
+    if valid.contains(&trimmed) {
+        return trimmed.to_string();
+    }
+
+    if trimmed.contains("エンド直") {
+        return "エンド直".to_string();
+    }
+    if trimmed.contains("1次") || trimmed.contains("元請") {
+        return "1次請け".to_string();
+    }
+    if trimmed.contains("2次") {
+        return "2次請け".to_string();
+    }
+    if trimmed.contains("3次") {
+        return "3次請け".to_string();
+    }
+    if trimmed.contains("4次") {
+        return "4次請け以上".to_string();
+    }
+
+    "不明".to_string()
+}
+
+/// 人材商流ENUM補正
+pub fn correct_talent_flow_depth(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return "1社先".to_string();
+    }
+
+    let valid = ["1社先", "2社先", "3社先以上"];
+    if valid.contains(&trimmed) {
+        return trimmed.to_string();
+    }
+
+    if trimmed.contains('3') || trimmed.contains('３') || trimmed.contains("以上") {
+        return "3社先以上".to_string();
+    }
+    if trimmed.contains('2') || trimmed.contains('２') {
+        return "2社先".to_string();
+    }
+
+    "1社先".to_string()
+}
+
+/// 商流制限ENUM補正
+pub fn correct_jinzai_flow_limit(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return "SPONTO一社先まで".to_string();
+    }
+
+    let valid = ["SPONTO直人材", "SPONTO一社先まで", "商流制限なし"];
+    if valid.contains(&trimmed) {
+        return trimmed.to_string();
+    }
+
+    if trimmed.contains("貴社まで")
+        || trimmed.contains("御社まで")
+        || trimmed.contains("直人材")
+        || trimmed.contains("貴社社員")
+    {
+        return "SPONTO直人材".to_string();
+    }
+    if trimmed.contains("制限なし") || trimmed.contains("不問") {
+        return "商流制限なし".to_string();
+    }
+
+    "SPONTO一社先まで".to_string()
+}
+
 /// 案件側: flow_dept 文字列 → depth
 pub fn parse_project_flow_depth(flow_dept: &str) -> Option<FlowDepth> {
-    match flow_dept.trim() {
+    match correct_flow_dept(flow_dept).as_str() {
         "エンド直" => Some(0),
         "1次請け" => Some(1),
         "2次請け" => Some(2),
@@ -17,7 +103,7 @@ pub fn parse_project_flow_depth(flow_dept: &str) -> Option<FlowDepth> {
 
 /// 人材側: 商流位置 → depth（1社先=1次の位置）
 pub fn parse_talent_flow_depth(flow_depth: &str) -> Option<FlowDepth> {
-    match flow_depth.trim() {
+    match correct_talent_flow_depth(flow_depth).as_str() {
         "SPONTO直人材" => Some(0),
         "1社先" => Some(1),
         "2社先" => Some(2),
@@ -31,9 +117,9 @@ pub fn parse_talent_flow_depth(flow_depth: &str) -> Option<FlowDepth> {
 /// #4修正: 2025-12-18 存在しない「SPONTO二社先まで」を削除
 pub fn parse_flow_limit(jinzai_flow_limit: &str) -> Option<FlowDepth> {
     match jinzai_flow_limit.trim() {
-        "SPONTO直人材" => Some(0),         // 直人材のみ
-        "SPONTO一社先まで" => Some(1),      // 1次まで
-        "商流制限なし" => Some(u8::MAX),    // 制限なし
+        "SPONTO直人材" => Some(0),       // 直人材のみ
+        "SPONTO一社先まで" => Some(1),   // 1次まで
+        "商流制限なし" => Some(u8::MAX), // 制限なし
         _ => None,
     }
 }
@@ -64,5 +150,12 @@ mod tests {
         assert_eq!(parse_talent_flow_depth("1社先"), Some(1));
         let decision = check_flow_ko(Some(2), Some(1));
         assert!(decision.is_hard_ko());
+    }
+
+    #[test]
+    fn corrects_flow_enums() {
+        assert_eq!(correct_flow_dept("元請案件"), "1次請け");
+        assert_eq!(correct_talent_flow_depth("３社先"), "3社先以上");
+        assert_eq!(correct_jinzai_flow_limit("制限なし"), "商流制限なし");
     }
 }

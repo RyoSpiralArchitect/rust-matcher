@@ -51,7 +51,12 @@ pub struct ExtractionJob {
 }
 
 impl ExtractionJob {
-    pub fn new(message_id: &str, email_subject: &str, email_received_at: DateTime<Utc>, subject_hash: &str) -> Self {
+    pub fn new(
+        message_id: &str,
+        email_subject: &str,
+        email_received_at: DateTime<Utc>,
+        subject_hash: &str,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: 0,
@@ -84,8 +89,14 @@ impl ExtractionJob {
 }
 
 pub enum JobError {
-    Retryable { message: String, retry_after: Option<Duration> },
-    Permanent { message: String, manual_review_reason: Option<String> },
+    Retryable {
+        message: String,
+        retry_after: Option<Duration>,
+    },
+    Permanent {
+        message: String,
+        manual_review_reason: Option<String>,
+    },
 }
 
 pub struct JobOutcome {
@@ -124,10 +135,7 @@ impl ExtractionQueue {
             .enumerate()
             .filter(|(_, job)| {
                 job.status == QueueStatus::Pending
-                    && job
-                        .next_retry_at
-                        .map(|ts| ts <= now)
-                        .unwrap_or(true)
+                    && job.next_retry_at.map(|ts| ts <= now).unwrap_or(true)
             })
             .max_by_key(|(_, job)| job.priority)
             .map(|(idx, _)| idx)
@@ -190,12 +198,7 @@ mod tests {
     use super::*;
 
     fn sample_job() -> ExtractionJob {
-        ExtractionJob::new(
-            "msg-1",
-            "subject",
-            Utc::now(),
-            "deadbeef",
-        )
+        ExtractionJob::new("msg-1", "subject", Utc::now(), "deadbeef")
     }
 
     #[test]

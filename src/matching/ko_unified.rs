@@ -170,12 +170,18 @@ mod tests {
     #[test]
     fn match_result_converts_soft_and_hard_ko() {
         let ko = vec![
-            ("location", KoDecision::SoftKo {
-                reason: "遠方".into(),
-            }),
-            ("flow", KoDecision::HardKo {
-                reason: "制限超過".into(),
-            }),
+            (
+                "location",
+                KoDecision::SoftKo {
+                    reason: "遠方".into(),
+                },
+            ),
+            (
+                "flow",
+                KoDecision::HardKo {
+                    reason: "制限超過".into(),
+                },
+            ),
         ];
 
         let result = MatchResult::from_ko_checks(

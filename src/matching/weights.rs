@@ -4,8 +4,8 @@
 pub const PREFILTER_WEIGHTS: Weights = Weights {
     tanka: 0.25,
     location: 0.15,
-    skills: 0.45,       // 詳細より +0.05（スキル重視）
-    experience: 0.10,   // 詳細より -0.05
+    skills: 0.45,     // 詳細より +0.05（スキル重視）
+    experience: 0.10, // 詳細より -0.05
     contract: 0.05,
 };
 

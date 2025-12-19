@@ -1,5 +1,5 @@
-pub mod matching;
 pub mod corrections;
+pub mod matching;
 pub mod queue;
 pub mod schema;
 
