@@ -16,27 +16,44 @@ pub struct LocationEvaluation {
 
 /// 正規化済みの Project/Talent を返す（勤務地/エリア/リモート形態のみ）
 pub fn normalize_for_matching(project: &Project, talent: &Talent) -> (Project, Talent) {
-    let normalized_project = Project {
-        work_todofuken: project
+    let normalized_project = {
+        let work_todofuken = project
             .work_todofuken
             .as_deref()
-            .and_then(correct_todofuken),
-        work_area: project.work_area.as_deref().and_then(correct_work_area),
-        remote_onsite: project.remote_onsite.as_deref().map(|v| {
-            let normalized = normalize_remote_onsite(v);
-            correct_remote_onsite(&normalized).unwrap_or(normalized)
-        }),
+            .and_then(correct_todofuken);
+        let work_area = project
+            .work_area
+            .as_deref()
+            .and_then(correct_work_area)
+            .or_else(|| work_todofuken.as_deref().and_then(correct_work_area));
+
+        let normalized_remote = normalize_remote_onsite(project.remote_onsite.as_deref().unwrap_or(""));
+        let remote_onsite = Some(
+            correct_remote_onsite(&normalized_remote).unwrap_or(normalized_remote),
+        );
+
+        Project {
+            work_todofuken,
+            work_area,
+            remote_onsite,
+        }
     };
 
-    let normalized_talent = Talent {
-        residential_todofuken: talent
+    let normalized_talent = {
+        let residential_todofuken = talent
             .residential_todofuken
             .as_deref()
-            .and_then(correct_todofuken),
-        residential_area: talent
+            .and_then(correct_todofuken);
+        let residential_area = talent
             .residential_area
             .as_deref()
-            .and_then(correct_work_area),
+            .and_then(correct_work_area)
+            .or_else(|| residential_todofuken.as_deref().and_then(correct_work_area));
+
+        Talent {
+            residential_todofuken,
+            residential_area,
+        }
     };
 
     (normalized_project, normalized_talent)
@@ -261,5 +278,27 @@ mod tests {
         );
         assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
         assert!(result.score < 0.5);
+    }
+
+    #[test]
+    fn derives_area_from_prefecture_when_missing() {
+        let result = evaluate_location(
+            &project(Some("東京都"), None, None),
+            &talent(None, Some("関東")),
+        );
+
+        assert!(matches!(result.ko_decision, KoDecision::Pass));
+        assert!(result.score > 0.7);
+    }
+
+    #[test]
+    fn defaults_remote_to_hybrid_when_absent() {
+        let result = evaluate_location(
+            &project(Some("東京都"), None, None),
+            &talent(Some("神奈川県"), None),
+        );
+
+        assert!(matches!(result.ko_decision, KoDecision::Pass));
+        assert!(result.details.contains("リモート併用"));
     }
 }
