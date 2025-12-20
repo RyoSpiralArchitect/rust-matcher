@@ -7,3 +7,5 @@ pub mod remote_onsite;
 pub mod station;
 pub mod tech_kubun;
 pub mod todofuken;
+
+pub use contract_type::{correct_contract_type, correct_gender, correct_talent_contract_type};

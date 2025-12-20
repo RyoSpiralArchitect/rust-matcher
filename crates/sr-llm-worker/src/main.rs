@@ -236,8 +236,8 @@ mod tests {
         assert!(
             job.decision_reason
                 .as_ref()
-            .map(|r| r.contains("sr-llm-worker"))
-            .unwrap_or(false)
+                .map(|r| r.contains("sr-llm-worker"))
+                .unwrap_or(false)
         );
     }
 
