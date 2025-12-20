@@ -423,33 +423,25 @@ impl BusinessRulesEngine {
     fn score_contract(&self, project: &Project, talent: &Talent) -> ScoringResult {
         let is_kojin_ok = project.is_kojin_ok.unwrap_or(true);
 
-        let project_contract = project
-            .contract_type
-            .as_deref()
-            .map(|c| {
-                let trimmed = c.trim();
-                let corrected = correct_contract_type(trimmed);
+        let normalize_contract = |value: Option<&str>| {
+            value
+                .map(|c| {
+                    let trimmed = c.trim();
+                    let corrected = correct_contract_type(trimmed);
 
-                if corrected == "準委任契約" && trimmed != corrected && !trimmed.contains("派遣")
-                {
-                    trimmed.to_string()
-                } else {
-                    corrected
-                }
-            })
-            .filter(|c| !c.is_empty());
-        let primary = talent
-            .primary_contract_type
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(|c| c.to_string());
-        let secondary = talent
-            .secondary_contract_type
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(|c| c.to_string());
+                    if corrected == "準委任契約" && trimmed != corrected && !trimmed.contains("派遣")
+                    {
+                        trimmed.to_string()
+                    } else {
+                        corrected
+                    }
+                })
+                .filter(|c| !c.is_empty())
+        };
+
+        let project_contract = normalize_contract(project.contract_type.as_deref());
+        let primary = normalize_contract(talent.primary_contract_type.as_deref());
+        let secondary = normalize_contract(talent.secondary_contract_type.as_deref());
 
         match (
             project_contract.as_deref(),
@@ -715,6 +707,20 @@ mod tests {
 
         let mut talent = full_talent();
         talent.primary_contract_type = Some(" 派遣 ".into());
+
+        let contract = engine.score_contract(&project, &talent);
+        assert_eq!(contract.status, "PERFECT_MATCH");
+        assert_eq!(contract.score, 1.0);
+    }
+
+    #[test]
+    fn normalizes_talent_contract_variants_for_scoring() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.contract_type = Some("派遣".into());
+
+        let mut talent = full_talent();
+        talent.primary_contract_type = Some("派遣契約".into());
 
         let contract = engine.score_contract(&project, &talent);
         assert_eq!(contract.status, "PERFECT_MATCH");
