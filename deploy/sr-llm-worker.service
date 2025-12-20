@@ -1,0 +1,13 @@
+[Unit]
+Description=sr-llm-worker - process LLM recommended extraction jobs
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/sr-matcher.env
+WorkingDirectory=/opt/rust-matcher
+ExecStart=/usr/bin/sr-llm-worker --db-url ${DATABASE_URL} --worker-id sr-llm-worker
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

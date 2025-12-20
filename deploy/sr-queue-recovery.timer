@@ -1,0 +1,10 @@
+[Unit]
+Description=Run sr-queue-recovery every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=sr-queue-recovery.service
+
+[Install]
+WantedBy=timers.target
