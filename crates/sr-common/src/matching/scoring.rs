@@ -15,6 +15,30 @@ pub struct TotalScoreWeights {
     pub historical: f64,
 }
 
+impl TotalScoreWeights {
+    /// 正規化された重みを返す（負の重みは0に丸め、合計0の場合は business=1.0 にフォールバック）
+    pub fn normalized(&self) -> Self {
+        let business = self.business.max(0.0);
+        let semantic = self.semantic.max(0.0);
+        let historical = self.historical.max(0.0);
+        let sum = business + semantic + historical;
+
+        if sum <= f64::EPSILON {
+            return Self {
+                business: 1.0,
+                semantic: 0.0,
+                historical: 0.0,
+            };
+        }
+
+        Self {
+            business: business / sum,
+            semantic: semantic / sum,
+            historical: historical / sum,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MatchingConfig {
     pub weights: Weights,
@@ -144,11 +168,14 @@ impl BusinessRulesEngine {
     }
 
     fn compute_total_score(&self, business_rules_score: f64) -> f64 {
-        let w = self.config.total_score_weights;
+        let w = self.config.total_score_weights.normalized();
         let semantic = self.config.semantic_score.unwrap_or(0.0);
         let historical = self.config.historical_score.unwrap_or(0.0);
 
-        business_rules_score * w.business + semantic * w.semantic + historical * w.historical
+        let total =
+            business_rules_score * w.business + semantic * w.semantic + historical * w.historical;
+
+        total.clamp(0.0, 1.0)
     }
 
     fn score_tanka(&self, project: &Project, talent: &Talent) -> ScoringResult {
@@ -730,5 +757,89 @@ mod tests {
         assert_eq!(score.semantic_score, Some(0.5));
         assert_eq!(score.historical_score, Some(0.2));
         assert_eq!(score.score_version, "v2-semantic");
+    }
+
+    #[test]
+    fn total_score_weights_are_normalized_when_sum_exceeds_one() {
+        let mut config = MatchingConfig::default();
+        config.total_score_weights = TotalScoreWeights {
+            business: 1.0,
+            semantic: 1.0,
+            historical: 1.0,
+        };
+        config.semantic_score = Some(0.8);
+        config.historical_score = Some(0.9);
+        let normalized = config.total_score_weights.normalized();
+
+        let engine = BusinessRulesEngine::new(config);
+        let score = engine.calculate_match_score(&full_project(), &full_talent());
+        let expected = score.business_rules_score * normalized.business
+            + 0.8 * normalized.semantic
+            + 0.9 * normalized.historical;
+
+        assert!((score.total - expected).abs() < 1e-6);
+        assert!(score.total <= 1.0);
+    }
+
+    #[test]
+    fn total_score_weights_fallback_to_business_when_zeroed() {
+        let mut config = MatchingConfig::default();
+        config.total_score_weights = TotalScoreWeights {
+            business: 0.0,
+            semantic: 0.0,
+            historical: 0.0,
+        };
+        config.semantic_score = Some(1.0);
+        config.historical_score = Some(1.0);
+
+        let engine = BusinessRulesEngine::new(config);
+        let score = engine.calculate_match_score(&full_project(), &full_talent());
+
+        assert_eq!(score.total, score.business_rules_score);
+    }
+
+    #[test]
+    fn negative_weights_are_zeroed_before_normalization() {
+        let mut config = MatchingConfig::default();
+        config.total_score_weights = TotalScoreWeights {
+            business: 0.6,
+            semantic: -0.2,
+            historical: 0.6,
+        };
+        config.semantic_score = Some(1.0);
+        config.historical_score = Some(0.4);
+
+        let normalized = config.total_score_weights.normalized();
+        assert!((normalized.semantic - 0.0).abs() < 1e-6);
+        assert!((normalized.business - 0.5).abs() < 1e-6);
+        assert!((normalized.historical - 0.5).abs() < 1e-6);
+
+        let engine = BusinessRulesEngine::new(config);
+        let score = engine.calculate_match_score(&full_project(), &full_talent());
+        let expected = score.business_rules_score * 0.5 + 0.4 * 0.5;
+
+        assert!((score.total - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn all_negative_weights_fallback_to_business() {
+        let mut config = MatchingConfig::default();
+        config.total_score_weights = TotalScoreWeights {
+            business: -1.0,
+            semantic: -2.0,
+            historical: -3.0,
+        };
+        config.semantic_score = Some(1.0);
+        config.historical_score = Some(1.0);
+
+        let normalized = config.total_score_weights.normalized();
+        assert_eq!(normalized.business, 1.0);
+        assert_eq!(normalized.semantic, 0.0);
+        assert_eq!(normalized.historical, 0.0);
+
+        let engine = BusinessRulesEngine::new(config);
+        let score = engine.calculate_match_score(&full_project(), &full_talent());
+
+        assert_eq!(score.total, score.business_rules_score);
     }
 }
