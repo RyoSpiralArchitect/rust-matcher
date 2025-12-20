@@ -10,6 +10,8 @@ use crate::{
     },
     Project, Talent,
 };
+use chrono::Datelike;
+use std::collections::HashSet;
 
 /// 全KO判定をまとめて実行する
 pub fn run_all_ko_checks(project: &Project, talent: &Talent) -> KnockoutResultV2 {
@@ -22,6 +24,11 @@ pub fn run_all_ko_checks(project: &Project, talent: &Talent) -> KnockoutResultV2
         ("location", check_location_ko(project, talent)),
         ("language", check_language_ko(project, talent)),
         ("contract", check_contract_type_ko(project, talent)),
+        (
+            "ng_keyword",
+            check_ng_keyword_ko(talent.ng_keywords.as_deref(), project.project_keywords.as_deref()),
+        ),
+        ("age", check_age_ko(project, talent)),
     ];
 
     KnockoutResultV2::new(decisions)
@@ -123,6 +130,75 @@ fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
     }
 }
 
+/// NGキーワードKO判定
+/// - 重複あり: HardKo
+/// - どちらかNone: SoftKo
+/// - 重複なし: Pass
+fn check_ng_keyword_ko(
+    talent_ng_keywords: Option<&[String]>,
+    project_keywords: Option<&[String]>,
+) -> KoDecision {
+    match (talent_ng_keywords, project_keywords) {
+        (Some(ng), Some(project)) => {
+            let ng_set: HashSet<_> = ng.iter().collect();
+            let project_set: HashSet<_> = project.iter().collect();
+            let overlap: Vec<_> = ng_set.intersection(&project_set).collect();
+
+            if overlap.is_empty() {
+                KoDecision::Pass
+            } else {
+                KoDecision::HardKo {
+                    reason: format!(
+                        "ng_keyword_overlap: {:?} が重複",
+                        overlap.iter().take(3).collect::<Vec<_>>()
+                    ),
+                }
+            }
+        }
+        _ => KoDecision::SoftKo {
+            reason: "ng_keyword_unknown: キーワード情報不足のため要確認".into(),
+        },
+    }
+}
+
+/// 年齢KO判定: 下限/上限を満たさない場合は HardKo。情報不足は SoftKo。
+fn check_age_ko(project: &Project, talent: &Talent) -> KoDecision {
+    let birth_year = match talent.birth_year {
+        Some(year) => year,
+        None => {
+            return KoDecision::SoftKo {
+                reason: "age_unknown: 生年情報不足".into(),
+            }
+        }
+    };
+
+    let limits = (project.age_limit_lower, project.age_limit_upper);
+    if limits == (None, None) {
+        return KoDecision::Pass;
+    }
+
+    let current_year = chrono::Utc::now().year();
+    let age = current_year - birth_year;
+
+    if let Some(lower) = project.age_limit_lower {
+        if age < lower {
+            return KoDecision::HardKo {
+                reason: format!("age_below_limit: {} < {}", age, lower),
+            };
+        }
+    }
+
+    if let Some(upper) = project.age_limit_upper {
+        if age > upper {
+            return KoDecision::HardKo {
+                reason: format!("age_above_limit: {} > {}", age, upper),
+            };
+        }
+    }
+
+    KoDecision::Pass
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +212,7 @@ mod tests {
             remote_onsite: Some("リモート併用".into()),
             japanese_skill: Some("N2".into()),
             english_skill: Some("ビジネス".into()),
+            project_keywords: Some(vec!["Rust".into()]),
             ..Project::default()
         }
     }
@@ -148,6 +225,8 @@ mod tests {
             residential_area: Some("関東".into()),
             japanese_skill: Some("N1".into()),
             english_skill: Some("ネイティブ".into()),
+            ng_keywords: Some(vec!["金融".into()]),
+            birth_year: Some(chrono::Utc::now().year() - 30),
             ..Talent::default()
         }
     }
@@ -160,7 +239,7 @@ mod tests {
         let result = run_all_ko_checks(&project, &talent);
         assert!(!result.is_hard_knockout);
         assert!(!result.needs_manual_review);
-        assert_eq!(result.decisions.len(), 5);
+        assert_eq!(result.decisions.len(), 7);
     }
 
     #[test]
@@ -199,5 +278,35 @@ mod tests {
             .decisions
             .iter()
             .any(|(_, d)| matches!(d, KoDecision::SoftKo { reason } if reason.contains("contract_unknown"))));
+    }
+
+    #[test]
+    fn detects_ng_keyword_overlap_and_unknowns() {
+        let hard = check_ng_keyword_ko(
+            Some(&["保険".into(), "金融".into()]),
+            Some(&["Java".into(), "金融".into()]),
+        );
+        assert!(matches!(hard, KoDecision::HardKo { .. }));
+
+        let soft = check_ng_keyword_ko(None, Some(&["Java".into()]));
+        assert!(matches!(soft, KoDecision::SoftKo { .. }));
+    }
+
+    #[test]
+    fn checks_age_limits_when_available() {
+        let mut project = base_project();
+        project.age_limit_lower = Some(25);
+        project.age_limit_upper = Some(35);
+
+        let mut talent = base_talent();
+        let current_year = chrono::Utc::now().year();
+        talent.birth_year = Some(current_year - 40);
+
+        let result = check_age_ko(&project, &talent);
+        assert!(matches!(result, KoDecision::HardKo { reason } if reason.contains(">")));
+
+        talent.birth_year = Some(current_year - 30);
+        let result = check_age_ko(&project, &talent);
+        assert!(matches!(result, KoDecision::Pass));
     }
 }

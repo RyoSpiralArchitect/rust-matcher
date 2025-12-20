@@ -3,9 +3,9 @@
 rust-matcher は、案件とタレントの情報を正規化し、KO 判定とスコアリングを一元化するマッチングエンジンです。Phase1 までで実装された
 範囲を中心に、現在の構成と使い方をまとめています。
 
-## 現在の達成状況 (Phase1)
+## 現在の達成状況 (Phase1 → Phase2 着手)
 - **正規化レイヤ**: 都道府県/エリア/リモート設定、駅名、スキル、フロー深度・制限など、主要フィールドの補正を実装。
-- **KO 判定とスコアリング**: `KoDecision` を単一ソースに、ロケーションやスキル一致度を考慮した KO/スコア算出を実装。
+- **KO 判定とスコアリング**: `KoDecision` を単一ソースに、ロケーションやスキル一致度を考慮した KO/スコア算出を実装。Phase2 では `BusinessRulesEngine` で詳細/Prefilter スコア（単価/勤務地/スキル/経験/契約）を加重合成し、NG キーワードや年齢制限も KO 判定に加味。
 - **キュー処理**: `extraction_queue` ワーカーが pending → processing → completed を決定的順序で巡回し、リトライや manual review
   の判定を行う仕組みを実装。
 - **価格計算**: 単価関連のパラメータとタレント/案件別の計算ユーティリティを追加。
@@ -28,6 +28,7 @@ rust-matcher は、案件とタレントの情報を正規化し、KO 判定と�
   マッチング評価
   - evaluate_location (KoDecision + score)
   - skill matching helper
+  - business rules scoring (tanka/location/skills/experience/contract)
           |
           v
   集計 / 判定

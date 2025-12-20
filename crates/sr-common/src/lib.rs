@@ -16,10 +16,15 @@ pub struct Project {
     pub remote_onsite: Option<String>,
     pub monthly_tanka_max: Option<u32>,
     pub required_skills_keywords: Vec<String>,
+    pub min_experience_years: Option<i32>,
     pub japanese_skill: Option<String>,
     pub english_skill: Option<String>,
     pub contract_type: Option<String>,
     pub tech_kubun: Option<String>,
+    pub project_keywords: Option<Vec<String>>,
+    pub age_limit_lower: Option<i32>,
+    pub age_limit_upper: Option<i32>,
+    pub foreigner_allowed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -28,9 +33,13 @@ pub struct Talent {
     pub residential_area: Option<String>,
     pub desired_price_min: Option<u32>,
     pub possessed_skills_keywords: Vec<String>,
+    pub min_experience_years: Option<i32>,
     pub japanese_skill: Option<String>,
     pub english_skill: Option<String>,
     pub primary_contract_type: Option<String>,
     pub secondary_contract_type: Option<String>,
     pub flow_depth: Option<String>,
+    pub ng_keywords: Option<Vec<String>>,
+    pub birth_year: Option<i32>,
+    pub nationality: Option<String>,
 }

@@ -1,0 +1,498 @@
+use super::{location::evaluate_location, skills::check_required_skills, weights::Weights};
+use crate::{Project, Talent};
+
+use super::weights::{DETAILED_WEIGHTS, PREFILTER_WEIGHTS};
+
+#[derive(Debug, Clone)]
+pub struct MatchingConfig {
+    pub weights: Weights,
+    pub tanka_profit_minimum: f64,
+    pub tanka_profit_optimal: f64,
+    pub skill_match_minimum: f64,
+    pub experience_buffer_years: f64,
+}
+
+impl Default for MatchingConfig {
+    fn default() -> Self {
+        Self {
+            weights: DETAILED_WEIGHTS,
+            tanka_profit_minimum: 5.0,
+            tanka_profit_optimal: 0.25,
+            skill_match_minimum: env_skill_threshold(),
+            experience_buffer_years: 0.5,
+        }
+    }
+}
+
+impl MatchingConfig {
+    pub fn detailed() -> Self {
+        Self::default()
+    }
+
+    pub fn prefilter() -> Self {
+        Self {
+            weights: PREFILTER_WEIGHTS,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ScoringResult {
+    pub score: f64,
+    pub max_score: f64,
+    pub status: &'static str,
+    pub details: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchScore {
+    pub total: f64,
+    pub tanka: ScoringResult,
+    pub location: ScoringResult,
+    pub skills: ScoringResult,
+    pub experience: ScoringResult,
+    pub contract: ScoringResult,
+}
+
+/// Prefilter 用のスコア計算（粗選別）
+pub fn calculate_prefilter_score(project: &Project, talent: &Talent) -> MatchScore {
+    let engine = BusinessRulesEngine::new(MatchingConfig::prefilter());
+    engine.calculate_match_score(project, talent)
+}
+
+/// 詳細スコア計算（ランキング用）
+pub fn calculate_detailed_score(project: &Project, talent: &Talent) -> MatchScore {
+    let engine = BusinessRulesEngine::new(MatchingConfig::detailed());
+    engine.calculate_match_score(project, talent)
+}
+
+pub struct BusinessRulesEngine {
+    config: MatchingConfig,
+}
+
+impl BusinessRulesEngine {
+    pub fn new(config: MatchingConfig) -> Self {
+        Self { config }
+    }
+
+    /// 総合スコア計算（Phase2 詳細スコアリング）
+    pub fn calculate_match_score(&self, project: &Project, talent: &Talent) -> MatchScore {
+        let tanka = self.score_tanka(project, talent);
+        let location = self.score_location(project, talent);
+        let skills = self.score_skills(project, talent);
+        let experience = self.score_experience(project, talent);
+        let contract = self.score_contract(project, talent);
+
+        let weights = self.config.weights;
+        let total = tanka.score * weights.tanka
+            + location.score * weights.location
+            + skills.score * weights.skills
+            + experience.score * weights.experience
+            + contract.score * weights.contract;
+
+        MatchScore {
+            total,
+            tanka,
+            location,
+            skills,
+            experience,
+            contract,
+        }
+    }
+
+    fn score_tanka(&self, project: &Project, talent: &Talent) -> ScoringResult {
+        let talent_tanka = match talent.desired_price_min {
+            Some(t) => t as f64,
+            None => {
+                return ScoringResult {
+                    score: 0.5,
+                    max_score: 1.0,
+                    status: "UNKNOWN",
+                    details: "人材希望単価が不明のため中立スコア".into(),
+                };
+            }
+        };
+
+        let project_tanka = match project.monthly_tanka_max {
+            Some(t) => t as f64,
+            None => {
+                return ScoringResult {
+                    score: 0.5,
+                    max_score: 1.0,
+                    status: "UNKNOWN",
+                    details: "案件上限単価が不明のため中立スコア".into(),
+                };
+            }
+        };
+
+        let profit = project_tanka - talent_tanka;
+        let min_profit = self.config.tanka_profit_minimum;
+        let optimal_profit = project_tanka * self.config.tanka_profit_optimal;
+
+        if profit < min_profit {
+            return ScoringResult {
+                score: 0.0,
+                max_score: 1.0,
+                status: "MISS",
+                details: format!("利益不足: {:.1}万 < {:.1}万", profit, min_profit),
+            };
+        }
+
+        let (score, status, details) = if profit >= optimal_profit {
+            (
+                1.0,
+                "PERFECT_MATCH",
+                format!("十分な利益: {:.1}万 ≥ {:.1}万", profit, optimal_profit),
+            )
+        } else if profit >= min_profit * 3.0 {
+            (
+                0.9,
+                "MATCH",
+                format!("良好な利益: {:.1}万 ≥ {:.1}万", profit, min_profit * 3.0),
+            )
+        } else if profit >= min_profit * 2.0 {
+            (
+                0.7,
+                "MATCH",
+                format!("許容利益: {:.1}万 ≥ {:.1}万", profit, min_profit * 2.0),
+            )
+        } else {
+            (
+                0.4,
+                "PARTIAL_MATCH",
+                format!("最低限利益: {:.1}万 ≥ {:.1}万", profit, min_profit),
+            )
+        };
+
+        ScoringResult {
+            score,
+            max_score: 1.0,
+            status,
+            details,
+        }
+    }
+
+    fn score_location(&self, project: &Project, talent: &Talent) -> ScoringResult {
+        let evaluation = evaluate_location(project, talent);
+        let unknown = matches!(
+            evaluation.ko_decision,
+            crate::matching::ko_unified::KoDecision::SoftKo { reason }
+                if reason.contains("location_unknown")
+        );
+
+        let status = status_from_score(evaluation.score, unknown);
+
+        ScoringResult {
+            score: evaluation.score,
+            max_score: 1.0,
+            status,
+            details: evaluation.details,
+        }
+    }
+
+    fn score_skills(&self, project: &Project, talent: &Talent) -> ScoringResult {
+        let result = check_required_skills(
+            &project.required_skills_keywords,
+            &talent.possessed_skills_keywords,
+        );
+
+        if result.requires_manual_review {
+            return ScoringResult {
+                score: 0.5,
+                max_score: 1.0,
+                status: "UNKNOWN",
+                details: "必須スキル要件が未設定のため中立スコア".into(),
+            };
+        }
+
+        if result.is_knockout {
+            return ScoringResult {
+                score: 0.0,
+                max_score: 1.0,
+                status: "MISS",
+                details: result.reason,
+            };
+        }
+
+        let score = result.match_percentage;
+        let status = if score >= 0.9 {
+            "PERFECT_MATCH"
+        } else if score >= self.config.skill_match_minimum.max(0.6) {
+            "MATCH"
+        } else if score >= self.config.skill_match_minimum {
+            "PARTIAL_MATCH"
+        } else {
+            "MISS"
+        };
+
+        ScoringResult {
+            score,
+            max_score: 1.0,
+            status,
+            details: result.reason,
+        }
+    }
+
+    fn score_experience(&self, project: &Project, talent: &Talent) -> ScoringResult {
+        let required = match project.min_experience_years {
+            Some(v) => v as f64,
+            None => {
+                return ScoringResult {
+                    score: 1.0,
+                    max_score: 1.0,
+                    status: "PERFECT_MATCH",
+                    details: "案件に経験年数要件なし".into(),
+                };
+            }
+        };
+
+        let actual = match talent.min_experience_years {
+            Some(v) => v as f64,
+            None => {
+                return ScoringResult {
+                    score: 0.5,
+                    max_score: 1.0,
+                    status: "UNKNOWN",
+                    details: "人材の経験年数が不明のため中立スコア".into(),
+                };
+            }
+        };
+
+        let buffer = self.config.experience_buffer_years;
+        let (score, status, details) = if actual >= required + buffer * 4.0 {
+            (
+                1.0,
+                "PERFECT_MATCH",
+                format!(
+                    "経験大幅超過: {:.1}年 ≥ {:.1}年",
+                    actual,
+                    required + buffer * 4.0
+                ),
+            )
+        } else if actual >= required + buffer * 2.0 {
+            (
+                0.9,
+                "MATCH",
+                format!(
+                    "経験十分: {:.1}年 ≥ {:.1}年",
+                    actual,
+                    required + buffer * 2.0
+                ),
+            )
+        } else if actual >= required + buffer {
+            (
+                0.8,
+                "MATCH",
+                format!("経験超過: {:.1}年 ≥ {:.1}年", actual, required + buffer),
+            )
+        } else if actual >= required {
+            (
+                0.7,
+                "MATCH",
+                format!("要件達成: {:.1}年 ≥ {:.1}年", actual, required),
+            )
+        } else if actual + buffer >= required {
+            (
+                0.4,
+                "PARTIAL_MATCH",
+                format!("要件近接: {:.1}年 ≈ {:.1}年", actual, required),
+            )
+        } else {
+            (
+                0.0,
+                "MISS",
+                format!("経験不足: {:.1}年 < {:.1}年", actual, required),
+            )
+        };
+
+        ScoringResult {
+            score,
+            max_score: 1.0,
+            status,
+            details,
+        }
+    }
+
+    fn score_contract(&self, project: &Project, talent: &Talent) -> ScoringResult {
+        match (
+            project.contract_type.as_deref(),
+            talent.primary_contract_type.as_deref(),
+            talent.secondary_contract_type.as_deref(),
+        ) {
+            (None, _, _) => ScoringResult {
+                score: 1.0,
+                max_score: 1.0,
+                status: "PERFECT_MATCH",
+                details: "案件側に契約形態の制約なし".into(),
+            },
+            (Some(req), Some(primary), _secondary) if req == primary => ScoringResult {
+                score: 1.0,
+                max_score: 1.0,
+                status: "PERFECT_MATCH",
+                details: format!("契約形態一致: {}", primary),
+            },
+            (Some(req), Some(primary), Some(secondary)) if req == secondary => ScoringResult {
+                score: 0.7,
+                max_score: 1.0,
+                status: "PARTIAL_MATCH",
+                details: format!(
+                    "副次契約形態で合致: primary={}, secondary={}",
+                    primary, secondary
+                ),
+            },
+            (Some(req), None, _) => ScoringResult {
+                score: 0.5,
+                max_score: 1.0,
+                status: "UNKNOWN",
+                details: format!("契約形態不明: 要件={}", req),
+            },
+            (Some(req), Some(primary), _) => ScoringResult {
+                score: 0.0,
+                max_score: 1.0,
+                status: "MISS",
+                details: format!("契約形態不一致: 要件={} vs 人材={}", req, primary),
+            },
+        }
+    }
+}
+
+fn env_skill_threshold() -> f64 {
+    std::env::var("SR_SKILL_MATCH_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.3)
+}
+
+fn status_from_score(score: f64, unknown: bool) -> &'static str {
+    if unknown {
+        "UNKNOWN"
+    } else if score >= 0.9 {
+        "PERFECT_MATCH"
+    } else if score >= 0.7 {
+        "MATCH"
+    } else if score >= 0.4 {
+        "PARTIAL_MATCH"
+    } else {
+        "MISS"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn full_project() -> Project {
+        Project {
+            monthly_tanka_max: Some(120),
+            work_todofuken: Some("東京都".into()),
+            work_area: Some("関東".into()),
+            remote_onsite: Some("リモート併用".into()),
+            required_skills_keywords: vec!["Rust".into(), "AWS".into()],
+            min_experience_years: Some(5),
+            contract_type: Some("業務委託".into()),
+            ..Project::default()
+        }
+    }
+
+    fn full_talent() -> Talent {
+        Talent {
+            desired_price_min: Some(80),
+            residential_todofuken: Some("東京都".into()),
+            residential_area: Some("関東".into()),
+            possessed_skills_keywords: vec!["rust".into(), "aws".into()],
+            min_experience_years: Some(6),
+            primary_contract_type: Some("業務委託".into()),
+            ..Talent::default()
+        }
+    }
+
+    #[test]
+    fn calculates_weighted_scores() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let score = engine.calculate_match_score(&full_project(), &full_talent());
+
+        assert!(score.total > 0.9);
+        assert_eq!(score.skills.status, "PERFECT_MATCH");
+        assert_eq!(score.experience.status, "MATCH");
+    }
+
+    #[test]
+    fn handles_unknown_fields_neutrally() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.monthly_tanka_max = None;
+        let mut talent = full_talent();
+        talent.desired_price_min = None;
+
+        let score = engine.calculate_match_score(&project, &talent);
+        assert_eq!(score.tanka.status, "UNKNOWN");
+        assert_eq!(score.tanka.score, 0.5);
+    }
+
+    #[test]
+    fn applies_profit_based_tanka_scoring() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.monthly_tanka_max = Some(85);
+        let mut talent = full_talent();
+        talent.desired_price_min = Some(82);
+
+        let tanka = engine.score_tanka(&project, &talent);
+        assert_eq!(tanka.status, "MISS");
+        assert_eq!(tanka.score, 0.0);
+    }
+
+    #[test]
+    fn unknown_experience_scores_neutrally() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut talent = full_talent();
+        talent.min_experience_years = None;
+
+        let exp = engine.score_experience(&full_project(), &talent);
+        assert_eq!(exp.status, "UNKNOWN");
+        assert_eq!(exp.score, 0.5);
+    }
+
+    #[test]
+    fn prefilter_weights_downplay_experience_penalty() {
+        let mut project = full_project();
+        project.min_experience_years = Some(10);
+        project.contract_type = Some("業務委託".into());
+
+        let mut talent = full_talent();
+        talent.min_experience_years = Some(1);
+        talent.primary_contract_type = Some("業務委託".into());
+
+        let pre = calculate_prefilter_score(&project, &talent);
+        let detailed = calculate_detailed_score(&project, &talent);
+
+        assert!(pre.total > detailed.total);
+        assert!(pre.experience.score < 0.5);
+    }
+
+    #[test]
+    fn uses_location_evaluation_score() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut talent = full_talent();
+        talent.residential_todofuken = Some("大阪府".into());
+        talent.residential_area = Some("関西".into());
+
+        let score = engine.calculate_match_score(&full_project(), &talent);
+        assert!(score.location.score < 0.6);
+        assert!(score.location.details.contains("remote_onsite"));
+    }
+
+    #[test]
+    fn experience_buffer_allows_partial_credit() {
+        let mut config = MatchingConfig::default();
+        config.experience_buffer_years = 1.0;
+        let engine = BusinessRulesEngine::new(config);
+        let mut talent = full_talent();
+        talent.min_experience_years = Some(4);
+
+        let exp = engine.score_experience(&full_project(), &talent);
+        assert_eq!(exp.status, "PARTIAL_MATCH");
+        assert!(exp.score <= 0.4);
+    }
+}
