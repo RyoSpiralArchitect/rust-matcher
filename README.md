@@ -5,7 +5,11 @@ rust-matcher は、案件とタレントの情報を正規化し、KO 判定と�
 
 ## 現在の達成状況 (Phase1 → Phase2 着手)
 - **正規化レイヤ**: 都道府県/エリア/リモート設定、駅名、スキル、フロー深度・制限など、主要フィールドの補正を実装。
-- **KO 判定とスコアリング**: `KoDecision` を単一ソースに、ロケーションやスキル一致度を考慮した KO/スコア算出を実装。Phase2 では `BusinessRulesEngine` で詳細/Prefilter スコア（単価/勤務地/スキル/経験/契約）を加重合成し、NG キーワードや年齢制限も KO 判定に加味。`business_rules_score` をベースに `total_score = business × semantic × historical` の重み付き合成を用意し、MVP では business=1.0 で semantic/historical を 0.0 に固定しています。設定ミスでもスコアが暴れないよう、total_score_weights は内部で正規化し、負の重みは0に丸めた上で 0〜1 にクランプされます。
+- **KO 判定とスコアリング**: `KoDecision` を単一ソースに、ロケーションやスキル一致度を考慮した KO/スコア算出を実装。Phase2 では 
+- `BusinessRulesEngine` で詳細/Prefilter スコア（単価/勤務地/スキル/経験/契約）を加重合成し、NG キーワードや年齢制限も KO 判定に加味。
+- `business_rules_score` をベースに `total_score = business × semantic × historical` の重み付き合成を用意し、
+- MVP では business=1.0 で semantic/historical を 0.0 に固定しています。
+- 設定ミスでもスコアが暴れないよう、total_score_weights は内部で正規化し、負の重みは0に丸めた上で 0〜1 にクランプされます。
 - **事前フィルタ**: HardKo を弾いた上で prefilter 重みを使う `EnhancedPreFilter` を追加し、候補を上位スコア順に絞り込める状態に。
 - **スコアリング連携**: `MatchingEngine` で prefilter → 詳細スコアを一気通貫に計算し、総合スコア順で順位付けできるパイプラインを追加。
 - **キュー処理**: `extraction_queue` ワーカーが pending → processing → completed を決定的順序で巡回し、リトライや manual review
