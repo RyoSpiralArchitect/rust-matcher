@@ -12,6 +12,7 @@ use crate::{
         },
         japanese_skill::is_japanese_ko,
         nationality::is_japanese_nationality,
+        normalize_contract_type_for_matching,
     },
 };
 use chrono::Datelike;
@@ -49,23 +50,41 @@ pub fn run_all_ko_checks(project: &Project, talent: &Talent) -> KnockoutResultV2
 
 /// 単価KO判定（利益<5万円でHardKo、情報不足はSoftKo）
 fn check_tanka_ko(project: &Project, talent: &Talent) -> KoDecision {
-    match (project.monthly_tanka_max, talent.desired_price_min) {
-        (Some(max), Some(min)) => {
-            let profit = max as i32 - min as i32;
-            if profit < 5 {
-                KoDecision::HardKo {
-                    reason: format!(
-                        "tanka_ko: 利益 {}万 < 閾値5万 (案件上限{}万 - 人材下限{}万)",
-                        profit, max, min
-                    ),
-                }
-            } else {
-                KoDecision::Pass
+    let Some(talent_min) = talent.desired_price_min else {
+        return KoDecision::SoftKo {
+            reason: "tanka_unknown: 単価情報不足".into(),
+        };
+    };
+
+    if let Some(max) = project.monthly_tanka_max {
+        let profit = max as i32 - talent_min as i32;
+        if profit < 5 {
+            return KoDecision::HardKo {
+                reason: format!(
+                    "tanka_ko: 利益 {}万 < 閾値5万 (案件上限{}万 - 人材下限{}万)",
+                    profit, max, talent_min
+                ),
+            };
+        }
+
+        return KoDecision::Pass;
+    }
+
+    if let Some(min) = project.monthly_tanka_min {
+        if talent_min <= min {
+            KoDecision::Pass
+        } else {
+            KoDecision::SoftKo {
+                reason: format!(
+                    "tanka_unknown: 案件下限{}万に対し人材下限{}万、上限情報不足のため要確認",
+                    min, talent_min
+                ),
             }
         }
-        _ => KoDecision::SoftKo {
+    } else {
+        KoDecision::SoftKo {
             reason: "tanka_unknown: 単価情報不足".into(),
-        },
+        }
     }
 }
 
@@ -148,10 +167,14 @@ fn check_foreigner_ko(project: &Project, talent: &Talent) -> KoDecision {
 fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
     let is_kojin_ok = project.is_kojin_ok.unwrap_or(true);
 
+    let project_contract = normalize_contract_type_for_matching(project.contract_type.as_deref());
+    let primary = normalize_contract_type_for_matching(talent.primary_contract_type.as_deref());
+    let secondary = normalize_contract_type_for_matching(talent.secondary_contract_type.as_deref());
+
     match (
-        project.contract_type.as_deref(),
-        talent.primary_contract_type.as_deref(),
-        talent.secondary_contract_type.as_deref(),
+        project_contract.as_deref(),
+        primary.as_deref(),
+        secondary.as_deref(),
     ) {
         (None, _, _) => KoDecision::Pass,
         (Some(req), _, Some(secondary)) if req == secondary => KoDecision::Pass,
@@ -161,8 +184,11 @@ fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
         {
             KoDecision::Pass
         }
-        (Some(_), None, _) => KoDecision::SoftKo {
-            reason: "contract_unknown: 人材契約形態が未設定".into(),
+        (Some(req), None, _) => KoDecision::SoftKo {
+            reason: format!(
+                "contract_unknown: 要件={} に対し人材契約形態が未設定/不明",
+                req
+            ),
         },
         (Some(req), Some(primary), secondary) => KoDecision::HardKo {
             reason: format!(
@@ -466,6 +492,56 @@ mod tests {
         talent.primary_contract_type = Some("直個人".into());
         let kojin_ok = check_contract_type_ko(&project, &talent);
         assert!(matches!(kojin_ok, KoDecision::Pass));
+    }
+
+    #[test]
+    fn normalizes_contract_types_before_comparison() {
+        let mut project = base_project();
+        project.contract_type = Some(" 派遣契約 ".into());
+
+        let mut talent = base_talent();
+        talent.primary_contract_type = Some(" 派遣 ".into());
+
+        let decision = check_contract_type_ko(&project, &talent);
+        assert!(matches!(decision, KoDecision::Pass));
+    }
+
+    #[test]
+    fn normalizes_talent_contract_variants() {
+        let mut project = base_project();
+        project.contract_type = Some("派遣".into());
+
+        let mut talent = base_talent();
+        talent.primary_contract_type = Some("派遣契約".into());
+
+        let decision = check_contract_type_ko(&project, &talent);
+        assert!(matches!(decision, KoDecision::Pass));
+    }
+
+    #[test]
+    fn aligns_gomuittaku_to_juninin() {
+        let mut project = base_project();
+        project.contract_type = Some("準委任契約".into());
+
+        let mut talent = base_talent();
+        talent.primary_contract_type = Some("業務委託 (SES)".into());
+
+        let decision = check_contract_type_ko(&project, &talent);
+        assert!(matches!(decision, KoDecision::Pass));
+    }
+
+    #[test]
+    fn treats_unrecognized_talent_contracts_as_unknown() {
+        let mut project = base_project();
+        project.contract_type = Some("準委任契約".into());
+
+        let mut talent = base_talent();
+        talent.primary_contract_type = Some("正社員".into());
+
+        let decision = check_contract_type_ko(&project, &talent);
+        assert!(
+            matches!(decision, KoDecision::SoftKo { reason } if reason.contains("契約形態") && reason.contains("不明"))
+        );
     }
 
     #[test]
