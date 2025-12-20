@@ -6,6 +6,7 @@ use super::{
 use crate::{
     Project, Talent,
     corrections::{
+        contract_type::correct_contract_type,
         english_skill::is_english_ko,
         flow_depth::{
             check_flow_ko as check_flow_depth_ko, parse_flow_limit, parse_talent_flow_depth,
