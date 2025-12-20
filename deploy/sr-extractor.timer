@@ -1,0 +1,10 @@
+[Unit]
+Description=Run sr-extractor every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=sr-extractor.service
+
+[Install]
+WantedBy=timers.target

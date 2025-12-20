@@ -1,0 +1,12 @@
+[Unit]
+Description=sr-queue-recovery - reset stale extraction queue jobs
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/sr-matcher.env
+WorkingDirectory=/opt/rust-matcher
+ExecStart=/usr/bin/sr-queue-recovery --db-url ${DATABASE_URL} --stale-minutes 10
+
+[Install]
+WantedBy=multi-user.target
