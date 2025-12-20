@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use deadpool_postgres::PoolError;
 use serde_json::Value;
 use tokio_postgres::Error as PgError;
+use tokio_postgres::Row;
 use tokio_postgres::types::Json;
 use tracing::instrument;
 
@@ -14,6 +15,8 @@ pub enum QueueStorageError {
     Pool(#[from] PoolError),
     #[error("postgres error: {0}")]
     Postgres(#[from] PgError),
+    #[error("failed to map queue row: {0}")]
+    Mapping(String),
 }
 
 fn normalize_json(value: &Option<Value>) -> Option<Json<&Value>> {
@@ -171,6 +174,122 @@ pub fn pending_copy(job: &ExtractionJob, received_at: DateTime<Utc>) -> Extracti
     pending
 }
 
+fn parse_status(value: &str) -> Result<QueueStatus, QueueStorageError> {
+    match value {
+        "pending" => Ok(QueueStatus::Pending),
+        "processing" => Ok(QueueStatus::Processing),
+        "completed" => Ok(QueueStatus::Completed),
+        other => Err(QueueStorageError::Mapping(format!(
+            "unknown status: {other}"
+        ))),
+    }
+}
+
+fn parse_recommended(value: &str) -> Result<crate::queue::RecommendedMethod, QueueStorageError> {
+    use crate::queue::RecommendedMethod;
+
+    match value {
+        "rust_recommended" => Ok(RecommendedMethod::RustRecommended),
+        "llm_recommended" => Ok(RecommendedMethod::LlmRecommended),
+        other => Err(QueueStorageError::Mapping(format!(
+            "unknown recommended_method: {other}"
+        ))),
+    }
+}
+
+fn parse_final(value: &str) -> Result<crate::queue::FinalMethod, QueueStorageError> {
+    use crate::queue::FinalMethod;
+
+    match value {
+        "rust_completed" => Ok(FinalMethod::RustCompleted),
+        "llm_completed" => Ok(FinalMethod::LlmCompleted),
+        "manual_review" => Ok(FinalMethod::ManualReview),
+        other => Err(QueueStorageError::Mapping(format!(
+            "unknown final_method: {other}"
+        ))),
+    }
+}
+
+fn row_to_job(row: &Row) -> Result<ExtractionJob, QueueStorageError> {
+    Ok(ExtractionJob {
+        id: row
+            .try_get::<_, i64>("id")
+            .map_err(QueueStorageError::from)
+            .and_then(|id| {
+                u64::try_from(id).map_err(|e| QueueStorageError::Mapping(e.to_string()))
+            })?,
+        message_id: row.try_get("message_id")?,
+        email_subject: row.try_get("email_subject")?,
+        email_received_at: row.try_get("email_received_at")?,
+        subject_hash: row.try_get("subject_hash")?,
+        status: parse_status(row.try_get::<_, String>("status")?.as_str())?,
+        priority: row.try_get("priority")?,
+        locked_by: row.try_get("locked_by")?,
+        retry_count: row
+            .try_get::<_, i32>("retry_count")
+            .map_err(QueueStorageError::from)
+            .and_then(|v| {
+                u32::try_from(v).map_err(|e| QueueStorageError::Mapping(e.to_string()))
+            })?,
+        next_retry_at: row.try_get("next_retry_at")?,
+        last_error: row.try_get("last_error")?,
+        partial_fields: row.try_get("partial_fields")?,
+        decision_reason: row.try_get("decision_reason")?,
+        recommended_method: row
+            .try_get::<_, Option<String>>("recommended_method")?
+            .map(|s| parse_recommended(&s))
+            .transpose()?,
+        final_method: row
+            .try_get::<_, Option<String>>("final_method")?
+            .map(|s| parse_final(&s))
+            .transpose()?,
+        extractor_version: row.try_get("extractor_version")?,
+        rule_version: row.try_get("rule_version")?,
+        created_at: row.try_get("created_at")?,
+        processing_started_at: row.try_get("processing_started_at")?,
+        completed_at: row.try_get("completed_at")?,
+        updated_at: row.try_get("updated_at")?,
+        llm_latency_ms: row.try_get("llm_latency_ms")?,
+        requires_manual_review: row.try_get("requires_manual_review")?,
+        manual_review_reason: row.try_get("manual_review_reason")?,
+        reprocess_after: row.try_get("reprocess_after")?,
+        canary_target: row.try_get("canary_target")?,
+    })
+}
+
+/// Lock and return the next pending job ordered by priority and created_at.
+#[instrument(skip(pool))]
+pub async fn lock_next_pending_job(
+    pool: &PgPool,
+    worker_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<ExtractionJob>, QueueStorageError> {
+    let client = pool.get().await?;
+    let stmt = client
+        .prepare(
+            "UPDATE ses.extraction_queue
+SET
+    status = 'processing',
+    locked_by = $1,
+    processing_started_at = $2,
+    updated_at = $2
+WHERE id = (
+    SELECT id
+    FROM ses.extraction_queue
+    WHERE status = 'pending'
+      AND (next_retry_at IS NULL OR next_retry_at <= $2)
+    ORDER BY priority DESC, created_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;",
+        )
+        .await?;
+
+    let row = client.query_opt(&stmt, &[&worker_id, &now]).await?;
+    row.map(|r| row_to_job(&r)).transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +348,14 @@ mod tests {
         let with_value = Some(serde_json::json!({"a": 1}));
         let normalized = normalize_json(&with_value);
         assert!(normalized.is_some());
+    }
+
+    #[test]
+    fn parse_status_rejects_unknown_values() {
+        assert!(parse_status("pending").is_ok());
+        assert!(parse_status("processing").is_ok());
+        assert!(parse_status("completed").is_ok());
+        let err = parse_status("broken").unwrap_err();
+        assert!(format!("{err}").contains("unknown status"));
     }
 }

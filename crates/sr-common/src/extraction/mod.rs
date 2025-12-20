@@ -24,6 +24,14 @@ pub struct PartialFields {
     pub decline_reason_tag: Option<String>,
 }
 
+/// メール1通分の抽出結果
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExtractorOutput {
+    pub partial: PartialFields,
+    pub quality: ExtractionQuality,
+    pub decision: RecommendedDecision,
+}
+
 /// 抽出品質（Tier 充足度ベース）
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ExtractionQuality {
@@ -36,7 +44,7 @@ pub struct ExtractionQuality {
 }
 
 /// 推奨メソッドの判定結果
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecommendedDecision {
     pub recommended_method: RecommendedMethod,
     pub reason: String,
@@ -78,6 +86,24 @@ lazy_static! {
     static ref TWO_HOP_RE: Regex = Regex::new(r"(?i)(2次|二次)").unwrap();
     static ref THREE_HOP_RE: Regex = Regex::new(r"(?i)(3次|三次)").unwrap();
     static ref FOUR_PLUS_RE: Regex = Regex::new(r"(?i)(4次|四次|4次以上|四次以上)").unwrap();
+}
+
+/// 本文から Tier1/2 相当の項目をまとめて抽出
+pub fn extract_partial_fields(body_text: &str) -> PartialFields {
+    let mut partial = PartialFields::default();
+
+    if let Some((min, max)) = extract_tanka(body_text) {
+        partial.monthly_tanka_min = Some(min);
+        partial.monthly_tanka_max = Some(max);
+    }
+
+    partial.start_date_raw = extract_start_date_raw(body_text);
+    partial.work_todofuken = extract_work_todofuken(body_text);
+    partial.remote_onsite = extract_remote_onsite(body_text);
+    partial.flow_dept = extract_flow_dept(body_text);
+    partial.outcome_tag = Some("unknown".to_string());
+
+    partial
 }
 
 /// 月単価抽出（レンジ/下限のみ/上限のみ/単発に対応）
@@ -161,6 +187,26 @@ pub fn extract_work_todofuken(body_text: &str) -> Option<String> {
         .filter(|pref| body_text.contains(*pref))
         .max_by_key(|pref| pref.len())
         .and_then(|pref| correct_todofuken(pref))
+}
+
+/// メールから Tier1/Tier2 を抽出し、品質判定まで含めた結果を返す
+pub fn extract_all_fields(body_text: &str, subject: Option<&str>) -> ExtractorOutput {
+    let mut partial = extract_partial_fields(body_text);
+
+    if let Some(subj) = subject {
+        let trimmed = subj.trim();
+        if !trimmed.is_empty() {
+            partial.project_name = Some(trimmed.to_string());
+        }
+    }
+
+    let (quality, decision) = evaluate_quality(&partial);
+
+    ExtractorOutput {
+        partial,
+        quality,
+        decision,
+    }
 }
 
 /// メール本文からリモート/出社形態を抽出して ENUM 補正
@@ -365,5 +411,31 @@ mod tests {
 
         let deep = "4次以上の商流です";
         assert_eq!(extract_flow_dept(deep), Some("4次請け以上".to_string()));
+    }
+
+    #[test]
+    fn extract_all_fields_sets_tiers_and_project_name() {
+        let body = "月額80万円、勤務地: 大阪府。週2リモート可、一次請け案件。即日参画。";
+        let output = extract_all_fields(body, Some("【案件】データエンジニア"));
+
+        assert_eq!(output.partial.monthly_tanka_min, Some(80));
+        assert_eq!(output.partial.monthly_tanka_max, Some(80));
+        assert_eq!(output.partial.work_todofuken, Some("大阪府".to_string()));
+        assert_eq!(
+            output.partial.remote_onsite,
+            Some("リモート併用".to_string())
+        );
+        assert_eq!(output.partial.flow_dept, Some("1次請け".to_string()));
+        assert_eq!(
+            output.partial.project_name,
+            Some("【案件】データエンジニア".to_string())
+        );
+
+        assert_eq!(output.quality.tier1_extracted, 4);
+        assert_eq!(output.quality.tier2_extracted, 2);
+        assert_eq!(
+            output.decision.recommended_method,
+            RecommendedMethod::RustRecommended
+        );
     }
 }

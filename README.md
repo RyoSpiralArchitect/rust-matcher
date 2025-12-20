@@ -12,8 +12,11 @@ rust-matcher は、案件とタレントの情報を正規化し、KO 判定と�
   の判定を行う仕組みを実装。`sr-queue-recovery` では processing のまま 10 分以上滞留したジョブのみを pending に戻して
   再試行できるようにしています。message_id/subject_hash での重複投入もガード。
 - **DB 連携の足がかり**: Postgres プールを共有し、`sr-extractor` は抽出結果を pending のまま `ses.extraction_queue`
-  に UPSERT、`sr-llm-worker` は処理後のジョブ状態を反映しながら `match_results` のスナップショットを挿入、
+  に UPSERT、`sr-llm-worker` は `FOR UPDATE SKIP LOCKED` で次の pending をロックして処理しつつ
+  `match_results` のスナップショットを挿入、連続ジョブをキューが空になるまで（または `--max-jobs` 上限まで）処理できるように拡張、
   `sr-queue-recovery` は DB 上の滞留ジョブを pending に戻す更新クエリまで実装済みです（本番 I/O は今後拡充予定）。
+- **抽出パイプライン**: `sr-extractor` が `ses.anken_emails` から未処理メールを取得し、Tier1/2 正規表現で抽出→
+  推奨メソッドと priority を付けて queue に投入する最小フローまで組み込み済みです（本文は queue に保存せず DB から都度参照）。
 - **価格計算**: 単価関連のパラメータとタレント/案件別の計算ユーティリティを追加。
 - **日付正規化**: 受領日時を基準に開始日のテキストを ASAP/日付/四半期/応相談まで丸め、`DatePrecision` と注釈で解像度を明示。
 - **エントリポイント**: 3 バイナリを追加（`sr-extractor`・`sr-llm-worker`・`sr-queue-recovery`）。現時点ではスタブ実装で、
@@ -23,7 +26,7 @@ rust-matcher は、案件とタレントの情報を正規化し、KO 判定と�
 
 ## Phase2 運用準備メモ
 - **技術選定**: DB 接続は `tokio-postgres` + `deadpool-postgres`、CLI は `clap`、ログは `tracing` + `tracing-subscriber`、環境変数は `dotenvy` で吸収。
-- **CLI オプション**: `sr-extractor` は `--db-url` と `--dry-run`、`sr-llm-worker` は `--db-url` と `--worker-id`、`sr-queue-recovery` は `--db-url` と `--stale-minutes` (デフォルト 10) を受け取ります。いずれも `.env` の `DATABASE_URL` から自動解決可能。
+- **CLI オプション**: `sr-extractor` は `--db-url` と `--dry-run`、`sr-llm-worker` は `--db-url` / `--worker-id` / `--max-jobs`（キューが空になるまで処理がデフォルト）、`sr-queue-recovery` は `--db-url` と `--stale-minutes` (デフォルト 10) を受け取ります。いずれも `.env` の `DATABASE_URL` から自動解決可能。
 - **systemd 雛形**: `deploy/` に 5 分間隔の `sr-extractor.timer`、常駐の `sr-llm-worker.service`、10 分間隔の `sr-queue-recovery.timer` を配置。`/etc/sr-matcher.env` で DB URL を注入する想定です。
 - **データフロー (MVP)**: `sr-extractor` で `anken_emails` から pending を投入し、`sr-llm-worker` が同一トランザクションで `talents_enum` UPSERT → `match_results` INSERT → queue 完了まで進める方針 (DB I/O は現在スタブ)。
 - **match_results テーブル案**: 以下の DDL を基準に、日次スナップショットのユニーク制約とスコア/理由を永続化予定です。

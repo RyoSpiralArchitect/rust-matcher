@@ -1,10 +1,14 @@
 use chrono::Utc;
 use clap::Parser;
 use dotenvy::dotenv;
-use sr_common::db::{create_pool_from_url, pending_copy, upsert_extraction_job};
+use serde_json::to_value;
+use sr_common::db::{
+    create_pool_from_url, fetch_pending_emails, pending_copy, upsert_extraction_job,
+};
 use sr_common::extraction::{
-    PartialFields, calculate_priority, evaluate_quality, extract_flow_dept, extract_remote_onsite,
-    extract_start_date_raw, extract_tanka, extract_work_todofuken,
+    ExtractorOutput, PartialFields, calculate_priority, evaluate_quality, extract_all_fields,
+    extract_flow_dept, extract_remote_onsite, extract_start_date_raw, extract_tanka,
+    extract_work_todofuken,
 };
 use sr_common::normalize::{calculate_subject_hash, normalize_subject};
 use sr_common::queue::{
@@ -28,6 +32,23 @@ struct Cli {
 }
 
 const RULE_VERSION: &str = "2025-01-15-r1";
+const FETCH_LIMIT: i64 = 100;
+
+fn build_job_from_email(
+    email_subject: &str,
+    email_received_at: chrono::DateTime<Utc>,
+    subject_hash: &str,
+    extraction: &ExtractorOutput,
+) -> ExtractionJob {
+    let mut job = ExtractionJob::new("", email_subject, email_received_at, subject_hash);
+    job.partial_fields = to_value(&extraction.partial).ok();
+    job.priority = calculate_priority(&extraction.quality);
+    job.recommended_method = Some(extraction.decision.recommended_method.clone());
+    job.decision_reason = Some(extraction.decision.reason.clone());
+    job.extractor_version = Some(env!("CARGO_PKG_VERSION").into());
+    job.rule_version = Some(RULE_VERSION.into());
+    job
+}
 
 pub fn run_sample_flow() -> ExtractionQueue {
     let mut queue = ExtractionQueue::default();
@@ -103,20 +124,34 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "created postgres connection pool"
     );
 
-    let queue = run_sample_flow();
-    debug!(jobs = queue.jobs.len(), "ran in-memory extraction demo");
-
     if args.dry_run {
+        let queue = run_sample_flow();
+        debug!(jobs = queue.jobs.len(), "ran in-memory extraction demo");
         info!("dry-run mode: skipping DB I/O and enqueue");
         return Ok(());
     }
 
-    if let Some(job) = queue.jobs.first() {
-        let pending = pending_copy(job, job.email_received_at);
+    let emails = fetch_pending_emails(&pool, FETCH_LIMIT).await?;
+    info!(count = emails.len(), "fetched pending emails to enqueue");
+
+    for email in emails {
+        let normalized_subject = normalize_subject(&email.subject);
+        let subject_hash = calculate_subject_hash(&email.subject);
+        let extraction = extract_all_fields(&email.body_text, Some(&normalized_subject));
+        let mut job = build_job_from_email(
+            &normalized_subject,
+            email.created_at,
+            &subject_hash,
+            &extraction,
+        );
+        job.message_id = email.message_id.clone();
+        job.requires_manual_review =
+            extraction.decision.recommended_method == RecommendedMethod::LlmRecommended;
+        job.manual_review_reason = job.decision_reason.clone();
+
+        let pending = pending_copy(&job, email.created_at);
         let rows = upsert_extraction_job(&pool, &pending).await?;
         info!(rows, message_id = %pending.message_id, "enqueued job into postgres");
-    } else {
-        info!("no jobs were created by extractor flow");
     }
 
     Ok(())
