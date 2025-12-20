@@ -63,6 +63,7 @@ pub fn run_sample_flow() -> ExtractionQueue {
                 job.recommended_method,
                 Some(RecommendedMethod::LlmRecommended)
             ),
+            manual_review_reason: job.decision_reason.clone(),
         })
     });
 

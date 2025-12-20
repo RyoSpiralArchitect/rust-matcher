@@ -9,7 +9,8 @@ rust-matcher は、案件とタレントの情報を正規化し、KO 判定と�
 - **事前フィルタ**: HardKo を弾いた上で prefilter 重みを使う `EnhancedPreFilter` を追加し、候補を上位スコア順に絞り込める状態に。
 - **スコアリング連携**: `MatchingEngine` で prefilter → 詳細スコアを一気通貫に計算し、総合スコア順で順位付けできるパイプラインを追加。
 - **キュー処理**: `extraction_queue` ワーカーが pending → processing → completed を決定的順序で巡回し、リトライや manual review
-  の判定を行う仕組みを実装。
+  の判定を行う仕組みを実装。`sr-queue-recovery` では processing のまま 10 分以上滞留したジョブのみを pending に戻して
+  再試行できるようにしています。
 - **価格計算**: 単価関連のパラメータとタレント/案件別の計算ユーティリティを追加。
 - **日付正規化**: 受領日時を基準に開始日のテキストを ASAP/日付/四半期/応相談まで丸め、`DatePrecision` と注釈で解像度を明示。
 - **エントリポイント**: 3 バイナリを追加（`sr-extractor`・`sr-llm-worker`・`sr-queue-recovery`）。現時点ではスタブ実装で、

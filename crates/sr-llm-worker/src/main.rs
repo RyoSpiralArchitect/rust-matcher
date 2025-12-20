@@ -29,6 +29,7 @@ pub fn run_sample_flow() -> ExtractionQueue {
                 decision_reason: Some("processed by sr-llm-worker".into()),
                 llm_latency_ms: Some(1500),
                 requires_manual_review: false,
+                manual_review_reason: None,
             })
         } else {
             Err(JobError::Permanent {

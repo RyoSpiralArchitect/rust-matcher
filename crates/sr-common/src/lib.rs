@@ -23,6 +23,7 @@ pub struct Project {
     pub japanese_skill: Option<String>,
     pub english_skill: Option<String>,
     pub contract_type: Option<String>,
+    pub jinzai_flow_limit: Option<String>,
     pub is_kojin_ok: Option<bool>,
     pub tech_kubun: Option<String>,
     pub project_keywords: Option<Vec<String>>,

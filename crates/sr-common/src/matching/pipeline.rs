@@ -4,7 +4,7 @@ use super::{
     ko_checks::run_all_ko_checks,
     ko_unified::KnockoutResultV2,
     prefilter::{EnhancedPreFilter, PreFilterConfig, PrefilterCandidate},
-    scoring::{calculate_detailed_score, MatchScore},
+    scoring::{MatchScore, calculate_detailed_score},
 };
 use crate::{Project, Talent};
 
@@ -53,24 +53,22 @@ impl MatchingEngine {
             .map(|candidate| self.build_ranked_match(talent, candidate))
             .collect();
 
-        ranked.sort_by(|a, b| match b
-            .detailed_score
-            .total
-            .partial_cmp(&a.detailed_score.total)
-            .unwrap_or(Ordering::Equal)
-        {
-            Ordering::Equal => Ordering::Equal,
-            other => other,
+        ranked.sort_by(|a, b| {
+            match b
+                .detailed_score
+                .total
+                .partial_cmp(&a.detailed_score.total)
+                .unwrap_or(Ordering::Equal)
+            {
+                Ordering::Equal => Ordering::Equal,
+                other => other,
+            }
         });
 
         ranked
     }
 
-    fn build_ranked_match(
-        &self,
-        talent: &Talent,
-        candidate: PrefilterCandidate,
-    ) -> RankedMatch {
+    fn build_ranked_match(&self, talent: &Talent, candidate: PrefilterCandidate) -> RankedMatch {
         let detailed_score = calculate_detailed_score(&candidate.project, talent);
 
         RankedMatch {
@@ -143,7 +141,10 @@ mod tests {
         let results = engine.rank_projects(&base_talent(), &[base_project(), hard_ko]);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].project.required_skills_keywords, vec!["Rust".to_string()]);
+        assert_eq!(
+            results[0].project.required_skills_keywords,
+            vec!["Rust".to_string()]
+        );
     }
 
     #[test]

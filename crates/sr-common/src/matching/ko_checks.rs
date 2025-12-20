@@ -5,7 +5,13 @@ use super::{
 };
 use crate::{
     Project, Talent,
-    corrections::{english_skill::is_english_ko, japanese_skill::is_japanese_ko},
+    corrections::{
+        english_skill::is_english_ko,
+        flow_depth::{
+            check_flow_ko as check_flow_depth_ko, parse_flow_limit, parse_talent_flow_depth,
+        },
+        japanese_skill::is_japanese_ko,
+    },
 };
 use chrono::Datelike;
 use std::collections::HashSet;
@@ -23,7 +29,9 @@ pub fn run_all_ko_checks(project: &Project, talent: &Talent) -> KnockoutResultV2
         ),
         ("location", check_location_ko(project, talent)),
         ("language", check_language_ko(project, talent)),
+        ("foreigner", check_foreigner_ko(project, talent)),
         ("contract", check_contract_type_ko(project, talent)),
+        ("flow", check_flow_limit_ko(project, talent)),
         (
             "ng_keyword",
             check_ng_keyword_ko(
@@ -115,26 +123,67 @@ fn check_language_ko(project: &Project, talent: &Talent) -> KoDecision {
     KoDecision::Pass
 }
 
+/// 外国籍可否KO判定
+/// - foreigner_allowed==false かつ 国籍が日本以外の場合: HardKo
+/// - 国籍不明の場合: SoftKo
+/// - 上記以外: Pass
+fn check_foreigner_ko(project: &Project, talent: &Talent) -> KoDecision {
+    if !matches!(project.foreigner_allowed, Some(false)) {
+        return KoDecision::Pass;
+    }
+
+    match talent.nationality.as_deref() {
+        Some(nat) if nat.contains("日本") => KoDecision::Pass,
+        Some(nat) => KoDecision::HardKo {
+            reason: format!("foreigner_not_allowed: {}", nat),
+        },
+        None => KoDecision::SoftKo {
+            reason: "foreigner_unknown: 国籍情報不足".into(),
+        },
+    }
+}
+
 /// 契約形態KO（現状は情報不足をSoftKo、矛盾はHardKo）
 fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
+    let is_kojin_ok = project.is_kojin_ok.unwrap_or(true);
+
     match (
         project.contract_type.as_deref(),
         talent.primary_contract_type.as_deref(),
+        talent.secondary_contract_type.as_deref(),
     ) {
-        (Some(req), Some(tal)) => {
-            if req == tal {
-                KoDecision::Pass
-            } else {
-                KoDecision::HardKo {
-                    reason: format!("contract_mismatch: required={}, talent={}", req, tal),
-                }
-            }
+        (None, _, _) => KoDecision::Pass,
+        (Some(req), _, Some(secondary)) if req == secondary => KoDecision::Pass,
+        (Some(req), Some(primary), _) if req == primary => KoDecision::Pass,
+        (Some(_), Some(primary), secondary)
+            if is_kojin_ok && (primary == "直個人" || secondary == Some("直個人")) =>
+        {
+            KoDecision::Pass
         }
-        (Some(_), None) => KoDecision::SoftKo {
+        (Some(_), None, _) => KoDecision::SoftKo {
             reason: "contract_unknown: 人材契約形態が未設定".into(),
         },
-        _ => KoDecision::Pass,
+        (Some(req), Some(primary), secondary) => KoDecision::HardKo {
+            reason: format!(
+                "contract_mismatch: required={}, talent={} / {:?}",
+                req, primary, secondary
+            ),
+        },
     }
+}
+
+/// 商流制限KO判定
+fn check_flow_limit_ko(project: &Project, talent: &Talent) -> KoDecision {
+    let talent_depth = talent
+        .flow_depth
+        .as_deref()
+        .and_then(parse_talent_flow_depth);
+    let project_limit = project
+        .jinzai_flow_limit
+        .as_deref()
+        .and_then(parse_flow_limit);
+
+    check_flow_depth_ko(talent_depth, project_limit)
 }
 
 /// NGキーワードKO判定
@@ -211,20 +260,25 @@ fn check_age_ko(project: &Project, talent: &Talent) -> KoDecision {
 /// - いずれか不明や日付未確定は SoftKo（要確認）
 fn check_availability_ko(project: &Project, talent: &Talent) -> KoDecision {
     match (&project.start_date, &talent.availability_date) {
-        (Some(project_start), Some(talent_available)) => match (project_start.date, talent_available.date) {
-            (Some(p), Some(t)) => {
-                if t > p {
-                    KoDecision::HardKo {
-                        reason: format!("availability_conflict: talent {} starts after project {}", t, p),
+        (Some(project_start), Some(talent_available)) => {
+            match (project_start.date, talent_available.date) {
+                (Some(p), Some(t)) => {
+                    if t > p {
+                        KoDecision::HardKo {
+                            reason: format!(
+                                "availability_conflict: talent {} starts after project {}",
+                                t, p
+                            ),
+                        }
+                    } else {
+                        KoDecision::Pass
                     }
-                } else {
-                    KoDecision::Pass
                 }
+                _ => KoDecision::SoftKo {
+                    reason: "availability_unknown: 精度不足のため確認要".into(),
+                },
             }
-            _ => KoDecision::SoftKo {
-                reason: "availability_unknown: 精度不足のため確認要".into(),
-            },
-        },
+        }
         _ => KoDecision::SoftKo {
             reason: "availability_unknown: 開始日/参画可能日が不足".into(),
         },
@@ -248,6 +302,7 @@ mod tests {
             english_skill: Some("ビジネス".into()),
             project_keywords: Some(vec!["Rust".into()]),
             start_date: Some(start_date(1)),
+            jinzai_flow_limit: Some("SPONTO一社先まで".into()),
             ..Project::default()
         }
     }
@@ -263,6 +318,7 @@ mod tests {
             ng_keywords: Some(vec!["金融".into()]),
             birth_year: Some(chrono::Utc::now().year() - 30),
             availability_date: Some(start_date(1)),
+            flow_depth: Some("1社先".into()),
             ..Talent::default()
         }
     }
@@ -283,7 +339,7 @@ mod tests {
         let result = run_all_ko_checks(&project, &talent);
         assert!(!result.is_hard_knockout);
         assert!(!result.needs_manual_review);
-        assert_eq!(result.decisions.len(), 8);
+        assert_eq!(result.decisions.len(), 10);
     }
 
     #[test]
@@ -351,6 +407,64 @@ mod tests {
         talent.birth_year = Some(current_year - 30);
         let result = check_age_ko(&project, &talent);
         assert!(matches!(result, KoDecision::Pass));
+    }
+
+    #[test]
+    fn detects_flow_limit_mismatches() {
+        let mut project = base_project();
+        project.jinzai_flow_limit = Some("SPONTO一社先まで".into());
+
+        let mut talent = base_talent();
+        talent.flow_depth = Some("2社先".into());
+
+        let decision = check_flow_limit_ko(&project, &talent);
+        assert!(
+            matches!(decision, KoDecision::HardKo { reason } if reason.contains("flow_exceeded"))
+        );
+
+        talent.flow_depth = None;
+        let soft = check_flow_limit_ko(&project, &talent);
+        assert!(matches!(soft, KoDecision::SoftKo { .. }));
+    }
+
+    #[test]
+    fn checks_foreigner_allowance() {
+        let mut project = base_project();
+        project.foreigner_allowed = Some(false);
+
+        let mut talent = base_talent();
+        talent.nationality = Some("アメリカ".into());
+        let hard = check_foreigner_ko(&project, &talent);
+        assert!(
+            matches!(hard, KoDecision::HardKo { reason } if reason.contains("foreigner_not_allowed"))
+        );
+
+        talent.nationality = None;
+        let soft = check_foreigner_ko(&project, &talent);
+        assert!(matches!(soft, KoDecision::SoftKo { .. }));
+
+        talent.nationality = Some("日本".into());
+        let pass = check_foreigner_ko(&project, &talent);
+        assert!(matches!(pass, KoDecision::Pass));
+    }
+
+    #[test]
+    fn allows_secondary_and_kojin_ok_contracts() {
+        let mut project = base_project();
+        project.contract_type = Some("業務委託".into());
+        project.is_kojin_ok = Some(true);
+
+        let mut talent = base_talent();
+        talent.primary_contract_type = Some("派遣".into());
+        talent.secondary_contract_type = Some("業務委託".into());
+
+        let secondary_match = check_contract_type_ko(&project, &talent);
+        assert!(matches!(secondary_match, KoDecision::Pass));
+
+        talent.secondary_contract_type = None;
+        talent.primary_contract_type = Some("直個人".into());
+        let kojin_ok = check_contract_type_ko(&project, &talent);
+        assert!(matches!(kojin_ok, KoDecision::Pass));
     }
 
     #[test]

@@ -141,6 +141,7 @@ pub struct JobOutcome {
     pub decision_reason: Option<String>,
     pub llm_latency_ms: Option<i32>,
     pub requires_manual_review: bool,
+    pub manual_review_reason: Option<String>,
 }
 
 /// シンプルなインメモリ extraction_queue worker
@@ -213,6 +214,7 @@ impl ExtractionQueue {
                 job.final_method = Some(outcome.final_method);
                 job.partial_fields = outcome.partial_fields;
                 job.decision_reason = outcome.decision_reason;
+                job.manual_review_reason = outcome.manual_review_reason;
                 job.llm_latency_ms = outcome.llm_latency_ms;
                 let finished_at = Utc::now();
                 job.completed_at = Some(finished_at);
@@ -224,7 +226,8 @@ impl ExtractionQueue {
                 job.status = QueueStatus::Completed;
                 job.final_method = Some(FinalMethod::ManualReview);
                 job.last_error = Some(message.clone());
-                job.decision_reason = Some(message);
+                job.decision_reason = Some(message.clone());
+                job.manual_review_reason = Some(message);
                 let finished_at = Utc::now();
                 job.completed_at = Some(finished_at);
                 job.updated_at = finished_at;
@@ -271,6 +274,7 @@ mod tests {
                 decision_reason: Some("ok".into()),
                 llm_latency_ms: Some(1200),
                 requires_manual_review: false,
+                manual_review_reason: None,
             })
         });
 
@@ -303,6 +307,7 @@ mod tests {
                 decision_reason: Some("done".into()),
                 llm_latency_ms: None,
                 requires_manual_review: false,
+                manual_review_reason: None,
             })
         });
 
@@ -350,6 +355,30 @@ mod tests {
         assert_eq!(job.final_method, Some(FinalMethod::ManualReview));
         assert!(job.requires_manual_review);
         assert!(job.decision_reason.is_some());
+        assert_eq!(job.manual_review_reason, Some("bad request".into()));
         assert!(job.locked_by.is_none());
+    }
+
+    #[test]
+    fn manual_review_reason_is_saved_from_handler_outcome() {
+        let mut queue = ExtractionQueue::default();
+        queue.enqueue(sample_job());
+
+        let status = queue.process_next(|_| {
+            Ok(JobOutcome {
+                final_method: FinalMethod::ManualReview,
+                partial_fields: None,
+                decision_reason: Some("soft ko".into()),
+                llm_latency_ms: None,
+                requires_manual_review: true,
+                manual_review_reason: Some("skills_empty".into()),
+            })
+        });
+
+        assert_eq!(status, Some(QueueStatus::Completed));
+        let job = queue.jobs.first().unwrap();
+        assert_eq!(job.final_method, Some(FinalMethod::ManualReview));
+        assert_eq!(job.manual_review_reason.as_deref(), Some("skills_empty"));
+        assert!(job.requires_manual_review);
     }
 }
