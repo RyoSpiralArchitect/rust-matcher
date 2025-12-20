@@ -6,6 +6,7 @@ use super::{
 use crate::{
     Project, Talent,
     corrections::{
+        contract_type::correct_contract_type,
         english_skill::is_english_ko,
         flow_depth::{
             check_flow_ko as check_flow_depth_ko, parse_flow_limit, parse_talent_flow_depth,
@@ -49,23 +50,41 @@ pub fn run_all_ko_checks(project: &Project, talent: &Talent) -> KnockoutResultV2
 
 /// 単価KO判定（利益<5万円でHardKo、情報不足はSoftKo）
 fn check_tanka_ko(project: &Project, talent: &Talent) -> KoDecision {
-    match (project.monthly_tanka_max, talent.desired_price_min) {
-        (Some(max), Some(min)) => {
-            let profit = max as i32 - min as i32;
-            if profit < 5 {
-                KoDecision::HardKo {
-                    reason: format!(
-                        "tanka_ko: 利益 {}万 < 閾値5万 (案件上限{}万 - 人材下限{}万)",
-                        profit, max, min
-                    ),
-                }
-            } else {
-                KoDecision::Pass
+    let Some(talent_min) = talent.desired_price_min else {
+        return KoDecision::SoftKo {
+            reason: "tanka_unknown: 単価情報不足".into(),
+        };
+    };
+
+    if let Some(max) = project.monthly_tanka_max {
+        let profit = max as i32 - talent_min as i32;
+        if profit < 5 {
+            return KoDecision::HardKo {
+                reason: format!(
+                    "tanka_ko: 利益 {}万 < 閾値5万 (案件上限{}万 - 人材下限{}万)",
+                    profit, max, talent_min
+                ),
+            };
+        }
+
+        return KoDecision::Pass;
+    }
+
+    if let Some(min) = project.monthly_tanka_min {
+        if talent_min <= min {
+            KoDecision::Pass
+        } else {
+            KoDecision::SoftKo {
+                reason: format!(
+                    "tanka_unknown: 案件下限{}万に対し人材下限{}万、上限情報不足のため要確認",
+                    min, talent_min
+                ),
             }
         }
-        _ => KoDecision::SoftKo {
+    } else {
+        KoDecision::SoftKo {
             reason: "tanka_unknown: 単価情報不足".into(),
-        },
+        }
     }
 }
 
@@ -148,10 +167,38 @@ fn check_foreigner_ko(project: &Project, talent: &Talent) -> KoDecision {
 fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
     let is_kojin_ok = project.is_kojin_ok.unwrap_or(true);
 
+    let project_contract = project
+        .contract_type
+        .as_deref()
+        .map(|c| {
+            let trimmed = c.trim();
+            let corrected = correct_contract_type(trimmed);
+
+            if corrected == "準委任契約" && trimmed != corrected && !trimmed.contains("派遣")
+            {
+                trimmed.to_string()
+            } else {
+                corrected
+            }
+        })
+        .filter(|c| !c.is_empty());
+    let primary = talent
+        .primary_contract_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(|c| c.to_string());
+    let secondary = talent
+        .secondary_contract_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(|c| c.to_string());
+
     match (
-        project.contract_type.as_deref(),
-        talent.primary_contract_type.as_deref(),
-        talent.secondary_contract_type.as_deref(),
+        project_contract.as_deref(),
+        primary.as_deref(),
+        secondary.as_deref(),
     ) {
         (None, _, _) => KoDecision::Pass,
         (Some(req), _, Some(secondary)) if req == secondary => KoDecision::Pass,
@@ -466,6 +513,18 @@ mod tests {
         talent.primary_contract_type = Some("直個人".into());
         let kojin_ok = check_contract_type_ko(&project, &talent);
         assert!(matches!(kojin_ok, KoDecision::Pass));
+    }
+
+    #[test]
+    fn normalizes_contract_types_before_comparison() {
+        let mut project = base_project();
+        project.contract_type = Some(" 派遣契約 ".into());
+
+        let mut talent = base_talent();
+        talent.primary_contract_type = Some(" 派遣 ".into());
+
+        let decision = check_contract_type_ko(&project, &talent);
+        assert!(matches!(decision, KoDecision::Pass));
     }
 
     #[test]

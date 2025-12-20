@@ -2,7 +2,10 @@ use super::ko_unified::KoDecision;
 use crate::{
     Project, Talent,
     corrections::{
+        contract_type::correct_gender,
+        flow_depth::correct_flow_dept,
         remote_onsite::{correct_remote_onsite, normalize_remote_onsite},
+        station::normalize_station,
         todofuken::{correct_todofuken, correct_work_area},
     },
 };
@@ -52,11 +55,19 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> NormalizedL
             normalize_remote_onsite(project.remote_onsite.as_deref().unwrap_or(""));
         let remote_onsite =
             Some(correct_remote_onsite(&normalized_remote).unwrap_or(normalized_remote));
+        let work_station = project.work_station.as_deref().and_then(normalize_station);
+        let flow_dept = project
+            .flow_dept
+            .as_deref()
+            .map(correct_flow_dept)
+            .filter(|v| v != "不明");
 
         Project {
             work_todofuken,
             work_area,
             remote_onsite,
+            work_station,
+            flow_dept,
             ..Project::default()
         }
     };
@@ -90,6 +101,16 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> NormalizedL
         Talent {
             residential_todofuken,
             residential_area,
+            gender: talent.gender.as_deref().and_then(correct_gender),
+            nearest_station: talent
+                .nearest_station
+                .as_deref()
+                .and_then(normalize_station),
+            desired_remote_onsite: talent
+                .desired_remote_onsite
+                .as_deref()
+                .map(normalize_remote_onsite)
+                .map(|mode| correct_remote_onsite(&mode).unwrap_or(mode)),
             ..Talent::default()
         }
     };
