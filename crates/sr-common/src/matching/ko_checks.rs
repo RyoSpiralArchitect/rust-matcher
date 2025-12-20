@@ -11,6 +11,7 @@ use crate::{
             check_flow_ko as check_flow_depth_ko, parse_flow_limit, parse_talent_flow_depth,
         },
         japanese_skill::is_japanese_ko,
+        nationality::is_japanese_nationality,
     },
 };
 use chrono::Datelike;
@@ -133,7 +134,7 @@ fn check_foreigner_ko(project: &Project, talent: &Talent) -> KoDecision {
     }
 
     match talent.nationality.as_deref() {
-        Some(nat) if nat.contains("日本") => KoDecision::Pass,
+        Some(nat) if is_japanese_nationality(nat) => KoDecision::Pass,
         Some(nat) => KoDecision::HardKo {
             reason: format!("foreigner_not_allowed: {}", nat),
         },
@@ -443,7 +444,7 @@ mod tests {
         let soft = check_foreigner_ko(&project, &talent);
         assert!(matches!(soft, KoDecision::SoftKo { .. }));
 
-        talent.nationality = Some("日本".into());
+        talent.nationality = Some(" JAPAN ".into());
         let pass = check_foreigner_ko(&project, &talent);
         assert!(matches!(pass, KoDecision::Pass));
     }

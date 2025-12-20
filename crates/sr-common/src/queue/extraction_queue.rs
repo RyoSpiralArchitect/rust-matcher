@@ -153,11 +153,11 @@ pub struct ExtractionQueue {
 
 impl ExtractionQueue {
     pub fn enqueue(&mut self, mut job: ExtractionJob) {
-        if self
-            .jobs
-            .iter()
-            .any(|existing| existing.message_id == job.message_id)
-        {
+        if self.jobs.iter().any(|existing| {
+            existing.message_id == job.message_id
+                || (existing.subject_hash == job.subject_hash
+                    && existing.status != QueueStatus::Completed)
+        }) {
             return;
         }
         self.next_id += 1;
@@ -380,5 +380,37 @@ mod tests {
         assert_eq!(job.final_method, Some(FinalMethod::ManualReview));
         assert_eq!(job.manual_review_reason.as_deref(), Some("skills_empty"));
         assert!(job.requires_manual_review);
+    }
+
+    #[test]
+    fn skips_duplicate_message_or_subject_hash_while_inflight() {
+        let mut queue = ExtractionQueue::default();
+        let mut first = sample_job();
+        first.subject_hash = "abc123".into();
+        queue.enqueue(first.clone());
+
+        // Same message id should be dropped.
+        queue.enqueue(first.clone());
+        assert_eq!(queue.jobs.len(), 1);
+
+        // Different message id but same subject hash should also be dropped while pending.
+        let second = ExtractionJob::new("msg-2", "dup subject", Utc::now(), "abc123");
+        queue.enqueue(second.clone());
+        assert_eq!(queue.jobs.len(), 1);
+
+        // Once completed, re-enqueue with same subject hash is allowed.
+        queue.process_next(|_| {
+            Ok(JobOutcome {
+                final_method: FinalMethod::RustCompleted,
+                partial_fields: None,
+                decision_reason: Some("done".into()),
+                llm_latency_ms: None,
+                requires_manual_review: false,
+                manual_review_reason: None,
+            })
+        });
+
+        queue.enqueue(second);
+        assert_eq!(queue.jobs.len(), 2);
     }
 }

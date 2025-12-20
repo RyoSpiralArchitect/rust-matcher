@@ -5,12 +5,12 @@ rust-matcher は、案件とタレントの情報を正規化し、KO 判定と�
 
 ## 現在の達成状況 (Phase1 → Phase2 着手)
 - **正規化レイヤ**: 都道府県/エリア/リモート設定、駅名、スキル、フロー深度・制限など、主要フィールドの補正を実装。
-- **KO 判定とスコアリング**: `KoDecision` を単一ソースに、ロケーションやスキル一致度を考慮した KO/スコア算出を実装。Phase2 では `BusinessRulesEngine` で詳細/Prefilter スコア（単価/勤務地/スキル/経験/契約）を加重合成し、NG キーワードや年齢制限も KO 判定に加味。
+- **KO 判定とスコアリング**: `KoDecision` を単一ソースに、ロケーションやスキル一致度を考慮した KO/スコア算出を実装。Phase2 では `BusinessRulesEngine` で詳細/Prefilter スコア（単価/勤務地/スキル/経験/契約）を加重合成し、NG キーワードや年齢制限も KO 判定に加味。`business_rules_score` をベースに `total_score = business × semantic × historical` の重み付き合成を用意し、MVP では business=1.0 で semantic/historical を 0.0 に固定しています。
 - **事前フィルタ**: HardKo を弾いた上で prefilter 重みを使う `EnhancedPreFilter` を追加し、候補を上位スコア順に絞り込める状態に。
 - **スコアリング連携**: `MatchingEngine` で prefilter → 詳細スコアを一気通貫に計算し、総合スコア順で順位付けできるパイプラインを追加。
 - **キュー処理**: `extraction_queue` ワーカーが pending → processing → completed を決定的順序で巡回し、リトライや manual review
   の判定を行う仕組みを実装。`sr-queue-recovery` では processing のまま 10 分以上滞留したジョブのみを pending に戻して
-  再試行できるようにしています。
+  再試行できるようにしています。message_id/subject_hash での重複投入もガード。
 - **価格計算**: 単価関連のパラメータとタレント/案件別の計算ユーティリティを追加。
 - **日付正規化**: 受領日時を基準に開始日のテキストを ASAP/日付/四半期/応相談まで丸め、`DatePrecision` と注釈で解像度を明示。
 - **エントリポイント**: 3 バイナリを追加（`sr-extractor`・`sr-llm-worker`・`sr-queue-recovery`）。現時点ではスタブ実装で、

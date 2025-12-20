@@ -3,10 +3,17 @@ use super::{
     skills::{check_preferred_skills, check_required_skills},
     weights::Weights,
 };
-use crate::{Project, Talent};
+use crate::{Project, Talent, corrections::nationality::is_japanese_nationality};
 use chrono::{Datelike, Utc};
 
 use super::weights::{DETAILED_WEIGHTS, PREFILTER_WEIGHTS};
+
+#[derive(Debug, Clone, Copy)]
+pub struct TotalScoreWeights {
+    pub business: f64,
+    pub semantic: f64,
+    pub historical: f64,
+}
 
 #[derive(Debug, Clone)]
 pub struct MatchingConfig {
@@ -15,6 +22,12 @@ pub struct MatchingConfig {
     pub tanka_profit_optimal: f64,
     pub skill_match_minimum: f64,
     pub experience_buffer_years: f64,
+    /// Phase2 までは business_rules_score のみで total を構成する。
+    /// Phase2+ では semantic/historical を有効化するための拡張フック。
+    pub total_score_weights: TotalScoreWeights,
+    pub semantic_score: Option<f64>,
+    pub historical_score: Option<f64>,
+    pub score_version: String,
 }
 
 impl Default for MatchingConfig {
@@ -25,6 +38,14 @@ impl Default for MatchingConfig {
             tanka_profit_optimal: 0.25,
             skill_match_minimum: env_skill_threshold(),
             experience_buffer_years: 0.5,
+            total_score_weights: TotalScoreWeights {
+                business: 1.0,
+                semantic: 0.0,
+                historical: 0.0,
+            },
+            semantic_score: None,
+            historical_score: None,
+            score_version: "v1-business-only".to_string(),
         }
     }
 }
@@ -52,7 +73,13 @@ pub struct ScoringResult {
 
 #[derive(Debug, Clone)]
 pub struct MatchScore {
+    /// Phase2 の business rules による合計スコア（0.0〜1.0）
+    pub business_rules_score: f64,
+    /// semantic/historical を含めた最終スコア（0.0〜1.0）
     pub total: f64,
+    pub semantic_score: Option<f64>,
+    pub historical_score: Option<f64>,
+    pub score_version: String,
     pub tanka: ScoringResult,
     pub location: ScoringResult,
     pub skills: ScoringResult,
@@ -92,15 +119,21 @@ impl BusinessRulesEngine {
         let other = self.score_other_factors(project, talent);
 
         let weights = self.config.weights;
-        let total = tanka.score * weights.tanka
+        let business_rules_score = tanka.score * weights.tanka
             + location.score * weights.location
             + skills.score * weights.skills
             + experience.score * weights.experience
             + contract.score * weights.contract
             + other.score * weights.other;
 
+        let total = self.compute_total_score(business_rules_score);
+
         MatchScore {
+            business_rules_score,
             total,
+            semantic_score: self.config.semantic_score,
+            historical_score: self.config.historical_score,
+            score_version: self.config.score_version.clone(),
             tanka,
             location,
             skills,
@@ -108,6 +141,14 @@ impl BusinessRulesEngine {
             contract,
             other,
         }
+    }
+
+    fn compute_total_score(&self, business_rules_score: f64) -> f64 {
+        let w = self.config.total_score_weights;
+        let semantic = self.config.semantic_score.unwrap_or(0.0);
+        let historical = self.config.historical_score.unwrap_or(0.0);
+
+        business_rules_score * w.business + semantic * w.semantic + historical * w.historical
     }
 
     fn score_tanka(&self, project: &Project, talent: &Talent) -> ScoringResult {
@@ -432,7 +473,7 @@ impl BusinessRulesEngine {
         // 外国籍可否（project.foreigner_allowed==Some(false) の場合のみチェック）
         if matches!(project.foreigner_allowed, Some(false)) {
             match talent.nationality.as_deref() {
-                Some(nat) if nat.contains("日本") => {
+                Some(nat) if is_japanese_nationality(nat) => {
                     details.push("国籍要件クリア".into());
                 }
                 Some(nat) => {
@@ -652,9 +693,42 @@ mod tests {
         let pre_total = pre.total;
 
         talent.birth_year = Some(Utc::now().year() - 35);
-        talent.nationality = Some("日本".into());
+        talent.nationality = Some("日本国籍".into());
         let detailed = calculate_detailed_score(&project, &talent);
         assert_eq!(detailed.other.status, "PERFECT_MATCH");
         assert!(detailed.total > pre_total);
+    }
+
+    #[test]
+    fn total_score_defaults_to_business_rules_only() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let score = engine.calculate_match_score(&full_project(), &full_talent());
+
+        assert_eq!(score.score_version, "v1-business-only");
+        assert_eq!(score.business_rules_score, score.total);
+        assert_eq!(score.semantic_score, None);
+        assert_eq!(score.historical_score, None);
+    }
+
+    #[test]
+    fn total_score_can_include_semantic_and_historical_components() {
+        let mut config = MatchingConfig::default();
+        config.total_score_weights = TotalScoreWeights {
+            business: 0.6,
+            semantic: 0.3,
+            historical: 0.1,
+        };
+        config.semantic_score = Some(0.5);
+        config.historical_score = Some(0.2);
+        config.score_version = "v2-semantic".to_string();
+
+        let engine = BusinessRulesEngine::new(config);
+        let score = engine.calculate_match_score(&full_project(), &full_talent());
+
+        let expected = score.business_rules_score * 0.6 + 0.5 * 0.3 + 0.2 * 0.1;
+        assert!((score.total - expected).abs() < 1e-6);
+        assert_eq!(score.semantic_score, Some(0.5));
+        assert_eq!(score.historical_score, Some(0.2));
+        assert_eq!(score.score_version, "v2-semantic");
     }
 }
