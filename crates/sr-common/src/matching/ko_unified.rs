@@ -45,6 +45,7 @@ impl KoDecision {
 }
 
 /// 複合KO判定結果（全チェック項目を集約）
+#[derive(Debug, Clone)]
 pub struct KnockoutResultV2 {
     /// いずれかが HardKo なら true
     pub is_hard_knockout: bool,
