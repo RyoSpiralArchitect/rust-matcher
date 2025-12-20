@@ -31,6 +31,26 @@ pub fn correct_talent_contract_type(input: &str, is_primary: bool) -> Option<Str
     }
 }
 
+/// 案件契約形態ENUM: ["準委任契約", "派遣"]
+/// sponto-platform enum_corrections.js correctContractType() と同期
+pub fn correct_contract_type(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return "準委任契約".to_string(); // Default
+    }
+
+    let valid = ["準委任契約", "派遣"];
+    if valid.contains(&trimmed) {
+        return trimmed.to_string();
+    }
+
+    if trimmed.contains("派遣") {
+        return "派遣".to_string();
+    }
+
+    "準委任契約".to_string() // Default
+}
+
 /// 性別ENUM: ["男性", "女性", "その他/無回答"]
 pub fn correct_gender(input: &str) -> Option<String> {
     let trimmed = input.trim();
@@ -81,5 +101,13 @@ mod tests {
         assert_eq!(correct_gender("女性"), Some("女性".into()));
         assert_eq!(correct_gender("その他"), Some("その他/無回答".into()));
         assert_eq!(correct_gender("   "), Some("その他/無回答".into()));
+    }
+
+    #[test]
+    fn corrects_contract_type_for_projects() {
+        assert_eq!(correct_contract_type("準委任契約"), "準委任契約");
+        assert_eq!(correct_contract_type("派遣契約"), "派遣");
+        assert_eq!(correct_contract_type(""), "準委任契約");
+        assert_eq!(correct_contract_type("業務委託"), "準委任契約");
     }
 }
