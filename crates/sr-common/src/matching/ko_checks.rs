@@ -13,6 +13,7 @@ use crate::{
         },
         japanese_skill::is_japanese_ko,
         nationality::is_japanese_nationality,
+        normalize_contract_type_for_matching,
     },
 };
 use chrono::Datelike;
@@ -167,25 +168,9 @@ fn check_foreigner_ko(project: &Project, talent: &Talent) -> KoDecision {
 fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
     let is_kojin_ok = project.is_kojin_ok.unwrap_or(true);
 
-    let normalize_contract = |value: Option<&str>| {
-        value
-            .map(|c| {
-                let trimmed = c.trim();
-                let corrected = correct_contract_type(trimmed);
-
-                if corrected == "準委任契約" && trimmed != corrected && !trimmed.contains("派遣")
-                {
-                    trimmed.to_string()
-                } else {
-                    corrected
-                }
-            })
-            .filter(|c| !c.is_empty())
-    };
-
-    let project_contract = normalize_contract(project.contract_type.as_deref());
-    let primary = normalize_contract(talent.primary_contract_type.as_deref());
-    let secondary = normalize_contract(talent.secondary_contract_type.as_deref());
+    let project_contract = normalize_contract_type_for_matching(project.contract_type.as_deref());
+    let primary = normalize_contract_type_for_matching(talent.primary_contract_type.as_deref());
+    let secondary = normalize_contract_type_for_matching(talent.secondary_contract_type.as_deref());
 
     match (
         project_contract.as_deref(),
@@ -200,8 +185,11 @@ fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
         {
             KoDecision::Pass
         }
-        (Some(_), None, _) => KoDecision::SoftKo {
-            reason: "contract_unknown: 人材契約形態が未設定".into(),
+        (Some(req), None, _) => KoDecision::SoftKo {
+            reason: format!(
+                "contract_unknown: 要件={} に対し人材契約形態が未設定/不明",
+                req
+            ),
         },
         (Some(req), Some(primary), secondary) => KoDecision::HardKo {
             reason: format!(
@@ -529,6 +517,32 @@ mod tests {
 
         let decision = check_contract_type_ko(&project, &talent);
         assert!(matches!(decision, KoDecision::Pass));
+    }
+
+    #[test]
+    fn aligns_gomuittaku_to_juninin() {
+        let mut project = base_project();
+        project.contract_type = Some("準委任契約".into());
+
+        let mut talent = base_talent();
+        talent.primary_contract_type = Some("業務委託 (SES)".into());
+
+        let decision = check_contract_type_ko(&project, &talent);
+        assert!(matches!(decision, KoDecision::Pass));
+    }
+
+    #[test]
+    fn treats_unrecognized_talent_contracts_as_unknown() {
+        let mut project = base_project();
+        project.contract_type = Some("準委任契約".into());
+
+        let mut talent = base_talent();
+        talent.primary_contract_type = Some("正社員".into());
+
+        let decision = check_contract_type_ko(&project, &talent);
+        assert!(
+            matches!(decision, KoDecision::SoftKo { reason } if reason.contains("契約形態") && reason.contains("不明"))
+        );
     }
 
     #[test]

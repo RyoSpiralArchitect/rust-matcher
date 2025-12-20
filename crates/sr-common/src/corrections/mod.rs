@@ -8,4 +8,7 @@ pub mod station;
 pub mod tech_kubun;
 pub mod todofuken;
 
-pub use contract_type::{correct_contract_type, correct_gender, correct_talent_contract_type};
+pub use contract_type::{
+    correct_contract_type, correct_gender, correct_talent_contract_type,
+    normalize_contract_type_for_matching,
+};

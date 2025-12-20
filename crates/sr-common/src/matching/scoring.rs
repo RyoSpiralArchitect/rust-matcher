@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     Project, Talent,
-    corrections::{contract_type::correct_contract_type, nationality::is_japanese_nationality},
+    corrections::{nationality::is_japanese_nationality, normalize_contract_type_for_matching},
 };
 use chrono::{Datelike, Utc};
 
@@ -423,25 +423,11 @@ impl BusinessRulesEngine {
     fn score_contract(&self, project: &Project, talent: &Talent) -> ScoringResult {
         let is_kojin_ok = project.is_kojin_ok.unwrap_or(true);
 
-        let normalize_contract = |value: Option<&str>| {
-            value
-                .map(|c| {
-                    let trimmed = c.trim();
-                    let corrected = correct_contract_type(trimmed);
-
-                    if corrected == "準委任契約" && trimmed != corrected && !trimmed.contains("派遣")
-                    {
-                        trimmed.to_string()
-                    } else {
-                        corrected
-                    }
-                })
-                .filter(|c| !c.is_empty())
-        };
-
-        let project_contract = normalize_contract(project.contract_type.as_deref());
-        let primary = normalize_contract(talent.primary_contract_type.as_deref());
-        let secondary = normalize_contract(talent.secondary_contract_type.as_deref());
+        let project_contract =
+            normalize_contract_type_for_matching(project.contract_type.as_deref());
+        let primary = normalize_contract_type_for_matching(talent.primary_contract_type.as_deref());
+        let secondary =
+            normalize_contract_type_for_matching(talent.secondary_contract_type.as_deref());
 
         match (
             project_contract.as_deref(),
@@ -486,7 +472,7 @@ impl BusinessRulesEngine {
                 score: 0.5,
                 max_score: 1.0,
                 status: "UNKNOWN",
-                details: format!("契約形態不明: 要件={}", req),
+                details: format!("契約形態不明: 要件={} に対し人材が未設定/不明", req),
             },
             (Some(req), Some(primary), _) => ScoringResult {
                 score: 0.0,
@@ -725,6 +711,34 @@ mod tests {
         let contract = engine.score_contract(&project, &talent);
         assert_eq!(contract.status, "PERFECT_MATCH");
         assert_eq!(contract.score, 1.0);
+    }
+
+    #[test]
+    fn aligns_gomuittaku_variants_for_scoring() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.contract_type = Some("準委任契約".into());
+
+        let mut talent = full_talent();
+        talent.primary_contract_type = Some("業務委託 (SES)".into());
+
+        let contract = engine.score_contract(&project, &talent);
+        assert_eq!(contract.status, "PERFECT_MATCH");
+        assert_eq!(contract.score, 1.0);
+    }
+
+    #[test]
+    fn treats_unrecognized_talent_contracts_as_unknown_for_scoring() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.contract_type = Some("準委任契約".into());
+
+        let mut talent = full_talent();
+        talent.primary_contract_type = Some("正社員".into());
+
+        let contract = engine.score_contract(&project, &talent);
+        assert_eq!(contract.status, "UNKNOWN");
+        assert!(contract.details.contains("不明"));
     }
 
     #[test]
