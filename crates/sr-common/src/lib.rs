@@ -1,6 +1,7 @@
 pub mod calculation;
 pub mod corrections;
 pub mod date;
+pub mod db;
 pub mod extraction;
 pub mod matching;
 pub mod normalize;

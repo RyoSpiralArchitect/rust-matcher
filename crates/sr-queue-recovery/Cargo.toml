@@ -7,5 +7,10 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-chrono = { version = "0.4", features = ["serde"] }
+chrono.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
 sr-common = { path = "../sr-common" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

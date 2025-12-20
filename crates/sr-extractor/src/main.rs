@@ -1,4 +1,7 @@
 use chrono::Utc;
+use clap::Parser;
+use dotenvy::dotenv;
+use sr_common::db::{create_pool_from_url, pending_copy, upsert_extraction_job};
 use sr_common::extraction::{
     PartialFields, calculate_priority, evaluate_quality, extract_flow_dept, extract_remote_onsite,
     extract_start_date_raw, extract_tanka, extract_work_todofuken,
@@ -7,6 +10,22 @@ use sr_common::normalize::{calculate_subject_hash, normalize_subject};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod,
 };
+use tracing::{debug, info};
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "sr-extractor",
+    about = "Enqueue and pre-process extraction jobs"
+)]
+struct Cli {
+    /// PostgreSQL connection string
+    #[arg(long, env = "DATABASE_URL")]
+    db_url: String,
+
+    /// Skip DB writes and run the in-memory demonstration only
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+}
 
 const RULE_VERSION: &str = "2025-01-15-r1";
 
@@ -70,17 +89,44 @@ pub fn run_sample_flow() -> ExtractionQueue {
     queue
 }
 
-fn main() {
-    let queue = run_sample_flow();
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv().ok();
+    tracing_subscriber::fmt::init();
 
-    for job in queue.jobs.iter() {
-        println!(
-            "job {} status={} recommended={:?} final={:?}",
-            job.id,
-            job.status.as_str(),
-            job.recommended_method,
-            job.final_method
-        );
+    let args = Cli::parse();
+    let pool = create_pool_from_url(&args.db_url)?;
+
+    let status = pool.status();
+    info!(
+        size = status.size,
+        available = status.available,
+        "created postgres connection pool"
+    );
+
+    let queue = run_sample_flow();
+    debug!(jobs = queue.jobs.len(), "ran in-memory extraction demo");
+
+    if args.dry_run {
+        info!("dry-run mode: skipping DB I/O and enqueue");
+        return Ok(());
+    }
+
+    if let Some(job) = queue.jobs.first() {
+        let pending = pending_copy(job, job.email_received_at);
+        let rows = upsert_extraction_job(&pool, &pending).await?;
+        info!(rows, message_id = %pending.message_id, "enqueued job into postgres");
+    } else {
+        info!("no jobs were created by extractor flow");
+    }
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("sr-extractor failed: {err}");
+        std::process::exit(1);
     }
 }
 

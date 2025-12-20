@@ -51,6 +51,33 @@ CREATE INDEX idx_extraction_queue_reprocess ON ses.extraction_queue(reprocess_af
 CREATE INDEX idx_extraction_queue_review_reason ON ses.extraction_queue(manual_review_reason) WHERE manual_review_reason IS NOT NULL;
 "#;
 
+/// Proposed schema for daily match results snapshots.
+pub const MATCH_RESULTS_DDL: &str = r#"
+CREATE TABLE ses.match_results (
+    id SERIAL PRIMARY KEY,
+    talent_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+
+    is_knockout BOOLEAN NOT NULL,
+    ko_reasons JSONB,
+    needs_manual_review BOOLEAN NOT NULL DEFAULT false,
+
+    score_total FLOAT,
+    score_breakdown JSONB,
+
+    engine_version VARCHAR(20),
+    rule_version VARCHAR(20),
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    UNIQUE(talent_id, project_id, created_at::date)
+);
+
+CREATE INDEX idx_match_results_talent ON ses.match_results(talent_id, created_at);
+CREATE INDEX idx_match_results_project ON ses.match_results(project_id, created_at);
+CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +96,19 @@ mod tests {
             "idx_extraction_queue_status_priority",
         ] {
             assert!(EXTRACTION_QUEUE_DDL.contains(required));
+        }
+    }
+
+    #[test]
+    fn match_results_schema_contains_indexes_and_uniques() {
+        for required in [
+            "talent_id",
+            "project_id",
+            "score_breakdown",
+            "UNIQUE(talent_id, project_id, created_at::date)",
+            "idx_match_results_score",
+        ] {
+            assert!(MATCH_RESULTS_DDL.contains(required));
         }
     }
 }

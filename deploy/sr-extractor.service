@@ -1,0 +1,12 @@
+[Unit]
+Description=sr-extractor - enqueue and pre-process extraction jobs
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/sr-matcher.env
+WorkingDirectory=/opt/rust-matcher
+ExecStart=/usr/bin/sr-extractor --db-url ${DATABASE_URL}
+
+[Install]
+WantedBy=multi-user.target

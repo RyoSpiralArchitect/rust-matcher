@@ -1,7 +1,26 @@
 use chrono::{DateTime, Duration, Utc};
+use clap::Parser;
+use dotenvy::dotenv;
+use sr_common::db::{create_pool_from_url, recover_stuck_jobs};
 use sr_common::queue::{ExtractionJob, ExtractionQueue, QueueStatus};
+use tracing::{debug, info};
 
 const DEFAULT_STUCK_THRESHOLD_MINUTES: i64 = 10;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "sr-queue-recovery",
+    about = "Recover stuck extraction queue jobs"
+)]
+struct Cli {
+    /// PostgreSQL connection string
+    #[arg(long, env = "DATABASE_URL")]
+    db_url: String,
+
+    /// Threshold in minutes for considering a processing job stale
+    #[arg(long, default_value_t = DEFAULT_STUCK_THRESHOLD_MINUTES)]
+    stale_minutes: i64,
+}
 
 fn recover(queue: &mut ExtractionQueue, now: DateTime<Utc>, max_processing: Duration) {
     for job in queue.jobs.iter_mut() {
@@ -21,10 +40,22 @@ fn recover(queue: &mut ExtractionQueue, now: DateTime<Utc>, max_processing: Dura
     }
 }
 
-fn main() {
-    let mut queue = ExtractionQueue::default();
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv().ok();
+    tracing_subscriber::fmt::init();
 
-    let stuck_started_at = Utc::now() - Duration::minutes(DEFAULT_STUCK_THRESHOLD_MINUTES + 5);
+    let args = Cli::parse();
+    let pool = create_pool_from_url(&args.db_url)?;
+    let status = pool.status();
+    info!(
+        size = status.size,
+        available = status.available,
+        stale_minutes = args.stale_minutes,
+        "created postgres connection pool for queue recovery",
+    );
+
+    let mut queue = ExtractionQueue::default();
+    let stuck_started_at = Utc::now() - Duration::minutes(args.stale_minutes + 1);
     let mut stuck = ExtractionJob::new(
         "stuck-message-1",
         "stuck subject",
@@ -39,17 +70,22 @@ fn main() {
     recover(
         &mut queue,
         Utc::now(),
-        Duration::minutes(DEFAULT_STUCK_THRESHOLD_MINUTES),
+        Duration::minutes(args.stale_minutes),
     );
 
-    for job in queue.jobs.iter() {
-        println!(
-            "job {} status={} locked_by={:?} next_retry_at={:?}",
-            job.id,
-            job.status.as_str(),
-            job.locked_by,
-            job.next_retry_at,
-        );
+    debug!(jobs = queue.jobs.len(), "ran in-memory recovery demo");
+    let updated =
+        recover_stuck_jobs(&pool, Utc::now(), Duration::minutes(args.stale_minutes)).await?;
+    info!(rows = updated, "attempted DB recovery for stuck jobs");
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("sr-queue-recovery failed: {err}");
+        std::process::exit(1);
     }
 }
 
