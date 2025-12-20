@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::corrections::{
     flow_depth::correct_flow_dept,
     remote_onsite::correct_remote_onsite,
-    todofuken::{correct_todofuken, TODOFUKEN_TO_AREA},
+    todofuken::{TODOFUKEN_TO_AREA, correct_todofuken},
 };
 use crate::queue::RecommendedMethod;
 
@@ -302,8 +302,14 @@ mod tests {
             extract_start_date_raw("即日で参画可能です"),
             Some("即日".to_string())
         );
-        assert_eq!(extract_start_date_raw("来月開始想定"), Some("来月".to_string()));
-        assert_eq!(extract_start_date_raw("1月上旬スタート"), Some("1月上旬".to_string()));
+        assert_eq!(
+            extract_start_date_raw("来月開始想定"),
+            Some("来月".to_string())
+        );
+        assert_eq!(
+            extract_start_date_raw("1月上旬スタート"),
+            Some("1月上旬".to_string())
+        );
         assert_eq!(
             extract_start_date_raw("開始日は2025/02/15を予定"),
             Some("2025/02/15".to_string())
@@ -327,7 +333,10 @@ mod tests {
         let (quality, decision) = evaluate_quality(&partial);
         assert_eq!(quality.tier1_extracted, 4);
         assert_eq!(quality.tier2_extracted, 0);
-        assert_eq!(decision.recommended_method, RecommendedMethod::LlmRecommended);
+        assert_eq!(
+            decision.recommended_method,
+            RecommendedMethod::LlmRecommended
+        );
         assert!(decision.reason.contains("Tier2 incomplete"));
 
         // Tier2 も埋めれば Rust 推奨
@@ -335,14 +344,20 @@ mod tests {
         partial.flow_dept = Some("自社".to_string());
         let (quality2, decision2) = evaluate_quality(&partial);
         assert_eq!(quality2.tier2_extracted, 2);
-        assert_eq!(decision2.recommended_method, RecommendedMethod::RustRecommended);
+        assert_eq!(
+            decision2.recommended_method,
+            RecommendedMethod::RustRecommended
+        );
     }
 
     #[test]
     fn extracts_prefecture_remote_and_flow_patterns() {
         let text = "勤務地：東京都千代田区\n週3リモート、元請案件です";
         assert_eq!(extract_work_todofuken(text), Some("東京都".to_string()));
-        assert_eq!(extract_remote_onsite(text), Some("リモート併用".to_string()));
+        assert_eq!(
+            extract_remote_onsite(text),
+            Some("リモート併用".to_string())
+        );
         assert_eq!(extract_flow_dept(text), Some("1次請け".to_string()));
 
         let onsite = "勤務地: 大阪府\nフル出社（客先常駐）";

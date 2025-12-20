@@ -4,8 +4,20 @@ pub fn infer_tech_kubun(skills: &[String]) -> Option<String> {
     let all_skills = skills.join(" ").to_lowercase();
 
     let generative_ai_keywords = [
-        "生成ai", "generative ai", "chatgpt", "gpt", "llm", "claude", "gemini", "openai", "langchain", "大規模言語モデル",
-        "rag", "fine-tuning", "プロンプト", "prompt engineering",
+        "生成ai",
+        "generative ai",
+        "chatgpt",
+        "gpt",
+        "llm",
+        "claude",
+        "gemini",
+        "openai",
+        "langchain",
+        "大規模言語モデル",
+        "rag",
+        "fine-tuning",
+        "プロンプト",
+        "prompt engineering",
     ];
     if generative_ai_keywords
         .iter()
@@ -15,15 +27,40 @@ pub fn infer_tech_kubun(skills: &[String]) -> Option<String> {
     }
 
     let popular_keywords = [
-        "ai", "aws", "gcp", "azure", "ml", "機械学習", "kubernetes", "k8s", "docker", "terraform", "react", "vue",
-        "typescript", "go", "rust", "python", "データサイエンス", "クラウド",
+        "ai",
+        "aws",
+        "gcp",
+        "azure",
+        "ml",
+        "機械学習",
+        "kubernetes",
+        "k8s",
+        "docker",
+        "terraform",
+        "react",
+        "vue",
+        "typescript",
+        "go",
+        "rust",
+        "python",
+        "データサイエンス",
+        "クラウド",
     ];
     if popular_keywords.iter().any(|k| all_skills.contains(k)) {
         return Some("人気技術".to_string());
     }
 
     let legacy_keywords = [
-        "cobol", "vb", "visual basic", "mainframe", "メインフレーム", "汎用機", "as400", "rpg", "pl/i", "fortran",
+        "cobol",
+        "vb",
+        "visual basic",
+        "mainframe",
+        "メインフレーム",
+        "汎用機",
+        "as400",
+        "rpg",
+        "pl/i",
+        "fortran",
         "delphi",
     ];
     if legacy_keywords.iter().any(|k| all_skills.contains(k)) {

@@ -2,7 +2,11 @@
 pub fn correct_talent_contract_type(input: &str, is_primary: bool) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return if is_primary { Some("直個人".to_string()) } else { None };
+        return if is_primary {
+            Some("直個人".to_string())
+        } else {
+            None
+        };
     }
 
     let valid = ["正社員", "契約社員", "直個人"];
@@ -55,10 +59,22 @@ mod tests {
 
     #[test]
     fn corrects_talent_contract_type_conservatively() {
-        assert_eq!(correct_talent_contract_type("  ", true), Some("直個人".into()));
-        assert_eq!(correct_talent_contract_type("フリーランス", true), Some("直個人".into()));
-        assert_eq!(correct_talent_contract_type("契約形態:契約", true), Some("契約社員".into()));
-        assert_eq!(correct_talent_contract_type("正社員希望", false), Some("正社員".into()));
+        assert_eq!(
+            correct_talent_contract_type("  ", true),
+            Some("直個人".into())
+        );
+        assert_eq!(
+            correct_talent_contract_type("フリーランス", true),
+            Some("直個人".into())
+        );
+        assert_eq!(
+            correct_talent_contract_type("契約形態:契約", true),
+            Some("契約社員".into())
+        );
+        assert_eq!(
+            correct_talent_contract_type("正社員希望", false),
+            Some("正社員".into())
+        );
         assert_eq!(correct_talent_contract_type("", false), None);
     }
 
@@ -67,6 +83,6 @@ mod tests {
         assert_eq!(correct_gender("男性"), Some("男性".into()));
         assert_eq!(correct_gender("女性"), Some("女性".into()));
         assert_eq!(correct_gender("その他"), Some("その他/無回答".into()));
-        assert_eq!(correct_gender("   " ), None);
+        assert_eq!(correct_gender("   "), None);
     }
 }

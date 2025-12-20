@@ -68,10 +68,11 @@ mod tests {
         assert_eq!(job.final_method, Some(FinalMethod::LlmCompleted));
         assert_eq!(job.status.as_str(), "completed");
         assert!(!job.requires_manual_review);
-        assert!(job
-            .decision_reason
-            .as_ref()
-            .map(|r| r.contains("sr-llm-worker"))
-            .unwrap_or(false));
+        assert!(
+            job.decision_reason
+                .as_ref()
+                .map(|r| r.contains("sr-llm-worker"))
+                .unwrap_or(false)
+        );
     }
 }

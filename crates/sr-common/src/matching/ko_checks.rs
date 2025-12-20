@@ -1,14 +1,11 @@
 use super::{
-    ko_unified::{KoDecision, KnockoutResultV2},
+    ko_unified::{KnockoutResultV2, KoDecision},
     location::evaluate_location,
     skills::check_required_skills,
 };
 use crate::{
-    corrections::{
-        english_skill::is_english_ko,
-        japanese_skill::is_japanese_ko,
-    },
     Project, Talent,
+    corrections::{english_skill::is_english_ko, japanese_skill::is_japanese_ko},
 };
 use chrono::Datelike;
 use std::collections::HashSet;
@@ -19,14 +16,20 @@ pub fn run_all_ko_checks(project: &Project, talent: &Talent) -> KnockoutResultV2
         ("tanka", check_tanka_ko(project, talent)),
         (
             "required_skills",
-            check_skill_ko(&project.required_skills_keywords, &talent.possessed_skills_keywords),
+            check_skill_ko(
+                &project.required_skills_keywords,
+                &talent.possessed_skills_keywords,
+            ),
         ),
         ("location", check_location_ko(project, talent)),
         ("language", check_language_ko(project, talent)),
         ("contract", check_contract_type_ko(project, talent)),
         (
             "ng_keyword",
-            check_ng_keyword_ko(talent.ng_keywords.as_deref(), project.project_keywords.as_deref()),
+            check_ng_keyword_ko(
+                talent.ng_keywords.as_deref(),
+                project.project_keywords.as_deref(),
+            ),
         ),
         ("age", check_age_ko(project, talent)),
     ];
@@ -99,7 +102,10 @@ fn check_language_ko(project: &Project, talent: &Talent) -> KoDecision {
         };
     }
 
-    if is_english_ko(project.english_skill.as_deref(), talent.english_skill.as_deref()) {
+    if is_english_ko(
+        project.english_skill.as_deref(),
+        talent.english_skill.as_deref(),
+    ) {
         return KoDecision::HardKo {
             reason: "english_skill_insufficient: 英語レベル不足".into(),
         };
@@ -115,7 +121,7 @@ fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
         talent.primary_contract_type.as_deref(),
     ) {
         (Some(req), Some(tal)) => {
-            if req == tal { 
+            if req == tal {
                 KoDecision::Pass
             } else {
                 KoDecision::HardKo {
@@ -168,7 +174,7 @@ fn check_age_ko(project: &Project, talent: &Talent) -> KoDecision {
         None => {
             return KoDecision::SoftKo {
                 reason: "age_unknown: 生年情報不足".into(),
-            }
+            };
         }
     };
 
@@ -255,10 +261,9 @@ mod tests {
 
         let result = run_all_ko_checks(&project, &talent);
         assert!(result.is_hard_knockout);
-        assert!(result
-            .decisions
-            .iter()
-            .any(|(_, d)| matches!(d, KoDecision::HardKo { reason } if reason.contains("tanka_ko"))));
+        assert!(result.decisions.iter().any(
+            |(_, d)| matches!(d, KoDecision::HardKo { reason } if reason.contains("tanka_ko"))
+        ));
         assert!(result
             .decisions
             .iter()

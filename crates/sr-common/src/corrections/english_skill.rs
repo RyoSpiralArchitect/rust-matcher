@@ -5,7 +5,14 @@ pub fn correct_english_skill(input: &str) -> Option<String> {
         return None;
     }
 
-    let valid = ["不要", "読み書き", "会話", "ビジネス", "上級ビジネス", "ネイティブ"];
+    let valid = [
+        "不要",
+        "読み書き",
+        "会話",
+        "ビジネス",
+        "上級ビジネス",
+        "ネイティブ",
+    ];
     if valid.contains(&trimmed) {
         return Some(trimmed.to_string());
     }
@@ -15,7 +22,10 @@ pub fn correct_english_skill(input: &str) -> Option<String> {
     if trimmed.contains("ネイティブ") || lower.contains("native") {
         return Some("ネイティブ".to_string());
     }
-    if trimmed.contains("上級ビジネス") || lower.contains("advanced business") || lower.contains("fluent") {
+    if trimmed.contains("上級ビジネス")
+        || lower.contains("advanced business")
+        || lower.contains("fluent")
+    {
         return Some("上級ビジネス".to_string());
     }
     if trimmed.contains("ビジネス") || lower.contains("business") {
@@ -69,8 +79,14 @@ mod tests {
 
     #[test]
     fn normalizes_english_skills() {
-        assert_eq!(correct_english_skill("ネイティブ"), Some("ネイティブ".into()));
-        assert_eq!(correct_english_skill("Business conversation"), Some("ビジネス".into()));
+        assert_eq!(
+            correct_english_skill("ネイティブ"),
+            Some("ネイティブ".into())
+        );
+        assert_eq!(
+            correct_english_skill("Business conversation"),
+            Some("ビジネス".into())
+        );
         assert_eq!(correct_english_skill("reading"), Some("読み書き".into()));
         assert_eq!(correct_english_skill("  "), None);
     }

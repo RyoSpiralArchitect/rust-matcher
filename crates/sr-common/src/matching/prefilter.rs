@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
 
 use super::{ko_checks::run_all_ko_checks, scoring::calculate_prefilter_score};
-use crate::{matching::ko_unified::KnockoutResultV2, matching::scoring::MatchScore, Project, Talent};
+use crate::{
+    Project, Talent, matching::ko_unified::KnockoutResultV2, matching::scoring::MatchScore,
+};
 
 #[derive(Debug, Clone)]
 pub struct PreFilterConfig {
@@ -76,14 +78,12 @@ impl EnhancedPreFilter {
             .filter_map(|project| self.evaluate_candidate(talent, project))
             .collect();
 
-        candidates.sort_by(|a, b| match b
-            .score
-            .partial_cmp(&a.score)
-            .unwrap_or(Ordering::Equal)
-        {
-            Ordering::Equal => Ordering::Equal,
-            other => other,
-        });
+        candidates.sort_by(
+            |a, b| match b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal) {
+                Ordering::Equal => Ordering::Equal,
+                other => other,
+            },
+        );
         candidates.truncate(self.config.max_candidates);
         candidates
     }
@@ -142,10 +142,8 @@ mod tests {
             min_score: 0.0,
         });
 
-        let results = filter.filter_candidates(
-            &base_talent(),
-            &[low_project.clone(), high_project.clone()],
-        );
+        let results =
+            filter.filter_candidates(&base_talent(), &[low_project.clone(), high_project.clone()]);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].project, high_project);

@@ -110,10 +110,7 @@ pub fn parse_project_flow_depth(flow_dept: &str) -> Option<FlowDepth> {
 
 /// 人材側: 商流位置 → depth（1社先=1次の位置）
 pub fn parse_talent_flow_depth(flow_depth: &str) -> Option<FlowDepth> {
-    if flow_depth
-        .contains("直")
-        || flow_depth.contains("自社")
-        || flow_depth.contains("貴社直")
+    if flow_depth.contains("直") || flow_depth.contains("自社") || flow_depth.contains("貴社直")
     {
         return Some(0);
     }
@@ -174,7 +171,10 @@ mod tests {
             correct_talent_flow_depth("３社先"),
             Some("3社先以上".to_string())
         );
-        assert_eq!(correct_jinzai_flow_limit("制限なし"), Some("商流制限なし".into()));
+        assert_eq!(
+            correct_jinzai_flow_limit("制限なし"),
+            Some("商流制限なし".into())
+        );
     }
 
     #[test]

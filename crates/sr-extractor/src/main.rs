@@ -96,7 +96,10 @@ mod tests {
         assert_eq!(job.status.as_str(), "completed");
         assert_eq!(job.final_method, Some(FinalMethod::RustCompleted));
         assert!(job.decision_reason.is_some());
-        assert_eq!(job.recommended_method, Some(RecommendedMethod::RustRecommended));
+        assert_eq!(
+            job.recommended_method,
+            Some(RecommendedMethod::RustRecommended)
+        );
         assert!(job.email_subject.contains("stub"));
     }
 }

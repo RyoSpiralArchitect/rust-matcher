@@ -26,6 +26,45 @@ pub fn check_required_skills(
     check_required_skills_with_threshold(project_skills, talent_skills, None)
 }
 
+/// 歓迎スキルのマッチング判定（KOなし・単純一致率のみ）
+pub fn check_preferred_skills(
+    project_skills: &[String],
+    talent_skills: &[String],
+) -> SkillMatchResult {
+    let pref_skill_set = normalize_skill_set(project_skills);
+    if pref_skill_set.is_empty() {
+        return SkillMatchResult {
+            is_knockout: false,
+            match_percentage: 1.0,
+            matched_skills: vec![],
+            reason: "歓迎スキル要件なし".into(),
+            requires_manual_review: true,
+        };
+    }
+
+    let talent_skill_set = normalize_skill_set(talent_skills);
+    let matched: HashSet<_> = pref_skill_set
+        .intersection(&talent_skill_set)
+        .cloned()
+        .collect();
+    let matched_len = matched.len();
+    let match_percentage = matched_len as f64 / pref_skill_set.len() as f64;
+    let matched_skills: Vec<_> = matched.into_iter().collect();
+
+    SkillMatchResult {
+        is_knockout: false,
+        match_percentage,
+        matched_skills,
+        reason: format!(
+            "歓迎スキル{}件中{}件({:.0}%)に合致",
+            pref_skill_set.len(),
+            matched_len,
+            match_percentage * 100.0
+        ),
+        requires_manual_review: false,
+    }
+}
+
 fn check_required_skills_with_threshold(
     project_skills: &[String],
     talent_skills: &[String],

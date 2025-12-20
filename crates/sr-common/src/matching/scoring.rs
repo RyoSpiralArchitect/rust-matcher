@@ -1,4 +1,8 @@
-use super::{location::evaluate_location, skills::check_required_skills, weights::Weights};
+use super::{
+    location::evaluate_location,
+    skills::{check_preferred_skills, check_required_skills},
+    weights::Weights,
+};
 use crate::{Project, Talent};
 
 use super::weights::{DETAILED_WEIGHTS, PREFILTER_WEIGHTS};
@@ -192,12 +196,12 @@ impl BusinessRulesEngine {
     }
 
     fn score_skills(&self, project: &Project, talent: &Talent) -> ScoringResult {
-        let result = check_required_skills(
+        let required = check_required_skills(
             &project.required_skills_keywords,
             &talent.possessed_skills_keywords,
         );
 
-        if result.requires_manual_review {
+        if required.requires_manual_review {
             return ScoringResult {
                 score: 0.5,
                 max_score: 1.0,
@@ -206,16 +210,21 @@ impl BusinessRulesEngine {
             };
         }
 
-        if result.is_knockout {
+        if required.is_knockout {
             return ScoringResult {
                 score: 0.0,
                 max_score: 1.0,
                 status: "MISS",
-                details: result.reason,
+                details: required.reason,
             };
         }
 
-        let score = result.match_percentage;
+        let preferred = check_preferred_skills(
+            &project.preferred_skills_keywords,
+            &talent.possessed_skills_keywords,
+        );
+
+        let score = required.match_percentage * 0.75 + preferred.match_percentage * 0.25;
         let status = if score >= 0.9 {
             "PERFECT_MATCH"
         } else if score >= self.config.skill_match_minimum.max(0.6) {
@@ -230,7 +239,13 @@ impl BusinessRulesEngine {
             score,
             max_score: 1.0,
             status,
-            details: result.reason,
+            details: format!(
+                "必須:{:.0}% ({}) / 歓迎:{:.0}% ({})",
+                required.match_percentage * 100.0,
+                required.reason,
+                preferred.match_percentage * 100.0,
+                preferred.reason
+            ),
         }
     }
 
@@ -315,6 +330,8 @@ impl BusinessRulesEngine {
     }
 
     fn score_contract(&self, project: &Project, talent: &Talent) -> ScoringResult {
+        let is_kojin_ok = project.is_kojin_ok.unwrap_or(true);
+
         match (
             project.contract_type.as_deref(),
             talent.primary_contract_type.as_deref(),
@@ -341,6 +358,19 @@ impl BusinessRulesEngine {
                     primary, secondary
                 ),
             },
+            (Some(req), Some(primary), secondary)
+                if is_kojin_ok && (primary == "直個人" || secondary == Some("直個人")) =>
+            {
+                ScoringResult {
+                    score: 0.8,
+                    max_score: 1.0,
+                    status: "MATCH",
+                    details: format!(
+                        "個人事業主許容のため直個人を許容: 要件={} vs 人材={} / {:?}",
+                        req, primary, secondary
+                    ),
+                }
+            }
             (Some(req), None, _) => ScoringResult {
                 score: 0.5,
                 max_score: 1.0,
@@ -452,6 +482,36 @@ mod tests {
         let exp = engine.score_experience(&full_project(), &talent);
         assert_eq!(exp.status, "UNKNOWN");
         assert_eq!(exp.score, 0.5);
+    }
+
+    #[test]
+    fn preferred_skills_affect_score() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.required_skills_keywords = vec!["Rust".into()];
+        project.preferred_skills_keywords = vec!["GraphQL".into()];
+        let mut talent = full_talent();
+        talent.possessed_skills_keywords = vec!["rust".into(), "graphql".into()];
+
+        let skills = engine.score_skills(&project, &talent);
+        assert_eq!(skills.status, "PERFECT_MATCH");
+        assert!(skills.score > 0.9);
+        assert!(skills.details.contains("歓迎"));
+    }
+
+    #[test]
+    fn kojin_ok_projects_accept_individuals() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.contract_type = Some("業務委託".into());
+        project.is_kojin_ok = Some(true);
+        let mut talent = full_talent();
+        talent.primary_contract_type = Some("直個人".into());
+        talent.secondary_contract_type = None;
+
+        let contract = engine.score_contract(&project, &talent);
+        assert_eq!(contract.status, "MATCH");
+        assert!(contract.score >= 0.8);
     }
 
     #[test]

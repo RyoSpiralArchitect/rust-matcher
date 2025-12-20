@@ -27,26 +27,27 @@ lazy_static! {
 
     /// エリアENUM値
     pub static ref AREA_ENUMS: Vec<&'static str> = vec![
-        "北海道・東北",
+        "北海道",
+        "東北",
         "関東",
-        "甲信越・北陸",
-        "東海",
-        "近畿",
-        "中国・四国",
-        "九州・沖縄",
+        "中部",
+        "関西",
+        "中国",
+        "四国",
+        "九州",
     ];
 
     /// 都道府県 → エリア マッピング
     pub static ref TODOFUKEN_TO_AREA: HashMap<&'static str, &'static str> = {
         let mut m = HashMap::new();
-        // 北海道・東北
-        m.insert("北海道", "北海道・東北");
-        m.insert("青森", "北海道・東北"); m.insert("青森県", "北海道・東北");
-        m.insert("岩手", "北海道・東北"); m.insert("岩手県", "北海道・東北");
-        m.insert("宮城", "北海道・東北"); m.insert("宮城県", "北海道・東北");
-        m.insert("秋田", "北海道・東北"); m.insert("秋田県", "北海道・東北");
-        m.insert("山形", "北海道・東北"); m.insert("山形県", "北海道・東北");
-        m.insert("福島", "北海道・東北"); m.insert("福島県", "北海道・東北");
+        // 北海道 / 東北
+        m.insert("北海道", "北海道");
+        m.insert("青森", "東北"); m.insert("青森県", "東北");
+        m.insert("岩手", "東北"); m.insert("岩手県", "東北");
+        m.insert("宮城", "東北"); m.insert("宮城県", "東北");
+        m.insert("秋田", "東北"); m.insert("秋田県", "東北");
+        m.insert("山形", "東北"); m.insert("山形県", "東北");
+        m.insert("福島", "東北"); m.insert("福島県", "東北");
         // 関東
         m.insert("茨城", "関東"); m.insert("茨城県", "関東");
         m.insert("栃木", "関東"); m.insert("栃木県", "関東");
@@ -55,44 +56,44 @@ lazy_static! {
         m.insert("千葉", "関東"); m.insert("千葉県", "関東");
         m.insert("東京", "関東"); m.insert("東京都", "関東");
         m.insert("神奈川", "関東"); m.insert("神奈川県", "関東");
-        // 甲信越・北陸
-        m.insert("新潟", "甲信越・北陸"); m.insert("新潟県", "甲信越・北陸");
-        m.insert("富山", "甲信越・北陸"); m.insert("富山県", "甲信越・北陸");
-        m.insert("石川", "甲信越・北陸"); m.insert("石川県", "甲信越・北陸");
-        m.insert("福井", "甲信越・北陸"); m.insert("福井県", "甲信越・北陸");
-        m.insert("山梨", "甲信越・北陸"); m.insert("山梨県", "甲信越・北陸");
-        m.insert("長野", "甲信越・北陸"); m.insert("長野県", "甲信越・北陸");
-        // 東海
-        m.insert("岐阜", "東海"); m.insert("岐阜県", "東海");
-        m.insert("静岡", "東海"); m.insert("静岡県", "東海");
-        m.insert("愛知", "東海"); m.insert("愛知県", "東海");
-        m.insert("三重", "東海"); m.insert("三重県", "東海");
-        // 近畿
-        m.insert("滋賀", "近畿"); m.insert("滋賀県", "近畿");
-        m.insert("京都", "近畿"); m.insert("京都府", "近畿");
-        m.insert("大阪", "近畿"); m.insert("大阪府", "近畿");
-        m.insert("兵庫", "近畿"); m.insert("兵庫県", "近畿");
-        m.insert("奈良", "近畿"); m.insert("奈良県", "近畿");
-        m.insert("和歌山", "近畿"); m.insert("和歌山県", "近畿");
-        // 中国・四国
-        m.insert("鳥取", "中国・四国"); m.insert("鳥取県", "中国・四国");
-        m.insert("島根", "中国・四国"); m.insert("島根県", "中国・四国");
-        m.insert("岡山", "中国・四国"); m.insert("岡山県", "中国・四国");
-        m.insert("広島", "中国・四国"); m.insert("広島県", "中国・四国");
-        m.insert("山口", "中国・四国"); m.insert("山口県", "中国・四国");
-        m.insert("徳島", "中国・四国"); m.insert("徳島県", "中国・四国");
-        m.insert("香川", "中国・四国"); m.insert("香川県", "中国・四国");
-        m.insert("愛媛", "中国・四国"); m.insert("愛媛県", "中国・四国");
-        m.insert("高知", "中国・四国"); m.insert("高知県", "中国・四国");
-        // 九州・沖縄
-        m.insert("福岡", "九州・沖縄"); m.insert("福岡県", "九州・沖縄");
-        m.insert("佐賀", "九州・沖縄"); m.insert("佐賀県", "九州・沖縄");
-        m.insert("長崎", "九州・沖縄"); m.insert("長崎県", "九州・沖縄");
-        m.insert("熊本", "九州・沖縄"); m.insert("熊本県", "九州・沖縄");
-        m.insert("大分", "九州・沖縄"); m.insert("大分県", "九州・沖縄");
-        m.insert("宮崎", "九州・沖縄"); m.insert("宮崎県", "九州・沖縄");
-        m.insert("鹿児島", "九州・沖縄"); m.insert("鹿児島県", "九州・沖縄");
-        m.insert("沖縄", "九州・沖縄"); m.insert("沖縄県", "九州・沖縄");
+        // 中部
+        m.insert("新潟", "中部"); m.insert("新潟県", "中部");
+        m.insert("富山", "中部"); m.insert("富山県", "中部");
+        m.insert("石川", "中部"); m.insert("石川県", "中部");
+        m.insert("福井", "中部"); m.insert("福井県", "中部");
+        m.insert("山梨", "中部"); m.insert("山梨県", "中部");
+        m.insert("長野", "中部"); m.insert("長野県", "中部");
+        m.insert("岐阜", "中部"); m.insert("岐阜県", "中部");
+        m.insert("静岡", "中部"); m.insert("静岡県", "中部");
+        m.insert("愛知", "中部"); m.insert("愛知県", "中部");
+        m.insert("三重", "中部"); m.insert("三重県", "中部");
+        // 関西
+        m.insert("滋賀", "関西"); m.insert("滋賀県", "関西");
+        m.insert("京都", "関西"); m.insert("京都府", "関西");
+        m.insert("大阪", "関西"); m.insert("大阪府", "関西");
+        m.insert("兵庫", "関西"); m.insert("兵庫県", "関西");
+        m.insert("奈良", "関西"); m.insert("奈良県", "関西");
+        m.insert("和歌山", "関西"); m.insert("和歌山県", "関西");
+        // 中国
+        m.insert("鳥取", "中国"); m.insert("鳥取県", "中国");
+        m.insert("島根", "中国"); m.insert("島根県", "中国");
+        m.insert("岡山", "中国"); m.insert("岡山県", "中国");
+        m.insert("広島", "中国"); m.insert("広島県", "中国");
+        m.insert("山口", "中国"); m.insert("山口県", "中国");
+        // 四国
+        m.insert("徳島", "四国"); m.insert("徳島県", "四国");
+        m.insert("香川", "四国"); m.insert("香川県", "四国");
+        m.insert("愛媛", "四国"); m.insert("愛媛県", "四国");
+        m.insert("高知", "四国"); m.insert("高知県", "四国");
+        // 九州
+        m.insert("福岡", "九州"); m.insert("福岡県", "九州");
+        m.insert("佐賀", "九州"); m.insert("佐賀県", "九州");
+        m.insert("長崎", "九州"); m.insert("長崎県", "九州");
+        m.insert("熊本", "九州"); m.insert("熊本県", "九州");
+        m.insert("大分", "九州"); m.insert("大分県", "九州");
+        m.insert("宮崎", "九州"); m.insert("宮崎県", "九州");
+        m.insert("鹿児島", "九州"); m.insert("鹿児島県", "九州");
+        m.insert("沖縄", "九州"); m.insert("沖縄県", "九州");
         m
     };
 }
@@ -137,11 +138,11 @@ pub fn correct_work_area(input: &str) -> Option<String> {
     }
 
     let legacy_mapping = match trimmed {
-        "北海道" | "東北" => Some("北海道・東北"),
-        "甲信越" | "北陸" | "中部" => Some("甲信越・北陸"),
-        "関西" => Some("近畿"),
-        "中国" | "四国" => Some("中国・四国"),
-        "九州" | "沖縄" => Some("九州・沖縄"),
+        "北海道・東北" => Some("北海道"),
+        "甲信越" | "北陸" | "東海" | "甲信越・北陸" => Some("中部"),
+        "近畿" => Some("関西"),
+        "中国・四国" => Some("中国"),
+        "九州・沖縄" => Some("九州"),
         "首都圏" => Some("関東"),
         _ => None,
     };
@@ -192,18 +193,16 @@ mod tests {
     #[test]
     fn work_area_supports_new_and_legacy() {
         assert_eq!(correct_work_area("関東"), Some("関東".to_string()));
-        assert_eq!(correct_work_area("関西"), Some("近畿".to_string()));
-        assert_eq!(correct_work_area("中部"), Some("甲信越・北陸".to_string()));
+        assert_eq!(correct_work_area("関西"), Some("関西".to_string()));
+        assert_eq!(correct_work_area("中部"), Some("中部".to_string()));
+        assert_eq!(correct_work_area("甲信越・北陸"), Some("中部".to_string()));
     }
 
     #[test]
     fn work_area_maps_prefectures() {
         assert_eq!(correct_work_area("東京都"), Some("関東".to_string()));
-        assert_eq!(correct_work_area("愛知県"), Some("東海".to_string()));
-        assert_eq!(
-            correct_work_area("北海道"),
-            Some("北海道・東北".to_string())
-        );
+        assert_eq!(correct_work_area("愛知県"), Some("中部".to_string()));
+        assert_eq!(correct_work_area("北海道"), Some("北海道".to_string()));
     }
 
     #[test]

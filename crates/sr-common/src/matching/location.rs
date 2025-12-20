@@ -167,9 +167,7 @@ fn apply_conflict_notes(
 
     match &mut evaluation.ko_decision {
         KoDecision::Pass => {
-            evaluation.ko_decision = KoDecision::SoftKo {
-                reason: note,
-            };
+            evaluation.ko_decision = KoDecision::SoftKo { reason: note };
             evaluation.score = evaluation.score.min(0.6);
         }
         KoDecision::SoftKo { reason } => {

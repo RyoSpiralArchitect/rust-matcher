@@ -28,7 +28,8 @@ pub fn correct_japanese_skill(input: &str) -> Option<String> {
     if upper.contains("N5") {
         return Some("N5".to_string());
     }
-    if trimmed.contains("ネイティブ") || trimmed.contains("母語") || trimmed.contains("母国語") {
+    if trimmed.contains("ネイティブ") || trimmed.contains("母語") || trimmed.contains("母国語")
+    {
         return Some("ネイティブ".to_string());
     }
     if trimmed.contains("不要") || trimmed.contains("不問") {
@@ -69,7 +70,10 @@ mod tests {
 
     #[test]
     fn normalizes_japanese_skills() {
-        assert_eq!(correct_japanese_skill("ネイティブ"), Some("ネイティブ".into()));
+        assert_eq!(
+            correct_japanese_skill("ネイティブ"),
+            Some("ネイティブ".into())
+        );
         assert_eq!(correct_japanese_skill("n2"), Some("N2".into()));
         assert_eq!(correct_japanese_skill("日本語不問"), Some("不要".into()));
         assert_eq!(correct_japanese_skill(""), None);
