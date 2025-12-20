@@ -4,6 +4,7 @@ use super::{
     weights::Weights,
 };
 use crate::{Project, Talent};
+use chrono::{Datelike, Utc};
 
 use super::weights::{DETAILED_WEIGHTS, PREFILTER_WEIGHTS};
 
@@ -57,6 +58,7 @@ pub struct MatchScore {
     pub skills: ScoringResult,
     pub experience: ScoringResult,
     pub contract: ScoringResult,
+    pub other: ScoringResult,
 }
 
 /// Prefilter 用のスコア計算（粗選別）
@@ -87,13 +89,15 @@ impl BusinessRulesEngine {
         let skills = self.score_skills(project, talent);
         let experience = self.score_experience(project, talent);
         let contract = self.score_contract(project, talent);
+        let other = self.score_other_factors(project, talent);
 
         let weights = self.config.weights;
         let total = tanka.score * weights.tanka
             + location.score * weights.location
             + skills.score * weights.skills
             + experience.score * weights.experience
-            + contract.score * weights.contract;
+            + contract.score * weights.contract
+            + other.score * weights.other;
 
         MatchScore {
             total,
@@ -102,6 +106,7 @@ impl BusinessRulesEngine {
             skills,
             experience,
             contract,
+            other,
         }
     }
 
@@ -385,6 +390,77 @@ impl BusinessRulesEngine {
             },
         }
     }
+
+    fn score_other_factors(&self, project: &Project, talent: &Talent) -> ScoringResult {
+        let mut details: Vec<String> = Vec::new();
+        let mut score: f64 = 1.0;
+        let mut status = "PERFECT_MATCH";
+
+        // 年齢スコア
+        if project.age_limit_lower.is_some() || project.age_limit_upper.is_some() {
+            match talent.birth_year {
+                Some(year) => {
+                    let current_year = Utc::now().year();
+                    let age = current_year - year;
+
+                    if let Some(lower) = project.age_limit_lower {
+                        if age < lower {
+                            score = 0.0;
+                            status = "MISS";
+                            details.push(format!("年齢下限未達: {} < {}", age, lower));
+                        }
+                    }
+                    if let Some(upper) = project.age_limit_upper {
+                        if age > upper {
+                            score = 0.0;
+                            status = "MISS";
+                            details.push(format!("年齢上限超過: {} > {}", age, upper));
+                        }
+                    }
+                    if details.is_empty() {
+                        details.push("年齢要件クリア".into());
+                    }
+                }
+                None => {
+                    score = score.min(0.5);
+                    status = "UNKNOWN";
+                    details.push("年齢情報不足".into());
+                }
+            }
+        }
+
+        // 外国籍可否（project.foreigner_allowed==Some(false) の場合のみチェック）
+        if matches!(project.foreigner_allowed, Some(false)) {
+            match talent.nationality.as_deref() {
+                Some(nat) if nat.contains("日本") => {
+                    details.push("国籍要件クリア".into());
+                }
+                Some(nat) => {
+                    score = 0.0;
+                    status = "MISS";
+                    details.push(format!("外国籍不可: {}", nat));
+                }
+                None => {
+                    score = score.min(0.5);
+                    if status != "MISS" {
+                        status = "UNKNOWN";
+                    }
+                    details.push("国籍情報不足".into());
+                }
+            }
+        }
+
+        if details.is_empty() {
+            details.push("追加要素なし".into());
+        }
+
+        ScoringResult {
+            score,
+            max_score: 1.0,
+            status,
+            details: details.join(" / "),
+        }
+    }
 }
 
 fn env_skill_threshold() -> f64 {
@@ -421,6 +497,7 @@ mod tests {
             required_skills_keywords: vec!["Rust".into(), "AWS".into()],
             min_experience_years: Some(5),
             contract_type: Some("業務委託".into()),
+            age_limit_upper: Some(60),
             ..Project::default()
         }
     }
@@ -433,6 +510,7 @@ mod tests {
             possessed_skills_keywords: vec!["rust".into(), "aws".into()],
             min_experience_years: Some(6),
             primary_contract_type: Some("業務委託".into()),
+            birth_year: Some(Utc::now().year() - 35),
             ..Talent::default()
         }
     }
@@ -445,6 +523,7 @@ mod tests {
         assert!(score.total > 0.9);
         assert_eq!(score.skills.status, "PERFECT_MATCH");
         assert_eq!(score.experience.status, "MATCH");
+        assert_eq!(score.other.status, "PERFECT_MATCH");
     }
 
     #[test]
@@ -523,6 +602,7 @@ mod tests {
         let mut talent = full_talent();
         talent.min_experience_years = Some(1);
         talent.primary_contract_type = Some("業務委託".into());
+        talent.birth_year = Some(Utc::now().year() - 25);
 
         let pre = calculate_prefilter_score(&project, &talent);
         let detailed = calculate_detailed_score(&project, &talent);
@@ -554,5 +634,27 @@ mod tests {
         let exp = engine.score_experience(&full_project(), &talent);
         assert_eq!(exp.status, "PARTIAL_MATCH");
         assert!(exp.score <= 0.4);
+    }
+
+    #[test]
+    fn scores_other_factors_and_weights_prefilter() {
+        let mut project = full_project();
+        project.foreigner_allowed = Some(false);
+        project.age_limit_lower = Some(30);
+        project.age_limit_upper = Some(40);
+
+        let mut talent = full_talent();
+        talent.birth_year = Some(Utc::now().year() - 45);
+        talent.nationality = Some("France".into());
+
+        let pre = calculate_prefilter_score(&project, &talent);
+        assert_eq!(pre.other.status, "MISS");
+        let pre_total = pre.total;
+
+        talent.birth_year = Some(Utc::now().year() - 35);
+        talent.nationality = Some("日本".into());
+        let detailed = calculate_detailed_score(&project, &talent);
+        assert_eq!(detailed.other.status, "PERFECT_MATCH");
+        assert!(detailed.total > pre_total);
     }
 }

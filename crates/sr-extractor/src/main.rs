@@ -48,7 +48,7 @@ pub fn run_sample_flow() -> ExtractionQueue {
 
     queue.enqueue(job);
 
-    queue.process_next(|job| {
+    queue.process_next_with_worker("sr-extractor", |job| {
         let partial = serde_json::to_value(&partial).ok();
 
         Ok(JobOutcome {

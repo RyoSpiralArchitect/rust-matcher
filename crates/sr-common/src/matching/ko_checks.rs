@@ -32,6 +32,7 @@ pub fn run_all_ko_checks(project: &Project, talent: &Talent) -> KnockoutResultV2
             ),
         ),
         ("age", check_age_ko(project, talent)),
+        ("availability", check_availability_ko(project, talent)),
     ];
 
     KnockoutResultV2::new(decisions)
@@ -205,9 +206,36 @@ fn check_age_ko(project: &Project, talent: &Talent) -> KoDecision {
     KoDecision::Pass
 }
 
+/// 開始日と参画可能日の衝突を検知
+/// - 両者が分かり、タレントの参画可能日が案件開始日より遅い場合は HardKo
+/// - いずれか不明や日付未確定は SoftKo（要確認）
+fn check_availability_ko(project: &Project, talent: &Talent) -> KoDecision {
+    match (&project.start_date, &talent.availability_date) {
+        (Some(project_start), Some(talent_available)) => match (project_start.date, talent_available.date) {
+            (Some(p), Some(t)) => {
+                if t > p {
+                    KoDecision::HardKo {
+                        reason: format!("availability_conflict: talent {} starts after project {}", t, p),
+                    }
+                } else {
+                    KoDecision::Pass
+                }
+            }
+            _ => KoDecision::SoftKo {
+                reason: "availability_unknown: 精度不足のため確認要".into(),
+            },
+        },
+        _ => KoDecision::SoftKo {
+            reason: "availability_unknown: 開始日/参画可能日が不足".into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::date::{NormalizedStartDate, StartDatePrecision};
+    use chrono::NaiveDate;
 
     fn base_project() -> Project {
         Project {
@@ -219,6 +247,7 @@ mod tests {
             japanese_skill: Some("N2".into()),
             english_skill: Some("ビジネス".into()),
             project_keywords: Some(vec!["Rust".into()]),
+            start_date: Some(start_date(1)),
             ..Project::default()
         }
     }
@@ -233,7 +262,16 @@ mod tests {
             english_skill: Some("ネイティブ".into()),
             ng_keywords: Some(vec!["金融".into()]),
             birth_year: Some(chrono::Utc::now().year() - 30),
+            availability_date: Some(start_date(1)),
             ..Talent::default()
+        }
+    }
+
+    fn start_date(day: u32) -> NormalizedStartDate {
+        NormalizedStartDate {
+            date: NaiveDate::from_ymd_opt(2025, 1, day),
+            precision: StartDatePrecision::ExactDay,
+            interpretation_note: None,
         }
     }
 
@@ -245,7 +283,7 @@ mod tests {
         let result = run_all_ko_checks(&project, &talent);
         assert!(!result.is_hard_knockout);
         assert!(!result.needs_manual_review);
-        assert_eq!(result.decisions.len(), 7);
+        assert_eq!(result.decisions.len(), 8);
     }
 
     #[test]
@@ -313,5 +351,21 @@ mod tests {
         talent.birth_year = Some(current_year - 30);
         let result = check_age_ko(&project, &talent);
         assert!(matches!(result, KoDecision::Pass));
+    }
+
+    #[test]
+    fn detects_availability_conflicts() {
+        let mut project = base_project();
+        project.start_date = Some(start_date(1));
+
+        let mut talent = base_talent();
+        talent.availability_date = Some(start_date(15));
+
+        let result = check_availability_ko(&project, &talent);
+        assert!(matches!(result, KoDecision::HardKo { .. }));
+
+        talent.availability_date = Some(start_date(1));
+        let pass = check_availability_ko(&project, &talent);
+        assert!(matches!(pass, KoDecision::Pass));
     }
 }

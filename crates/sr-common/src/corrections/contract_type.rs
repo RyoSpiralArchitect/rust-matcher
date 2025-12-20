@@ -34,9 +34,6 @@ pub fn correct_talent_contract_type(input: &str, is_primary: bool) -> Option<Str
 /// 性別ENUM: ["男性", "女性", "その他/無回答"]
 pub fn correct_gender(input: &str) -> Option<String> {
     let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
 
     let valid = ["男性", "女性", "その他/無回答"];
     if valid.contains(&trimmed) {
@@ -83,6 +80,6 @@ mod tests {
         assert_eq!(correct_gender("男性"), Some("男性".into()));
         assert_eq!(correct_gender("女性"), Some("女性".into()));
         assert_eq!(correct_gender("その他"), Some("その他/無回答".into()));
-        assert_eq!(correct_gender("   "), None);
+        assert_eq!(correct_gender("   "), Some("その他/無回答".into()));
     }
 }

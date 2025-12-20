@@ -17,7 +17,7 @@ pub fn run_sample_flow() -> ExtractionQueue {
 
     queue.enqueue(job);
 
-    queue.process_next(|job| {
+    queue.process_next_with_worker("sr-llm-worker", |job| {
         if job.recommended_method == Some(RecommendedMethod::LlmRecommended) {
             let partial = json!({
                 "message_id": job.message_id,

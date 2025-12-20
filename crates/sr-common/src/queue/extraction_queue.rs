@@ -184,11 +184,22 @@ impl ExtractionQueue {
     where
         F: Fn(&ExtractionJob) -> Result<JobOutcome, JobError>,
     {
+        self.process_next_with_worker("worker_stub", handler)
+    }
+
+    pub fn process_next_with_worker<F>(
+        &mut self,
+        worker_id: &str,
+        handler: F,
+    ) -> Option<QueueStatus>
+    where
+        F: Fn(&ExtractionJob) -> Result<JobOutcome, JobError>,
+    {
         let now = Utc::now();
         let idx = self.poll_next(now)?;
         let mut job = self.jobs[idx].clone();
         job.status = QueueStatus::Processing;
-        job.locked_by = Some("worker_stub".into());
+        job.locked_by = Some(worker_id.to_string());
         job.processing_started_at = Some(now);
         job.updated_at = now;
 
@@ -276,6 +287,30 @@ mod tests {
                 .map(|(completed, started)| completed >= started)
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn process_next_with_worker_sets_locked_by_and_clears_after() {
+        let mut queue = ExtractionQueue::default();
+        queue.enqueue(sample_job());
+
+        let worker_id = "sr-extractor";
+        let status = queue.process_next_with_worker(worker_id, |job| {
+            assert_eq!(job.locked_by.as_deref(), Some(worker_id));
+            Ok(JobOutcome {
+                final_method: FinalMethod::RustCompleted,
+                partial_fields: None,
+                decision_reason: Some("done".into()),
+                llm_latency_ms: None,
+                requires_manual_review: false,
+            })
+        });
+
+        assert_eq!(status, Some(QueueStatus::Completed));
+        let job = queue.jobs.first().unwrap();
+        assert_eq!(job.locked_by, None);
+        assert_eq!(job.final_method, Some(FinalMethod::RustCompleted));
+        assert!(job.processing_started_at.is_some());
     }
 
     #[test]

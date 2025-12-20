@@ -4,9 +4,10 @@
 pub const PREFILTER_WEIGHTS: Weights = Weights {
     tanka: 0.25,
     location: 0.15,
-    skills: 0.45,     // 詳細より +0.05（スキル重視）
+    skills: 0.40,     // 詳細より +0.00（other分を割当）
     experience: 0.10, // 詳細より -0.05
     contract: 0.05,
+    other: 0.05,
 };
 
 /// Detailed重み（ランキング用）
@@ -18,6 +19,7 @@ pub const DETAILED_WEIGHTS: Weights = Weights {
     skills: 0.40,
     experience: 0.15,
     contract: 0.05,
+    other: 0.0,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -27,11 +29,12 @@ pub struct Weights {
     pub skills: f64,
     pub experience: f64,
     pub contract: f64,
+    pub other: f64,
 }
 
 impl Weights {
     pub fn sum(&self) -> f64 {
-        self.tanka + self.location + self.skills + self.experience + self.contract
+        self.tanka + self.location + self.skills + self.experience + self.contract + self.other
     }
 }
 

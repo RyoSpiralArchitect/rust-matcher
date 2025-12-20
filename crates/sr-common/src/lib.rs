@@ -8,6 +8,8 @@ pub mod queue;
 pub mod schema;
 pub mod skill_normalizer;
 
+use date::NormalizedStartDate;
+
 // Commonly used data models for matching functions.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Project {
@@ -27,6 +29,7 @@ pub struct Project {
     pub age_limit_lower: Option<i32>,
     pub age_limit_upper: Option<i32>,
     pub foreigner_allowed: Option<bool>,
+    pub start_date: Option<NormalizedStartDate>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -44,4 +47,5 @@ pub struct Talent {
     pub ng_keywords: Option<Vec<String>>,
     pub birth_year: Option<i32>,
     pub nationality: Option<String>,
+    pub availability_date: Option<NormalizedStartDate>,
 }
