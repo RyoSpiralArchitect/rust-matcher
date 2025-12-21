@@ -59,6 +59,40 @@ impl Default for LlmRuntimeConfig {
 
 impl LlmRuntimeConfig {
     fn from_env() -> Self {
+        fn provider_defaults(provider: &str) -> (String, String) {
+            match provider.to_ascii_lowercase().as_str() {
+                "openai" => (
+                    "gpt-4o-mini".into(),
+                    "https://api.openai.com/v1/chat/completions".into(),
+                ),
+                "anthropic" => (
+                    "claude-3-5-sonnet-20240620".into(),
+                    "https://api.anthropic.com/v1/messages".into(),
+                ),
+                "google" | "google-genai" => (
+                    "gemini-1.5-flash".into(),
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+                        .into(),
+                ),
+                "mistral" => (
+                    "mistral-large-latest".into(),
+                    "https://api.mistral.ai/v1/chat/completions".into(),
+                ),
+                "xai" => (
+                    "grok-2-latest".into(),
+                    "https://api.x.ai/v1/chat/completions".into(),
+                ),
+                "huggingface" | "hf" => (
+                    "meta-llama/Meta-Llama-3-70B-Instruct".into(),
+                    "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-70B-Instruct".into(),
+                ),
+                _ => (
+                    "deepseek-chat".into(),
+                    "http://localhost:8000/api/v1/extract".into(),
+                ),
+            }
+        }
+
         fn parse_bool(key: &str, default: bool) -> bool {
             match std::env::var(key) {
                 Ok(val) => matches!(val.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
@@ -93,6 +127,7 @@ impl LlmRuntimeConfig {
             .to_ascii_lowercase();
 
         let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "deepseek".into());
+        let (default_model, default_endpoint) = provider_defaults(&provider);
         let primary_provider = std::env::var("LLM_PRIMARY_PROVIDER")
             .unwrap_or_else(|_| provider.clone());
         let shadow_provider = std::env::var("LLM_SHADOW_PROVIDER").unwrap_or_else(|_| "openai".into());
@@ -100,9 +135,8 @@ impl LlmRuntimeConfig {
         Self {
             enabled: parse_bool("LLM_ENABLED", true),
             provider: provider.clone(),
-            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "deepseek-chat".into()),
-            endpoint: std::env::var("LLM_ENDPOINT")
-                .unwrap_or_else(|_| "http://localhost:8000/api/v1/extract".into()),
+            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| default_model),
+            endpoint: std::env::var("LLM_ENDPOINT").unwrap_or_else(|_| default_endpoint),
             api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
             timeout_secs: parse_u64("LLM_TIMEOUT_SECONDS", 30),
             max_retries: parse_u32("LLM_MAX_RETRIES", 3),
@@ -543,6 +577,54 @@ mod tests {
                 assert_eq!(shadow.primary_provider, "anthropic");
                 assert_eq!(shadow.shadow_provider, "openai");
                 assert_eq!(shadow.sample_percent, 25);
+            },
+        );
+    }
+
+    #[test]
+    fn llm_provider_defaults_follow_live_endpoints() {
+        with_env(
+            &[
+                ("LLM_PROVIDER", Some("google-genai")),
+                ("LLM_MODEL", None),
+                ("LLM_ENDPOINT", None),
+            ],
+            || {
+                let cfg = LlmRuntimeConfig::from_env();
+                assert_eq!(cfg.model, "gemini-1.5-flash");
+                assert_eq!(
+                    cfg.endpoint,
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+                );
+            },
+        );
+
+        with_env(
+            &[
+                ("LLM_PROVIDER", Some("mistral")),
+                ("LLM_MODEL", None),
+                ("LLM_ENDPOINT", None),
+            ],
+            || {
+                let cfg = LlmRuntimeConfig::from_env();
+                assert_eq!(cfg.model, "mistral-large-latest");
+                assert_eq!(cfg.endpoint, "https://api.mistral.ai/v1/chat/completions");
+            },
+        );
+
+        with_env(
+            &[
+                ("LLM_PROVIDER", Some("huggingface")),
+                ("LLM_MODEL", None),
+                ("LLM_ENDPOINT", None),
+            ],
+            || {
+                let cfg = LlmRuntimeConfig::from_env();
+                assert_eq!(cfg.model, "meta-llama/Meta-Llama-3-70B-Instruct");
+                assert_eq!(
+                    cfg.endpoint,
+                    "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-70B-Instruct",
+                );
             },
         );
     }

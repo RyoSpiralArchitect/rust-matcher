@@ -179,8 +179,8 @@ cargo build --release
 export DATABASE_URL=postgres://user:pass@host/db
 export LLM_ENABLED=1                          # 0 にすると LLM を完全停止（KO/スコアだけで処理）
 export LLM_PROVIDER=deepseek                  # 既定: deepseek（LLM_PRIMARY_PROVIDER が未指定ならこれが primary）
-export LLM_MODEL=deepseek-chat                # 既定: deepseek-chat
-export LLM_ENDPOINT=http://localhost:8000/api/v1/extract
+export LLM_MODEL=deepseek-chat                # プロバイダ未指定時の既定モデル。プロバイダ毎の既定は下表を参照
+export LLM_ENDPOINT=http://localhost:8000/api/v1/extract # プロバイダ未指定時の既定エンドポイント
 export LLM_API_KEY=your-token
 export LLM_TIMEOUT_SECONDS=30                 # 既定: 30 秒
 export LLM_MAX_RETRIES=3                      # 既定: 3 回
@@ -192,6 +192,28 @@ export LLM_SHADOW_API_KEY=shadow-token        # 影比較の API キー（未設
 export LLM_SHADOW_SAMPLE_PERCENT=10           # 0-100（既定: 10、100 で常に影比較）
 export AUTO_MATCH_THRESHOLD=0.7               # MatchResponse 変換用の自動承認閾値
 export TWO_TOWER_ENABLED=false
+```
+
+### プロバイダ別の実動エンドポイント/既定モデル
+
+`LLM_PROVIDER` を設定すると、`LLM_MODEL` と `LLM_ENDPOINT` の未指定時は下表の値が自動で入ります（公式 API エンドポイントに準拠）。
+
+| LLM_PROVIDER | 既定モデル | 既定エンドポイント（公式） |
+|--------------|------------|---------------------------|
+| `openai` | `gpt-4o-mini` | `https://api.openai.com/v1/chat/completions` |
+| `anthropic` | `claude-3-5-sonnet-20240620` | `https://api.anthropic.com/v1/messages` |
+| `google` / `google-genai` | `gemini-1.5-flash` | `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent` |
+| `mistral` | `mistral-large-latest` | `https://api.mistral.ai/v1/chat/completions` |
+| `xai` | `grok-2-latest` | `https://api.x.ai/v1/chat/completions` |
+| `huggingface` / `hf` | `meta-llama/Meta-Llama-3-70B-Instruct` | `https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-70B-Instruct` |
+| `deepseek`（既定） | `deepseek-chat` | `http://localhost:8000/api/v1/extract` |
+
+たとえば Google Vertex AI (Gemini) を使う場合は以下のように上書きします。
+
+```bash
+export LLM_PROVIDER=google-genai
+export LLM_API_KEY=$GOOGLE_API_KEY
+# model/endpoint 未指定なら gemini-1.5-flash / Google Generative Language API を自動適用
 ```
 
 ### LLM ワーカーの挙動（環境変数に紐づく動作）
