@@ -78,6 +78,129 @@ CREATE INDEX idx_match_results_project ON ses.match_results(project_id, created_
 CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
 "#;
 
+/// 保存場所: `ses.llm_comparison_results` (LLM shadow/AB比較ログ)
+pub const LLM_COMPARISON_RESULTS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS ses.llm_comparison_results (
+    id BIGSERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL,
+    primary_provider VARCHAR(50) NOT NULL,
+    shadow_provider VARCHAR(50) NOT NULL,
+    primary_response JSONB NOT NULL,
+    shadow_response JSONB,
+    primary_latency_ms INTEGER,
+    shadow_latency_ms INTEGER,
+    diff_summary JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_llm_comparison_message ON ses.llm_comparison_results(message_id);
+CREATE INDEX idx_llm_comparison_created ON ses.llm_comparison_results(created_at);
+CREATE INDEX idx_llm_comparison_providers ON ses.llm_comparison_results(primary_provider, shadow_provider);
+"#;
+
+/// Unified event log for GUI and sales feedback.
+pub const FEEDBACK_EVENTS_DDL: &str = r#"
+CREATE TABLE ses.feedback_events (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- 紐付け（interaction_logs への FK を推奨）
+    interaction_id BIGINT REFERENCES ses.interaction_logs(id),
+    match_result_id INTEGER REFERENCES ses.match_results(id),
+    project_id BIGINT NOT NULL,
+    talent_id BIGINT NOT NULL,
+
+    -- フィードバック内容（統一ENUM: GUI評価 + 営業プロセス）
+    feedback_type TEXT NOT NULL,
+    -- 許容値:
+    --   GUI評価: thumbs_up, thumbs_down, review_ok, review_ng, review_pending
+    --   営業プロセス: accepted, rejected, interview_scheduled, no_response
+
+    -- NG理由（review_ng / thumbs_down / rejected 時のみ）
+    ng_reason_category TEXT,  -- tanka / skill / availability / location / flow / other
+
+    -- 自由記述・タグ
+    comment TEXT,
+    feedback_tags JSONB,  -- ["単価NG", "スキル不足"] 等の自由配列
+
+    -- 取り消しフラグ（間違い訂正用）
+    is_revoked BOOLEAN NOT NULL DEFAULT false,
+    revoked_at TIMESTAMPTZ,
+
+    -- 誰が・どこから
+    actor TEXT NOT NULL,   -- user_id / "sales" / "ops" / "system"
+    source TEXT NOT NULL,  -- "gui" / "crm" / "api" / "import"
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- インデックス
+CREATE INDEX idx_feedback_interaction ON ses.feedback_events(interaction_id);
+CREATE INDEX idx_feedback_match ON ses.feedback_events(match_result_id);
+CREATE INDEX idx_feedback_project_talent ON ses.feedback_events(project_id, talent_id);
+CREATE INDEX idx_feedback_type ON ses.feedback_events(feedback_type, created_at DESC);
+CREATE INDEX idx_feedback_actor ON ses.feedback_events(actor, created_at DESC);
+CREATE INDEX idx_feedback_not_revoked ON ses.feedback_events(interaction_id, created_at DESC)
+    WHERE is_revoked = false;
+
+COMMENT ON TABLE ses.feedback_events IS '営業/GUIフィードバックの統一イベントログ（Two-Tower学習の正解ラベル源）';
+"#;
+
+/// Interaction logging for recommendations and downstream training views.
+pub const INTERACTION_LOGS_DDL: &str = r#"
+CREATE TABLE ses.interaction_logs (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- マッチング情報
+    match_result_id INTEGER REFERENCES ses.match_results(id),
+    talent_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+
+    -- Two-Tower 予測
+    two_tower_score FLOAT,          -- 予測スコア
+    two_tower_embedder VARCHAR(50), -- hash / onnx / candle
+    two_tower_version VARCHAR(20),  -- モデルバージョン
+
+    -- ビジネスルールスコア（比較用）
+    business_score FLOAT,
+
+    -- 結果（後から更新）
+    outcome VARCHAR(20),  -- accepted / rejected / no_response / NULL
+    feedback_at TIMESTAMPTZ,
+
+    -- メタデータ
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    -- インデックス
+    CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, created_at::date)
+);
+
+CREATE OR REPLACE VIEW ses.training_pairs AS
+SELECT
+    il.talent_id,
+    il.project_id,
+    il.two_tower_score,
+    il.business_score,
+    il.outcome,
+    CASE
+        WHEN il.outcome = 'accepted' THEN 1.0
+        WHEN il.outcome = 'rejected' THEN 0.0
+        ELSE NULL  -- no_response は除外
+    END AS label,
+    il.created_at
+FROM ses.interaction_logs il
+WHERE il.outcome IN ('accepted', 'rejected');
+
+CREATE OR REPLACE VIEW ses.training_stats AS
+SELECT
+    COUNT(*) FILTER (WHERE outcome = 'accepted') AS accepted_count,
+    COUNT(*) FILTER (WHERE outcome = 'rejected') AS rejected_count,
+    COUNT(*) FILTER (WHERE outcome IS NULL) AS pending_count,
+    MIN(created_at) AS first_log_at,
+    MAX(created_at) AS last_log_at,
+    COUNT(DISTINCT DATE_TRUNC('day', created_at)) AS active_days
+FROM ses.interaction_logs;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +232,46 @@ mod tests {
             "idx_match_results_score",
         ] {
             assert!(MATCH_RESULTS_DDL.contains(required));
+        }
+    }
+
+    #[test]
+    fn feedback_events_schema_includes_indexes_and_flags() {
+        for required in [
+            "interaction_id",
+            "feedback_type",
+            "is_revoked",
+            "idx_feedback_project_talent",
+            "idx_feedback_not_revoked",
+            "COMMENT ON TABLE ses.feedback_events",
+        ] {
+            assert!(FEEDBACK_EVENTS_DDL.contains(required));
+        }
+    }
+
+    #[test]
+    fn interaction_logs_schema_covers_views_and_unique_constraint() {
+        for required in [
+            "two_tower_score",
+            "business_score",
+            "interaction_logs_unique",
+            "CREATE OR REPLACE VIEW ses.training_pairs",
+            "CREATE OR REPLACE VIEW ses.training_stats",
+        ] {
+            assert!(INTERACTION_LOGS_DDL.contains(required));
+        }
+    }
+
+    #[test]
+    fn llm_comparison_schema_includes_indexes_and_diff_summary() {
+        for required in [
+            "primary_provider",
+            "shadow_provider",
+            "diff_summary",
+            "idx_llm_comparison_message",
+            "idx_llm_comparison_providers",
+        ] {
+            assert!(LLM_COMPARISON_RESULTS_DDL.contains(required));
         }
     }
 }
