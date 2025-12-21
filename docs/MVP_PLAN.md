@@ -12867,12 +12867,20 @@ ORDER BY date;
 
 ### 3.1 実装ロードマップ
 
+> **⚠️ 最新の実装順序は [3.28 全体実装順序（修正版）](#328-全体実装順序修正版) を参照してください。**
+> 以下は初期計画であり、Phase 3.5（GUI契約層）やTwo-Tower統合を反映した最新版に置き換えられています。
+
+<details>
+<summary>📦 旧ロードマップ（参考用）</summary>
+
 | Step | 内容 | 優先度 |
 |------|------|--------|
 | **Step 1** | LLM Provider抽象化 + Shadow比較(10%) | P0 |
 | **Step 2** | match_results DB保存の本番接続 | P0 |
 | **Step 3** | systemd本番ループ (extractor/worker/recovery) | P0 |
 | **Step 4** | sr-gmail-ingestor (n8n置換) | P1 (後日) |
+
+</details>
 
 ---
 
@@ -14628,62 +14636,169 @@ COMMENT ON COLUMN ses.match_results.score_breakdown IS '各要素のスコア内
 
 ---
 
-### 3.8 feedback_events DDL（Phase 4 準備）
+### 3.8 feedback_events DDL（統一版）
+
+**設計思想**: GUIの評価（thumbs_up/down, review_ok/ng/pending）と営業プロセスの結果（accepted/rejected/interview_scheduled/no_response）は**両方起きうる**。どちらかを捨てるのではなく、イベントログとして両方入る形に統一。
 
 ```sql
--- feedback_events: 営業の現場真実（不可逆）
+-- feedback_events: 営業/GUI の全フィードバックを統一イベントログ化
 CREATE TABLE ses.feedback_events (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
 
-    -- 対象のマッチング結果
-    match_result_id INTEGER NOT NULL REFERENCES ses.match_results(id),
+    -- 紐付け（interaction_logs への FK を推奨）
+    interaction_id BIGINT REFERENCES ses.interaction_logs(id),
+    match_result_id INTEGER REFERENCES ses.match_results(id),
+    project_id BIGINT NOT NULL,
+    talent_id BIGINT NOT NULL,
 
-    -- フィードバック内容
-    feedback_type VARCHAR(30) NOT NULL,       -- 'accepted' | 'rejected' | 'no_response' | 'interview_scheduled'
-    feedback_reason TEXT,                     -- 自由記述（営業のコメント）
-    feedback_tags JSONB,                      -- ["単価NG", "スキル不足"] 等のタグ
+    -- フィードバック内容（統一ENUM: GUI評価 + 営業プロセス）
+    feedback_type TEXT NOT NULL,
+    -- 許容値:
+    --   GUI評価: thumbs_up, thumbs_down, review_ok, review_ng, review_pending
+    --   営業プロセス: accepted, rejected, interview_scheduled, no_response
 
-    -- 誰がいつ
-    created_by VARCHAR(100) NOT NULL,         -- 営業担当者
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- NG理由（review_ng / thumbs_down / rejected 時のみ）
+    ng_reason_category TEXT,  -- tanka / skill / availability / location / flow / other
+
+    -- 自由記述・タグ
+    comment TEXT,
+    feedback_tags JSONB,  -- ["単価NG", "スキル不足"] 等の自由配列
 
     -- 取り消しフラグ（間違い訂正用）
     is_revoked BOOLEAN NOT NULL DEFAULT false,
     revoked_at TIMESTAMPTZ,
-    revoked_by VARCHAR(100)
+
+    -- 誰が・どこから
+    actor TEXT NOT NULL,   -- user_id / "sales" / "ops" / "system"
+    source TEXT NOT NULL,  -- "gui" / "crm" / "api" / "import"
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- インデックス
+CREATE INDEX idx_feedback_interaction ON ses.feedback_events(interaction_id);
 CREATE INDEX idx_feedback_match ON ses.feedback_events(match_result_id);
+CREATE INDEX idx_feedback_project_talent ON ses.feedback_events(project_id, talent_id);
 CREATE INDEX idx_feedback_type ON ses.feedback_events(feedback_type, created_at DESC);
-CREATE INDEX idx_feedback_user ON ses.feedback_events(created_by, created_at DESC);
+CREATE INDEX idx_feedback_actor ON ses.feedback_events(actor, created_at DESC);
+CREATE INDEX idx_feedback_not_revoked ON ses.feedback_events(interaction_id, created_at DESC)
+    WHERE is_revoked = false;
 
--- Two-Tower学習用ビュー
-CREATE VIEW ses.training_pairs AS
+COMMENT ON TABLE ses.feedback_events IS '営業/GUIフィードバックの統一イベントログ（Two-Tower学習の正解ラベル源）';
+```
+
+#### feedback_type の分類とラベル変換
+
+| feedback_type | ソース | label (学習用) |
+|---------------|--------|----------------|
+| `thumbs_up` | GUI | 1.0 (positive) |
+| `thumbs_down` | GUI | 0.0 (negative) |
+| `review_ok` | GUI | 1.0 (positive) |
+| `review_ng` | GUI | 0.0 (negative) |
+| `review_pending` | GUI | NULL (除外) |
+| `accepted` | 営業 | 1.0 (positive) |
+| `rejected` | 営業 | 0.0 (negative) |
+| `interview_scheduled` | 営業 | 0.8 (weak positive) |
+| `no_response` | 営業 | NULL (除外) |
+
+---
+
+### 3.8.1 interaction_logs と feedback_events の関係
+
+**明文化**:
+
+| テーブル | 役割 | 内容 |
+|----------|------|------|
+| `interaction_logs` | **Exposure/Impression** | モデルが提示/推奨したログ（scores込み） |
+| `feedback_events` | **Supervision/Label** | 人間が付けた正解ラベル（不可逆イベント） |
+
+**紐付けキー**:
+- **推奨**: `feedback_events.interaction_id` → `interaction_logs.id`
+- **代替**: `(project_id, talent_id, DATE(created_at))` の複合キー
+
+**データフロー**:
+```
+interaction_logs (exposure)
+    │
+    ├── Two-Tower 予測スコア
+    ├── Business スコア
+    └── マッチ実行時に INSERT
+            │
+            ▼
+feedback_events (label)
+    │
+    ├── GUI: thumbs_up/down, review_ok/ng/pending
+    ├── 営業: accepted/rejected/interview_scheduled/no_response
+    └── 人間の判断で随時 INSERT
+            │
+            ▼
+training_pairs (学習データ)
+    │
+    └── interaction_logs LEFT JOIN 最新の feedback_events
+```
+
+---
+
+### 3.8.2 training_pairs VIEW（統一版）
+
+**設計**: `interaction_logs` を母集団（提示したもの全て）にして、`feedback_events` をラベルとして LEFT JOIN。
+
+```sql
+-- 最新の有効フィードバックを取得するビュー
+CREATE OR REPLACE VIEW ses.latest_feedback AS
+SELECT DISTINCT ON (interaction_id)
+    interaction_id,
+    feedback_type,
+    ng_reason_category,
+    feedback_tags,
+    actor,
+    source,
+    created_at AS feedback_at
+FROM ses.feedback_events
+WHERE is_revoked = false
+  AND interaction_id IS NOT NULL
+ORDER BY interaction_id, created_at DESC;
+
+-- Two-Tower 学習用ペアデータ
+CREATE OR REPLACE VIEW ses.training_pairs AS
 SELECT
-    mr.talent_snapshot_id,
-    mr.project_snapshot_id,
-    mr.match_run_id,
-    mr.score_total,
-    mr.score_breakdown,
-    mr.engine_version,
-    fe.feedback_type,
-    fe.feedback_tags,
+    il.id AS interaction_id,
+    il.talent_id,
+    il.project_id,
+    il.two_tower_score,
+    il.two_tower_embedder,
+    il.business_score,
+    lf.feedback_type,
+    lf.ng_reason_category,
+    lf.feedback_tags,
+    -- ラベル変換
     CASE
-        WHEN fe.feedback_type = 'accepted' THEN 1.0
-        WHEN fe.feedback_type = 'interview_scheduled' THEN 0.8
-        WHEN fe.feedback_type = 'no_response' THEN 0.3
-        WHEN fe.feedback_type = 'rejected' THEN 0.0
-        ELSE NULL
-    END AS label_score,
-    mr.created_at AS match_created_at,
-    fe.created_at AS feedback_created_at
-FROM ses.match_results mr
-JOIN ses.feedback_events fe ON fe.match_result_id = mr.id
-WHERE fe.is_revoked = false;
+        WHEN lf.feedback_type IN ('thumbs_up', 'review_ok', 'accepted') THEN 1.0
+        WHEN lf.feedback_type = 'interview_scheduled' THEN 0.8
+        WHEN lf.feedback_type IN ('thumbs_down', 'review_ng', 'rejected') THEN 0.0
+        ELSE NULL  -- review_pending, no_response は学習から除外
+    END AS label,
+    il.created_at AS exposure_at,
+    lf.feedback_at
+FROM ses.interaction_logs il
+LEFT JOIN ses.latest_feedback lf ON lf.interaction_id = il.id;
 
-COMMENT ON TABLE ses.feedback_events IS '営業フィードバック（Two-Tower学習の正解ラベル）';
-COMMENT ON VIEW ses.training_pairs IS 'Two-Tower学習用のペアデータ';
+-- 学習データ統計（ラベル付きのみカウント）
+CREATE OR REPLACE VIEW ses.training_stats AS
+SELECT
+    COUNT(*) AS total_interactions,
+    COUNT(*) FILTER (WHERE label IS NOT NULL) AS labeled_count,
+    COUNT(*) FILTER (WHERE label = 1.0) AS positive_count,
+    COUNT(*) FILTER (WHERE label = 0.0) AS negative_count,
+    COUNT(*) FILTER (WHERE label = 0.8) AS weak_positive_count,
+    MIN(exposure_at) AS first_exposure_at,
+    MAX(exposure_at) AS last_exposure_at,
+    COUNT(DISTINCT DATE_TRUNC('day', exposure_at)) AS active_days
+FROM ses.training_pairs;
+
+COMMENT ON VIEW ses.latest_feedback IS '各interaction_idに対する最新の有効フィードバック';
+COMMENT ON VIEW ses.training_pairs IS 'Two-Tower学習用ペアデータ（interaction_logs + feedback_events）';
+COMMENT ON VIEW ses.training_stats IS '学習データの統計情報';
 ```
 
 ---
@@ -14741,20 +14856,14 @@ COMMENT ON VIEW ses.llm_comparison_summary IS 'LLM比較の日次サマリ';
 
 ---
 
-### 3.10 実装順序（修正版）
+### 3.10 実装順序
 
-Phase 3 を「サクッと」終わらせるための順序：
-
-| Step | 内容 | 理由 |
-|------|------|------|
-| **Step 1** | match_results DDL + 保存実装 | データ構造が先に固まれば後からLLM provider増えてもスキーマ変更なし |
-| **Step 2** | LLM shadow 10% | データ保存先がある状態で始められる → 比較ログが即座に溜まる |
-| **Step 3** | systemd 本番ループ | 落ちても戻る状態で回せば、shadow比較が自動で蓄積 |
-| **Step 4** | GUI | 溜まったデータを「見える化」→ 営業FBの導線も自然に生える |
+> **⚠️ 最新の実装順序は [3.28 全体実装順序（修正版）](#328-全体実装順序修正版) を参照してください。**
+> Phase 3.5（GUI契約層）とTwo-Tower統合ステップを含む最新版が正です。
 
 ---
 
-### 3.11 Done条件（修正版）
+### 3.11 Done条件
 
 #### Step 1: match_results DDL + 保存
 
@@ -14789,51 +14898,1596 @@ Phase 3 を「サクッと」終わらせるための順序：
 
 ---
 
-## Phase 4: Two-Tower モデル育成（Preview）
+### 3.12 Two-Tower 詳細設計
 
-Phase 3 が安定したら Phase 4 へ移行。
+Phase 3 でTwo-Towerの「骨格」を仕込み、ログを溜めておく。学習はPhase 4で行う。
 
-### 4.1 概要
+#### 前提条件: ドメインモデルの拡張
 
-- **目的**: 営業FBを学習信号として、マッチング精度を継続的に改善
-- **手法**: Two-Tower モデル（Talent Encoder + Project Encoder）
-- **入力**: `training_pairs` ビュー（match_results + feedback_events の JOIN）
-- **出力**: 類似度スコア（現在の rule-based スコアを補完/置換）
+Two-Tower で `rank_talents()` を使うには、`Project` / `Talent` に `id` フィールドが必要：
 
-### 4.2 学習データ要件
+```rust
+// crates/sr-common/src/lib.rs への追加
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Project {
+    pub id: Option<i64>,  // ← 追加（DB主キー or 外部ID）
+    pub work_todofuken: Option<String>,
+    pub work_area: Option<String>,
+    // ... 既存フィールド
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Talent {
+    pub id: Option<i64>,  // ← 追加（DB主キー or 外部ID）
+    pub residential_todofuken: Option<String>,
+    pub residential_area: Option<String>,
+    // ... 既存フィールド
+}
+```
+
+> **Note**: `Option<i64>` にしているのは、テスト時やリテラル構築時に id を省略できるようにするため。
+> 本番パスでは `unwrap_or(0)` で処理するか、`id` を必須にするかは運用で決める。
+
+#### 設計思想
+
+1. **インターフェース先行**: `TwoTowerEmbedder` trait を先に定義し、実装は差し替え可能に
+2. **決定論的埋め込みから開始**: 最初は Feature Hashing（HashTwoTower）で ML不要に動作
+3. **ログ収集を仕込む**: `interaction_logs` テーブルに予測とFBを記録し、Phase 4の学習データに
+4. **モデル差し替え可能**: Hash → ONNX → Candle と段階的に高度化
+
+#### 不変条件
+
+- **HardKo は常に勝つ**: Two-Tower スコアが高くても HardKo は覆らない
+- **Two-Tower は順位づけ**: KO判定ではなく、Pass候補の中での優先度を決める
+- **rule-based との重み付き合成**: `total_score = business × semantic × historical × two_tower`
+
+#### モジュール構成
+
+```
+crates/sr-common/src/two_tower/
+├── mod.rs              # TwoTowerEmbedder trait + factory
+├── config.rs           # TwoTowerConfig (dimension, weight)
+├── embedding.rs        # Embedding 型 + 類似度計算
+├── tokenizer.rs        # Token 生成ロジック（正規化済みフィールド→トークン列）
+├── hash_tower.rs       # HashTwoTower: Feature Hashing 実装
+├── onnx_tower.rs       # OnnxTwoTower: ONNX Runtime 実装（Phase 4）
+└── candle_tower.rs     # CandleTwoTower: Candle 実装（Phase 4+）
+```
+
+---
+
+### 3.13 TwoTowerEmbedder Trait
+
+```rust
+// crates/sr-common/src/two_tower/mod.rs
+
+use crate::{Project, Talent};
+
+/// Two-Tower モデルの抽象インターフェース
+///
+/// 実装例:
+/// - HashTwoTower: Feature Hashing（決定論的、学習不要）
+/// - OnnxTwoTower: ONNX Runtime（学習済みモデル読み込み）
+/// - CandleTwoTower: Candle（Rust-native推論）
+pub trait TwoTowerEmbedder: Send + Sync {
+    /// 実装名（ログ/比較用）
+    fn name(&self) -> &'static str;
+
+    /// 埋め込み次元数
+    fn dimension(&self) -> usize;
+
+    /// 案件を埋め込みベクトルに変換
+    fn embed_project(&self, project: &Project) -> Embedding;
+
+    /// 人材を埋め込みベクトルに変換
+    fn embed_talent(&self, talent: &Talent) -> Embedding;
+
+    /// 2つの埋め込みベクトルの類似度（0.0〜1.0）
+    fn similarity(&self, a: &Embedding, b: &Embedding) -> f32 {
+        cosine_similarity(&a.vector, &b.vector)
+    }
+
+    /// 複数の人材を案件に対してランキング
+    fn rank_talents<'a>(
+        &self,
+        project: &Project,
+        talents: impl Iterator<Item = &'a Talent>,
+    ) -> Vec<(i64, f32)> {
+        let project_emb = self.embed_project(project);
+        let mut scores: Vec<_> = talents
+            .map(|t| {
+                let talent_emb = self.embed_talent(t);
+                let sim = self.similarity(&project_emb, &talent_emb);
+                (t.id.unwrap_or(0), sim)
+            })
+            .collect();
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scores
+    }
+}
+
+/// 埋め込みベクトル
+#[derive(Debug, Clone)]
+pub struct Embedding {
+    pub vector: Vec<f32>,
+    pub source_type: EmbeddingSource,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EmbeddingSource {
+    Project,
+    Talent,
+}
+
+/// コサイン類似度
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "embedding dimension mismatch");
+
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+
+    // Clamp to [0, 1] for normalized similarity
+    ((dot / (norm_a * norm_b)) + 1.0) / 2.0
+}
+```
+
+---
+
+### 3.14 Tokenizer（正規化フィールド → トークン列）
+
+```rust
+// crates/sr-common/src/two_tower/tokenizer.rs
+
+use crate::{Project, Talent};
+
+/// トークン形式:
+/// - skill:req:<normalized>    (案件の必須スキル)
+/// - skill:pref:<normalized>   (案件の優遇スキル)
+/// - skill:have:<normalized>   (人材の保有スキル)
+/// - loc:pref:<normalized>     (都道府県/エリア)
+/// - loc:station:<normalized>  (最寄り駅)
+/// - remote:<type>             (フルリモート/ハイブリッド/オンサイト)
+/// - exp:years:<bucket>        (経験年数バケット: 0-2, 3-5, 6-10, 11+)
+/// - contract:<type>           (契約形態)
+/// - tanka:range:<bucket>      (単価レンジバケット)
+/// - lang:ja:<level>           (日本語レベル)
+/// - lang:en:<level>           (英語レベル)
+
+pub fn tokenize_project(project: &Project) -> Vec<String> {
+    let mut tokens = Vec::new();
+
+    // 必須スキル
+    for skill in &project.required_skills_keywords {
+        tokens.push(format!("skill:req:{}", skill.to_lowercase()));
+    }
+
+    // 優遇スキル
+    for skill in &project.preferred_skills_keywords {
+        tokens.push(format!("skill:pref:{}", skill.to_lowercase()));
+    }
+
+    // 勤務地
+    if let Some(ref pref) = project.work_todofuken {
+        tokens.push(format!("loc:pref:{}", pref));
+    }
+    if let Some(ref area) = project.work_area {
+        tokens.push(format!("loc:area:{}", area));
+    }
+    if let Some(ref station) = project.work_station {
+        tokens.push(format!("loc:station:{}", station));
+    }
+
+    // リモート
+    if let Some(ref remote) = project.remote_onsite {
+        tokens.push(format!("remote:{}", remote));
+    }
+
+    // 経験年数（バケット化）
+    if let Some(years) = project.min_experience_years {
+        let bucket = exp_years_bucket(years);
+        tokens.push(format!("exp:years:{}", bucket));
+    }
+
+    // 契約形態
+    if let Some(ref contract) = project.contract_type {
+        tokens.push(format!("contract:{}", contract));
+    }
+
+    // 単価レンジ（バケット化）
+    if let Some(min_tanka) = project.monthly_tanka_min {
+        let bucket = tanka_bucket(min_tanka);
+        tokens.push(format!("tanka:min:{}", bucket));
+    }
+    if let Some(max_tanka) = project.monthly_tanka_max {
+        let bucket = tanka_bucket(max_tanka);
+        tokens.push(format!("tanka:max:{}", bucket));
+    }
+
+    // 日本語・英語
+    if let Some(ref ja) = project.japanese_skill {
+        tokens.push(format!("lang:ja:{}", ja));
+    }
+    if let Some(ref en) = project.english_skill {
+        tokens.push(format!("lang:en:{}", en));
+    }
+
+    tokens
+}
+
+pub fn tokenize_talent(talent: &Talent) -> Vec<String> {
+    let mut tokens = Vec::new();
+
+    // 保有スキル
+    for skill in &talent.possessed_skills_keywords {
+        tokens.push(format!("skill:have:{}", skill.to_lowercase()));
+    }
+
+    // 居住地
+    if let Some(ref pref) = talent.residential_todofuken {
+        tokens.push(format!("loc:pref:{}", pref));
+    }
+    if let Some(ref area) = talent.residential_area {
+        tokens.push(format!("loc:area:{}", area));
+    }
+    if let Some(ref station) = talent.nearest_station {
+        tokens.push(format!("loc:station:{}", station));
+    }
+
+    // 希望リモート
+    if let Some(ref remote) = talent.desired_remote_onsite {
+        tokens.push(format!("remote:{}", remote));
+    }
+
+    // 経験年数
+    if let Some(years) = talent.min_experience_years {
+        let bucket = exp_years_bucket(years);
+        tokens.push(format!("exp:years:{}", bucket));
+    }
+
+    // 契約形態（primary + secondary）
+    if let Some(ref contract) = talent.primary_contract_type {
+        tokens.push(format!("contract:primary:{}", contract));
+    }
+    if let Some(ref contract) = talent.secondary_contract_type {
+        tokens.push(format!("contract:secondary:{}", contract));
+    }
+
+    // 希望単価
+    if let Some(min_price) = talent.desired_price_min {
+        let bucket = tanka_bucket(min_price);
+        tokens.push(format!("tanka:desired:{}", bucket));
+    }
+
+    // 日本語・英語
+    if let Some(ref ja) = talent.japanese_skill {
+        tokens.push(format!("lang:ja:{}", ja));
+    }
+    if let Some(ref en) = talent.english_skill {
+        tokens.push(format!("lang:en:{}", en));
+    }
+
+    tokens
+}
+
+/// 経験年数バケット: 0-2, 3-5, 6-10, 11+
+fn exp_years_bucket(years: i32) -> &'static str {
+    match years {
+        0..=2 => "0-2",
+        3..=5 => "3-5",
+        6..=10 => "6-10",
+        _ => "11+",
+    }
+}
+
+/// 単価バケット: 30以下, 30-50, 50-70, 70-100, 100+（万円）
+fn tanka_bucket(tanka: u32) -> &'static str {
+    match tanka {
+        0..=29 => "under30",
+        30..=49 => "30-50",
+        50..=69 => "50-70",
+        70..=99 => "70-100",
+        _ => "100+",
+    }
+}
+```
+
+---
+
+### 3.15 HashTwoTower 実装（Feature Hashing）
+
+```rust
+// crates/sr-common/src/two_tower/hash_tower.rs
+
+use super::{Embedding, EmbeddingSource, TwoTowerEmbedder};
+use crate::{Project, Talent};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+/// Feature Hashing を用いた決定論的 Two-Tower
+///
+/// - 学習不要（固定ハッシュ関数）
+/// - 高速（O(n) where n = token count）
+/// - スパース表現をハッシュで固定次元に圧縮
+pub struct HashTwoTower {
+    pub config: TwoTowerConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct TwoTowerConfig {
+    /// 埋め込み次元数（2のべき乗推奨: 256, 512, 1024）
+    pub dimension: usize,
+    /// Two-Tower スコアの重み（total_score 計算時）
+    pub weight: f32,
+    /// 有効/無効フラグ
+    pub enabled: bool,
+}
+
+impl Default for TwoTowerConfig {
+    fn default() -> Self {
+        Self {
+            dimension: 256,
+            weight: 0.0, // MVP では無効
+            enabled: false,
+        }
+    }
+}
+
+impl HashTwoTower {
+    pub fn new(config: TwoTowerConfig) -> Self {
+        Self { config }
+    }
+
+    /// トークンをハッシュして次元インデックスに変換
+    fn hash_token(&self, token: &str) -> usize {
+        let mut hasher = DefaultHasher::new();
+        token.hash(&mut hasher);
+        (hasher.finish() as usize) % self.config.dimension
+    }
+
+    /// トークン列を埋め込みベクトルに変換
+    fn tokens_to_embedding(&self, tokens: Vec<String>, source: EmbeddingSource) -> Embedding {
+        let mut vector = vec![0.0f32; self.config.dimension];
+
+        for token in &tokens {
+            let idx = self.hash_token(token);
+            // Sign hashing: 偶数ハッシュ → +1, 奇数ハッシュ → -1
+            let sign = if self.hash_token(&format!("{}_sign", token)) % 2 == 0 {
+                1.0
+            } else {
+                -1.0
+            };
+            vector[idx] += sign;
+        }
+
+        // L2正規化
+        let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in &mut vector {
+                *v /= norm;
+            }
+        }
+
+        Embedding {
+            vector,
+            source_type: source,
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+
+impl TwoTowerEmbedder for HashTwoTower {
+    fn name(&self) -> &'static str {
+        "hash"
+    }
+
+    fn dimension(&self) -> usize {
+        self.config.dimension
+    }
+
+    fn embed_project(&self, project: &Project) -> Embedding {
+        let tokens = super::tokenizer::tokenize_project(project);
+        self.tokens_to_embedding(tokens, EmbeddingSource::Project)
+    }
+
+    fn embed_talent(&self, talent: &Talent) -> Embedding {
+        let tokens = super::tokenizer::tokenize_talent(talent);
+        self.tokens_to_embedding(tokens, EmbeddingSource::Talent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_tower_produces_normalized_vectors() {
+        let tower = HashTwoTower::new(TwoTowerConfig::default());
+
+        let project = Project {
+            required_skills_keywords: vec!["rust".into(), "python".into()],
+            work_todofuken: Some("東京都".into()),
+            ..Default::default()
+        };
+
+        let emb = tower.embed_project(&project);
+
+        // L2ノルムが1.0であることを確認
+        let norm: f32 = emb.vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "L2 norm should be 1.0, got {}", norm);
+    }
+
+    #[test]
+    fn similar_inputs_have_higher_similarity() {
+        let tower = HashTwoTower::new(TwoTowerConfig::default());
+
+        let project = Project {
+            required_skills_keywords: vec!["rust".into(), "aws".into()],
+            work_todofuken: Some("東京都".into()),
+            ..Default::default()
+        };
+
+        let similar_talent = Talent {
+            possessed_skills_keywords: vec!["rust".into(), "aws".into(), "docker".into()],
+            residential_todofuken: Some("東京都".into()),
+            ..Default::default()
+        };
+
+        let different_talent = Talent {
+            possessed_skills_keywords: vec!["cobol".into(), "oracle".into()],
+            residential_todofuken: Some("北海道".into()),
+            ..Default::default()
+        };
+
+        let proj_emb = tower.embed_project(&project);
+        let similar_emb = tower.embed_talent(&similar_talent);
+        let different_emb = tower.embed_talent(&different_talent);
+
+        let similar_score = tower.similarity(&proj_emb, &similar_emb);
+        let different_score = tower.similarity(&proj_emb, &different_emb);
+
+        assert!(
+            similar_score > different_score,
+            "Similar talent should have higher score: {} vs {}",
+            similar_score,
+            different_score
+        );
+    }
+}
+```
+
+---
+
+### 3.16 interaction_logs DDL（学習データ収集）
+
+```sql
+-- Phase 4 の学習に向けて、予測とFBのペアを記録
+
+CREATE TABLE ses.interaction_logs (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- マッチング情報
+    match_result_id INTEGER REFERENCES ses.match_results(id),
+    talent_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+
+    -- Two-Tower 予測
+    two_tower_score FLOAT,          -- 予測スコア
+    two_tower_embedder VARCHAR(50), -- hash / onnx / candle
+    two_tower_version VARCHAR(20),  -- モデルバージョン
+
+    -- ビジネスルールスコア（比較用）
+    business_score FLOAT,
+
+    -- 結果（後から更新）
+    outcome VARCHAR(20),  -- accepted / rejected / no_response / NULL
+    feedback_at TIMESTAMPTZ,
+
+    -- メタデータ
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    -- インデックス
+    CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, created_at::date)
+);
+
+-- Phase 4 学習用のビュー
+CREATE OR REPLACE VIEW ses.training_pairs AS
+SELECT
+    il.talent_id,
+    il.project_id,
+    il.two_tower_score,
+    il.business_score,
+    il.outcome,
+    CASE
+        WHEN il.outcome = 'accepted' THEN 1.0
+        WHEN il.outcome = 'rejected' THEN 0.0
+        ELSE NULL  -- no_response は除外
+    END AS label,
+    il.created_at
+FROM ses.interaction_logs il
+WHERE il.outcome IN ('accepted', 'rejected');
+
+-- 学習データ統計
+CREATE OR REPLACE VIEW ses.training_stats AS
+SELECT
+    COUNT(*) FILTER (WHERE outcome = 'accepted') AS accepted_count,
+    COUNT(*) FILTER (WHERE outcome = 'rejected') AS rejected_count,
+    COUNT(*) FILTER (WHERE outcome IS NULL) AS pending_count,
+    MIN(created_at) AS first_log_at,
+    MAX(created_at) AS last_log_at,
+    COUNT(DISTINCT DATE_TRUNC('day', created_at)) AS active_days
+FROM ses.interaction_logs;
+```
+
+---
+
+### 3.17 OnnxTwoTower スタブ（Phase 4 準備）
+
+```rust
+// crates/sr-common/src/two_tower/onnx_tower.rs
+
+use super::{Embedding, EmbeddingSource, TwoTowerEmbedder};
+use crate::{Project, Talent};
+
+/// ONNX Runtime を使用した Two-Tower
+///
+/// Phase 4 で学習済みモデルを読み込む
+pub struct OnnxTwoTower {
+    // session: ort::Session, // Phase 4 で有効化
+    model_path: String,
+    dimension: usize,
+}
+
+impl OnnxTwoTower {
+    pub fn new(model_path: &str, dimension: usize) -> Result<Self, String> {
+        // Phase 4: ONNX ランタイム初期化
+        // let session = ort::Session::new(model_path)?;
+
+        Ok(Self {
+            model_path: model_path.to_string(),
+            dimension,
+        })
+    }
+}
+
+impl TwoTowerEmbedder for OnnxTwoTower {
+    fn name(&self) -> &'static str {
+        "onnx"
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn embed_project(&self, _project: &Project) -> Embedding {
+        // Phase 4: ONNX 推論
+        // let input = tokenize_and_encode(project);
+        // let output = self.session.run(input)?;
+
+        Embedding {
+            vector: vec![0.0; self.dimension],
+            source_type: EmbeddingSource::Project,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn embed_talent(&self, _talent: &Talent) -> Embedding {
+        // Phase 4: ONNX 推論
+        Embedding {
+            vector: vec![0.0; self.dimension],
+            source_type: EmbeddingSource::Talent,
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+```
+
+---
+
+### 3.18 CandleTwoTower スタブ（Phase 4+）
+
+```rust
+// crates/sr-common/src/two_tower/candle_tower.rs
+
+use super::{Embedding, EmbeddingSource, TwoTowerEmbedder};
+use crate::{Project, Talent};
+
+/// Candle (Rust-native) を使用した Two-Tower
+///
+/// Phase 4+ でPyTorchモデルをRustに移植
+pub struct CandleTwoTower {
+    // model: candle::Model, // Phase 4+ で有効化
+    dimension: usize,
+}
+
+impl CandleTwoTower {
+    pub fn new(dimension: usize) -> Self {
+        Self { dimension }
+    }
+}
+
+impl TwoTowerEmbedder for CandleTwoTower {
+    fn name(&self) -> &'static str {
+        "candle"
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn embed_project(&self, _project: &Project) -> Embedding {
+        // Phase 4+: Candle 推論
+        Embedding {
+            vector: vec![0.0; self.dimension],
+            source_type: EmbeddingSource::Project,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn embed_talent(&self, _talent: &Talent) -> Embedding {
+        // Phase 4+: Candle 推論
+        Embedding {
+            vector: vec![0.0; self.dimension],
+            source_type: EmbeddingSource::Talent,
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+```
+
+---
+
+### 3.19 Two-Tower と既存スコアリングの統合
+
+```rust
+// crates/sr-common/src/matching/scoring.rs への追加
+
+use crate::two_tower::{TwoTowerConfig, TwoTowerEmbedder, HashTwoTower};
+
+/// 総合スコア計算（Two-Tower 込み）
+pub fn calculate_total_score_with_two_tower(
+    business_score: f32,
+    semantic_score: f32,
+    historical_score: f32,
+    two_tower_score: Option<f32>,
+    weights: &TotalScoreWeights,
+    two_tower_config: &TwoTowerConfig,
+) -> f32 {
+    // 既存の 3要素スコア
+    let base_score = calculate_total_score(
+        business_score,
+        semantic_score,
+        historical_score,
+        weights,
+    );
+
+    // Two-Tower が無効または未計算の場合はそのまま返す
+    if !two_tower_config.enabled {
+        return base_score;
+    }
+
+    let tt_score = two_tower_score.unwrap_or(0.5); // デフォルト: 中立
+
+    // 重み付き合成
+    // MVP: two_tower_weight = 0.0 なので影響なし
+    let total_weight = 1.0 + two_tower_config.weight;
+    let combined = (base_score + two_tower_config.weight * tt_score) / total_weight;
+
+    combined.clamp(0.0, 1.0)
+}
+
+/// MatchingEngine への Two-Tower 統合
+impl MatchingEngine {
+    /// Two-Tower 付きマッチング
+    pub fn match_with_two_tower(
+        &self,
+        project: &Project,
+        talents: &[Talent],
+        embedder: &dyn TwoTowerEmbedder,
+    ) -> Vec<MatchResult> {
+        // 1. 既存の prefilter + 詳細スコア計算
+        let mut results = self.match_project_to_talents(project, talents);
+
+        // 2. Two-Tower スコアを追加
+        let project_emb = embedder.embed_project(project);
+
+        for result in &mut results {
+            if let Some(talent) = talents.iter().find(|t| t.id == Some(result.talent_id)) {
+                let talent_emb = embedder.embed_talent(talent);
+                let tt_score = embedder.similarity(&project_emb, &talent_emb);
+                result.two_tower_score = Some(tt_score);
+            }
+        }
+
+        // 3. 総合スコアを再計算
+        for result in &mut results {
+            result.total_score = calculate_total_score_with_two_tower(
+                result.business_score,
+                result.semantic_score.unwrap_or(0.0),
+                result.historical_score.unwrap_or(0.0),
+                result.two_tower_score,
+                &self.weights,
+                &self.two_tower_config,
+            );
+        }
+
+        // 4. スコア順でソート（KO は除外済み）
+        results.sort_by(|a, b| {
+            b.total_score
+                .partial_cmp(&a.total_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        results
+    }
+}
+```
+
+---
+
+### 3.20 Two-Tower ファクトリ
+
+```rust
+// crates/sr-common/src/two_tower/mod.rs への追加
+
+/// Two-Tower 実装のファクトリ
+pub fn create_embedder(name: &str, config: TwoTowerConfig) -> Box<dyn TwoTowerEmbedder> {
+    match name {
+        "hash" => Box::new(HashTwoTower::new(config)),
+        "onnx" => {
+            // Phase 4: モデルパスを設定から読み込み
+            let model_path = std::env::var("TWO_TOWER_ONNX_PATH")
+                .unwrap_or_else(|_| "models/two_tower.onnx".into());
+            Box::new(OnnxTwoTower::new(&model_path, config.dimension).unwrap())
+        }
+        "candle" => Box::new(CandleTwoTower::new(config.dimension)),
+        _ => Box::new(HashTwoTower::new(config)), // デフォルト
+    }
+}
+
+/// 環境変数から Two-Tower 設定を読み込み
+pub fn load_config_from_env() -> TwoTowerConfig {
+    TwoTowerConfig {
+        dimension: std::env::var("TWO_TOWER_DIMENSION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(256),
+        weight: std::env::var("TWO_TOWER_WEIGHT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0),
+        enabled: std::env::var("TWO_TOWER_ENABLED")
+            .ok()
+            .map(|s| s == "true" || s == "1")
+            .unwrap_or(false),
+    }
+}
+```
+
+---
+
+### 3.21 Two-Tower 実装順序
+
+| Step | 内容 | 状態 |
+|------|------|------|
+| **3-A** | TwoTowerEmbedder trait + HashTwoTower | 🔴 着手予定 |
+| **3-B** | interaction_logs DDL + ログ記録 | ⏳ 待機 |
+| **3-C** | OnnxTwoTower / CandleTwoTower スタブ | ⏳ 待機 |
+| **3-D** | GUI に Two-Tower スコア表示 | ⏳ 待機 |
+
+#### 3-A Done 条件
+
+- [ ] `TwoTowerEmbedder` trait が定義されている
+- [ ] `HashTwoTower` が実装されている
+- [ ] `tokenize_project()` / `tokenize_talent()` が動作する
+- [ ] `cargo test` で類似度テストが通る
+
+#### 3-B Done 条件
+
+- [ ] `interaction_logs` DDL が本番DBに適用されている
+- [ ] マッチング実行時に `interaction_logs` にINSERTされる
+- [ ] `training_pairs` ビューが動作する
+
+#### 3-C Done 条件
+
+- [ ] `OnnxTwoTower` / `CandleTwoTower` のスタブが実装されている
+- [ ] `create_embedder("onnx", ...)` / `create_embedder("candle", ...)` がコンパイル通る
+- [ ] 環境変数 `TWO_TOWER_EMBEDDER` で切り替え可能
+
+---
+
+## Phase 3.5: GUI 契約層（GUI直前の薄い層）
+
+Two-Tower が入った状態で GUI に入ると、UI が「表示するだけの箱」になりやすい。
+GUI に入る前に **「GUIが食べるための契約」** を固定する薄い層を挟む。
+
+### 3.22 GUIに入れる開始条件
+
+以下の3つが揃った瞬間、GUIは「作れる」から「運用に乗る」になる：
+
+| 条件 | 内容 |
+|------|------|
+| **(A)** | 返せるレスポンスが固定されている（GUIの土台） |
+| **(B)** | フィードバックを書き戻せる導線がある（UIの意味） |
+| **(C)** | キュー/ジョブの可視化ができる（運用できるUI） |
+
+---
+
+### 3.23 (A) マッチャー呼び出し口の固定
+
+GUIが必要とするのは「点数」よりも **理由**。最低限このセットが返る状態を作る：
+
+```rust
+// crates/sr-common/src/api/match_response.rs
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// GUI向けマッチング結果レスポンス
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchResponse {
+    /// タレントID
+    pub talent_id: i64,
+    /// 案件ID
+    pub project_id: i64,
+
+    // === 判定結果 ===
+    /// 自動マッチ推奨（HardKoなし & score > threshold）
+    pub auto_match_eligible: bool,
+    /// 手動レビュー必要（SoftKo or 閾値ギリギリ）
+    pub manual_review_required: bool,
+
+    // === スコア ===
+    /// 最終スコア（0.0〜1.0）
+    pub score: f32,
+    /// スコア内訳
+    pub score_breakdown: ScoreBreakdown,
+    /// Two-Tower スコア（有効時のみ）
+    pub two_tower_score: Option<f32>,
+
+    // === KO判定 ===
+    /// KO判定の詳細（チェック名 → KoDecision）
+    pub ko_decisions: HashMap<String, KoDecisionDto>,
+    /// 表示用KO理由（整形済み）
+    pub ko_reasons: Vec<String>,
+
+    // === 説明 ===
+    /// 各項目の詳細説明
+    pub details: MatchDetails,
+
+    // === メタデータ ===
+    pub engine_version: String,
+    pub rule_version: String,
+    pub matched_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// スコア内訳
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScoreBreakdown {
+    /// 単価スコア（0.0〜1.0）
+    pub tanka: f32,
+    /// ロケーションスコア（0.0〜1.0）
+    pub location: f32,
+    /// スキルスコア（0.0〜1.0）
+    pub skills: f32,
+    /// 経験年数スコア（0.0〜1.0）
+    pub experience: f32,
+    /// 契約形態スコア（0.0〜1.0）
+    pub contract: f32,
+    /// ビジネスルール総合（prefilter用）
+    pub business_total: f32,
+}
+
+/// KO判定DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KoDecisionDto {
+    /// KOタイプ: "hard_ko" / "soft_ko" / "pass"
+    pub ko_type: String,
+    /// KO理由（nullならPass）
+    pub reason: Option<String>,
+    /// 詳細説明
+    pub details: Option<String>,
+}
+
+/// 詳細説明
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MatchDetails {
+    /// ロケーション詳細（例: "東京都 → 東京都（一致）"）
+    pub location: Option<String>,
+    /// スキルマッチ詳細（例: "3/5 必須スキル一致"）
+    pub skills: Option<String>,
+    /// 単価詳細（例: "希望60万 vs 案件50-70万（範囲内）"）
+    pub tanka: Option<String>,
+    /// 経験詳細（例: "5年 >= 3年（要件満たす）"）
+    pub experience: Option<String>,
+    /// 契約詳細（例: "業務委託 ⊂ {業務委託,派遣}（OK）"）
+    pub contract: Option<String>,
+    /// フロー詳細（例: "2次請け <= 3次請けまで（OK）"）
+    pub flow: Option<String>,
+    /// 日本語詳細
+    pub japanese: Option<String>,
+    /// 英語詳細
+    pub english: Option<String>,
+    /// 年齢詳細（例: "35歳 ∈ [25, 45]（OK）"）
+    pub age: Option<String>,
+    /// 国籍詳細
+    pub nationality: Option<String>,
+    /// 稼働開始詳細
+    pub availability: Option<String>,
+}
+
+/// マッチング設定（環境変数から読み込み）
+#[derive(Debug, Clone)]
+pub struct MatchConfig {
+    /// 自動マッチ推奨の閾値（デフォルト: 0.7）
+    pub auto_match_threshold: f32,
+    /// 手動レビュー推奨のマージン（閾値±margin で manual_review_required = true）
+    pub manual_review_margin: f32,
+}
+
+impl Default for MatchConfig {
+    fn default() -> Self {
+        Self {
+            auto_match_threshold: 0.7,
+            manual_review_margin: 0.1,
+        }
+    }
+}
+
+impl MatchConfig {
+    /// 環境変数から設定を読み込み
+    pub fn from_env() -> Self {
+        Self {
+            auto_match_threshold: std::env::var("AUTO_MATCH_THRESHOLD")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.7),
+            manual_review_margin: std::env::var("MANUAL_REVIEW_MARGIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.1),
+        }
+    }
+}
+
+impl MatchResponse {
+    /// KO判定からauto_match_eligibleを判定
+    pub fn is_auto_match_eligible(&self, config: &MatchConfig) -> bool {
+        !self.ko_decisions.values().any(|d| d.ko_type == "hard_ko")
+            && self.score >= config.auto_match_threshold
+            && !self.manual_review_required
+    }
+
+    /// 閾値ギリギリかどうか（手動レビュー推奨）
+    pub fn is_near_threshold(&self, config: &MatchConfig) -> bool {
+        let lower = config.auto_match_threshold - config.manual_review_margin;
+        let upper = config.auto_match_threshold + config.manual_review_margin;
+        self.score >= lower && self.score <= upper
+    }
+}
+```
+
+**環境変数**:
+```bash
+# 自動マッチ推奨の閾値（デフォルト: 0.7）
+AUTO_MATCH_THRESHOLD=0.7
+
+# 手動レビュー推奨のマージン（閾値±0.1 で推奨）
+MANUAL_REVIEW_MARGIN=0.1
+```
+
+---
+
+### 3.24 (B) フィードバック書き戻しの設計
+
+営業FBがないとUIの意味が薄い。GUIから押せるのはこれ：
+
+| ボタン | feedback_type | 意味 |
+|--------|---------------|------|
+| 👍 | `thumbs_up` | 推奨として良い |
+| 👎 | `thumbs_down` | 推奨として悪い |
+| ✅ OK | `review_ok` | 手動レビューの結論：合格 |
+| ❌ NG | `review_ng` | 手動レビューの結論：不合格 |
+| ⏸️ 保留 | `review_pending` | 手動レビューの結論：保留 |
+
+> **DDL**: [3.8 feedback_events DDL（統一版）](#38-feedback_events-ddl統一版) を参照。
+> GUIの評価（thumbs_up/down, review_ok/ng/pending）と営業プロセス（accepted/rejected等）を統一イベントログとして保存。
+
+#### フィードバックDTO
+
+```rust
+// crates/sr-common/src/api/feedback.rs
+
+use serde::{Deserialize, Serialize};
+
+/// フィードバック送信リクエスト
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackRequest {
+    /// 紐付け先の interaction_logs.id（推奨）
+    pub interaction_id: Option<i64>,
+    /// 対象マッチ結果ID（interaction_id がない場合の代替）
+    pub match_result_id: Option<i64>,
+    /// タレントID
+    pub talent_id: i64,
+    /// 案件ID
+    pub project_id: i64,
+    /// フィードバックタイプ
+    pub feedback_type: FeedbackType,
+    /// NG理由カテゴリ（NG時のみ）
+    pub ng_reason_category: Option<NgReasonCategory>,
+    /// コメント（任意）
+    pub comment: Option<String>,
+    /// タグ（任意）
+    pub feedback_tags: Option<Vec<String>>,
+    /// 送信者（user_id / "sales" / "ops"）
+    pub actor: String,
+    /// 送信元（"gui" / "crm" / "api"）
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackType {
+    // --- GUI評価 ---
+    /// 👍 推奨として良い
+    ThumbsUp,
+    /// 👎 推奨として悪い
+    ThumbsDown,
+    /// ✅ 手動レビュー合格
+    ReviewOk,
+    /// ❌ 手動レビュー不合格
+    ReviewNg,
+    /// ⏸️ 手動レビュー保留
+    ReviewPending,
+    // --- 営業プロセス ---
+    /// 採用決定
+    Accepted,
+    /// 不採用
+    Rejected,
+    /// 面談設定
+    InterviewScheduled,
+    /// 応答なし
+    NoResponse,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NgReasonCategory {
+    /// 単価が合わない
+    Tanka,
+    /// スキルが足りない
+    Skill,
+    /// 稼働開始が合わない
+    Availability,
+    /// 勤務地が合わない
+    Location,
+    /// 商流が合わない
+    Flow,
+    /// その他
+    Other,
+}
+
+impl FeedbackType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ThumbsUp => "thumbs_up",
+            Self::ThumbsDown => "thumbs_down",
+            Self::ReviewOk => "review_ok",
+            Self::ReviewNg => "review_ng",
+            Self::ReviewPending => "review_pending",
+        }
+    }
+
+    /// Two-Tower学習用のラベル変換
+    pub fn to_training_label(&self) -> Option<f32> {
+        match self {
+            Self::ThumbsUp | Self::ReviewOk => Some(1.0),
+            Self::ThumbsDown | Self::ReviewNg => Some(0.0),
+            Self::ReviewPending => None, // 学習から除外
+        }
+    }
+}
+
+impl NgReasonCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tanka => "tanka",
+            Self::Skill => "skill",
+            Self::Availability => "availability",
+            Self::Location => "location",
+            Self::Flow => "flow",
+            Self::Other => "other",
+        }
+    }
+}
+```
+
+---
+
+### 3.25 (C) キュー/ジョブの可視化
+
+3-binary構成の前提で、GUIで最初に一番効くのはここ：
+
+#### キューダッシュボードDTO
+
+```rust
+// crates/sr-common/src/api/queue_dashboard.rs
+
+use serde::{Deserialize, Serialize};
+
+/// キューダッシュボード集計
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QueueDashboard {
+    /// ステータス別件数
+    pub status_counts: StatusCounts,
+    /// 手動レビュー待ち件数
+    pub manual_review_count: i64,
+    /// エラー件数（last_error IS NOT NULL）
+    pub error_count: i64,
+    /// 処理中（10分以上）の滞留件数
+    pub stale_processing_count: i64,
+    /// 最終更新時刻
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StatusCounts {
+    pub pending: i64,
+    pub processing: i64,
+    pub completed: i64,
+}
+
+/// キュージョブ一覧用DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueJobSummary {
+    /// ジョブID（message_id）
+    pub message_id: String,
+    /// 件名
+    pub subject: String,
+    /// ステータス
+    pub status: String,
+    /// 推奨メソッド
+    pub recommended_method: Option<String>,
+    /// 最終メソッド
+    pub final_method: Option<String>,
+    /// ロック者
+    pub locked_by: Option<String>,
+    /// 処理開始時刻
+    pub processing_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 最終エラー
+    pub last_error: Option<String>,
+    /// 判定理由
+    pub decision_reason: Option<String>,
+    /// 手動レビュー必要
+    pub requires_manual_review: bool,
+    /// リトライ回数
+    pub retry_count: i32,
+    /// 受信日時
+    pub received_at: chrono::DateTime<chrono::Utc>,
+    /// 更新日時
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// キュージョブ詳細DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueJobDetail {
+    /// 基本情報
+    #[serde(flatten)]
+    pub summary: QueueJobSummary,
+    /// 抽出フィールド（JSON）
+    pub partial_fields: Option<serde_json::Value>,
+    /// 優先度
+    pub priority: i32,
+    /// LLMレイテンシ（ms）
+    pub llm_latency_ms: Option<i64>,
+    /// 手動レビュー理由
+    pub manual_review_reason: Option<String>,
+    /// 作成日時
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 完了日時
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+```
+
+#### キュー統計SQL
+
+```sql
+-- ダッシュボード用集計クエリ
+SELECT
+    COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+    COUNT(*) FILTER (WHERE status = 'processing') AS processing,
+    COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+    COUNT(*) FILTER (WHERE requires_manual_review) AS manual_review_count,
+    COUNT(*) FILTER (WHERE last_error IS NOT NULL) AS error_count,
+    COUNT(*) FILTER (
+        WHERE status = 'processing'
+        AND processing_started_at < NOW() - INTERVAL '10 minutes'
+    ) AS stale_processing_count
+FROM ses.extraction_queue;
+
+-- 手動レビュー待ち一覧
+SELECT *
+FROM ses.extraction_queue
+WHERE requires_manual_review = true
+  AND status = 'completed'
+  AND final_method = 'manual_review'
+ORDER BY updated_at DESC
+LIMIT 50;
+```
+
+---
+
+### 3.26 GUI 最小構成（最初に作るべき3画面）
+
+「3ヶ月でGUI」なら、最初はこれで十分強い：
+
+#### 画面1: Queue Dashboard
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Queue Dashboard                                    [更新]   │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
+│  │ Pending  │  │Processing│  │Completed │  │  Error   │    │
+│  │   42     │  │    3     │  │   1,234  │  │    5     │    │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
+│                                                             │
+│  ⚠️ Manual Review Required: 12件                            │
+│  ⏰ Stale Processing (>10min): 1件                          │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│  Recent Jobs                                                │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ Status  │ Subject         │ Method │ Error │ Updated   ││
+│  ├─────────────────────────────────────────────────────────┤│
+│  │ 🟡 pend │ 【案件】Java...  │ LLM    │       │ 10:32     ││
+│  │ 🔵 proc │ RE: Python...   │ Rust   │       │ 10:31     ││
+│  │ 🟢 comp │ 【急募】AWS...  │ LLM    │       │ 10:30     ││
+│  │ 🔴 err  │ Fwd: ...        │ LLM    │ timeout│ 10:28    ││
+│  └─────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 画面2: 案件詳細 → 候補一覧（Ranking）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  案件: Java/Spring Boot エンジニア（東京）          ID: 123  │
+├─────────────────────────────────────────────────────────────┤
+│  単価: 60-75万  │  勤務地: 東京都渋谷区  │  リモート: 週2出社 │
+│  必須: Java, Spring Boot, AWS  │  経験: 5年以上             │
+├─────────────────────────────────────────────────────────────┤
+│  Filter: [SoftKo含む ☑] [リモート可のみ □] [エリア: 全て ▼] │
+├─────────────────────────────────────────────────────────────┤
+│  候補一覧（HardKo除外済み）                     Total: 47名  │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ # │Score│ Name      │ Skills        │ Tanka │ KO      ││
+│  ├─────────────────────────────────────────────────────────┤│
+│  │ 1 │ 0.92│ 田中太郎  │ Java,AWS,K8s  │ 65万  │ Pass    ││
+│  │ 2 │ 0.87│ 山田花子  │ Java,Spring   │ 60万  │ Pass    ││
+│  │ 3 │ 0.81│ 佐藤次郎  │ Java,Python   │ 70万  │ SoftKo  ││
+│  │   │     │           │               │       │ (単価↑) ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                         [1] [2] [3] ... [5] │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 画面3: 候補詳細（Explain）+ フィードバック
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  候補詳細: 田中太郎 ← 案件: Java/Spring Boot       [← 戻る] │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────── Score Breakdown ───────┐                         │
+│  │ Total Score:     0.92         │  ┌─ フィードバック ─┐   │
+│  │ ├─ Tanka:        0.95 ████▉   │  │                  │   │
+│  │ ├─ Location:     1.00 █████   │  │  [👍 良い]       │   │
+│  │ ├─ Skills:       0.85 ████▎   │  │  [👎 悪い]       │   │
+│  │ ├─ Experience:   0.90 ████▌   │  │                  │   │
+│  │ ├─ Contract:     1.00 █████   │  │  ── 手動レビュー ─│   │
+│  │ └─ Two-Tower:    0.88 ████▍   │  │  [✅ OK]         │   │
+│  └───────────────────────────────┘  │  [❌ NG ▼]       │   │
+│                                      │   └ 理由選択     │   │
+│  ┌─────── KO Decisions ──────────┐  │  [⏸️ 保留]       │   │
+│  │ ✅ Tanka:       Pass          │  │                  │   │
+│  │    └ 65万 ∈ [60, 75]          │  │  コメント:       │   │
+│  │ ✅ Location:    Pass          │  │  ┌────────────┐ │   │
+│  │    └ 東京都 → 東京都（一致）   │  │  │            │ │   │
+│  │ ✅ Skills:      Pass          │  │  └────────────┘ │   │
+│  │    └ 3/3 必須スキル一致       │  │  [送信]          │   │
+│  │ ✅ Contract:    Pass          │  └──────────────────┘   │
+│  │    └ 業務委託 ∈ {業務委託}    │                         │
+│  │ ✅ Flow:        Pass          │                         │
+│  │    └ 2次請け <= 3次まで       │                         │
+│  └───────────────────────────────┘                         │
+│                                                             │
+│  ┌─────── フィードバック履歴 ────┐                         │
+│  │ 2024-01-15 10:30 山田(営業): 👍                         │
+│  │ 2024-01-15 11:45 佐藤(営業): ✅ OK "スキル良好"          │
+│  └───────────────────────────────┘                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 3.26.1 GUI 技術選定
+
+3ヶ月でGUIなら「速い / 人が増やせる / 枯れてる」が勝ち。
+
+| レイヤー | 選定 | 理由 |
+|----------|------|------|
+| **フロントエンド** | Next.js 14 + TypeScript | App Router、RSC対応、Vercel親和性 |
+| **UIライブラリ** | shadcn/ui | Tailwind CSS ベース、カスタマイズ容易 |
+| **状態管理** | TanStack Query (React Query) | サーバー状態はQuery、ローカル状態は最小限 |
+| **API通信** | fetch + zod | 型安全、バンドルサイズ小 |
+| **認証** | NextAuth.js (Auth.js) | Google OAuth / メール認証 |
+| **バックエンド** | Axum (Rust) | 既存 sr-common との統合、型安全 |
+
+**ディレクトリ構成（フロント）**:
+```
+sr-gui/
+├── app/
+│   ├── (dashboard)/
+│   │   ├── queue/page.tsx         # Queue Dashboard
+│   │   ├── projects/[id]/page.tsx # 案件詳細 + 候補一覧
+│   │   └── matches/[id]/page.tsx  # 候補詳細 + フィードバック
+│   ├── api/                       # API Routes (BFF層)
+│   └── layout.tsx
+├── components/
+│   ├── ui/                        # shadcn components
+│   ├── queue/                     # キュー関連
+│   ├── match/                     # マッチング関連
+│   └── feedback/                  # フィードバック関連
+└── lib/
+    ├── api.ts                     # API client
+    └── types.ts                   # 共有型定義
+```
+
+---
+
+### 3.26.2 HTTP API エンドポイント詳細
+
+GUIに繋ぐための最小 API。Axum で実装。
+
+```rust
+// crates/sr-api/src/routes.rs
+
+use axum::{routing::{get, post}, Router};
+
+pub fn api_routes() -> Router {
+    Router::new()
+        // ヘルスチェック
+        .route("/health", get(health_check))
+
+        // キュー関連
+        .route("/api/queue/dashboard", get(get_queue_dashboard))
+        .route("/api/queue/jobs", get(list_queue_jobs))
+        .route("/api/queue/jobs/:id", get(get_queue_job))
+        .route("/api/queue/retry/:id", post(retry_queue_job))
+
+        // マッチング関連
+        .route("/api/match", post(run_match))
+        .route("/api/matches/:id", get(get_match_result))
+        .route("/api/projects/:id/candidates", get(list_candidates))
+
+        // フィードバック
+        .route("/api/feedback", post(submit_feedback))
+        .route("/api/feedback/history/:interaction_id", get(get_feedback_history))
+}
+```
+
+#### エンドポイント一覧
+
+| Method | Path | 説明 | Request | Response |
+|--------|------|------|---------|----------|
+| `GET` | `/health` | ヘルスチェック | - | `{ "status": "ok" }` |
+| `GET` | `/api/queue/dashboard` | ダッシュボード集計 | - | `QueueDashboard` |
+| `GET` | `/api/queue/jobs` | ジョブ一覧 | `?status=pending&limit=50` | `Vec<QueueJobSummary>` |
+| `GET` | `/api/queue/jobs/:id` | ジョブ詳細 | - | `QueueJobDetail` |
+| `POST` | `/api/queue/retry/:id` | ジョブ再試行 | - | `{ "success": true }` |
+| `POST` | `/api/match` | マッチング実行 | `MatchRequest` | `Vec<MatchResponse>` |
+| `GET` | `/api/matches/:id` | マッチ結果詳細 | - | `MatchResponse` |
+| `GET` | `/api/projects/:id/candidates` | 案件の候補一覧 | `?include_softko=true` | `Vec<MatchResponse>` |
+| `POST` | `/api/feedback` | フィードバック送信 | `FeedbackRequest` | `{ "id": 123 }` |
+| `GET` | `/api/feedback/history/:id` | FB履歴 | - | `Vec<FeedbackEvent>` |
+
+#### MatchRequest
+
+```rust
+#[derive(Debug, Deserialize)]
+pub struct MatchRequest {
+    pub project: Project,
+    pub talent_ids: Option<Vec<i64>>,  // 指定があればそのタレントのみ
+    pub include_softko: bool,          // SoftKo も含めるか
+    pub limit: Option<usize>,          // 上位N件
+}
+```
+
+#### 認証（MVP）
+
+```rust
+// JWT Bearer Token（NextAuth.js が発行）
+// Authorization: Bearer <token>
+
+pub async fn auth_middleware(
+    TypedHeader(auth): TypedHeader<Authorization<Bearer>>,
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let token = auth.token();
+    let claims = verify_jwt(token, &state.jwt_secret)?;
+    // claims.sub → user_id として使用
+    Ok(next.run(request).await)
+}
+```
+
+---
+
+### 3.27 GUI 契約層の実装順序
+
+| Step | 内容 | 状態 |
+|------|------|------|
+| **3.5-A** | `MatchResponse` DTO 定義 + 既存ロジックからの変換 | 🔴 着手予定 |
+| **3.5-B** | `FeedbackRequest` / `feedback_events` DDL | ⏳ 待機 |
+| **3.5-C** | `QueueDashboard` DTO + 集計クエリ | ⏳ 待機 |
+| **3.5-D** | HTTP API エンドポイント（Axum） | ⏳ 待機 |
+| **3.5-E** | GUI フロントエンド（Next.js） | ⏳ 待機 |
+
+#### 3.5-A Done 条件
+
+- [ ] `MatchResponse` がコンパイル通る
+- [ ] 既存の `MatchResult` → `MatchResponse` 変換が動作する
+- [ ] `score_breakdown` / `ko_decisions` / `details` が全て埋まる
+
+#### 3.5-B Done 条件
+
+- [ ] `feedback_events` DDL が本番DBに適用されている
+- [ ] `FeedbackRequest` がコンパイル通る
+- [ ] `insert_feedback()` が動作する
+
+#### 3.5-C Done 条件
+
+- [ ] `QueueDashboard` がコンパイル通る
+- [ ] ダッシュボード集計クエリが動作する
+- [ ] `QueueJobSummary` 一覧取得が動作する
+
+#### 3.5-D Done 条件
+
+- [ ] `GET /health` が動作する
+- [ ] `GET /api/queue/dashboard` が動作する
+- [ ] `GET /api/queue/jobs` が動作する（status/limit パラメータ対応）
+- [ ] `GET /api/projects/:id/candidates` が動作する
+- [ ] `GET /api/matches/:id` が動作する
+- [ ] `POST /api/feedback` が動作する
+- [ ] JWT認証ミドルウェアが動作する
+
+#### 3.5-E Done 条件
+
+- [ ] Next.js プロジェクトが `sr-gui/` に作成されている
+- [ ] Queue Dashboard 画面が表示できる
+- [ ] 案件詳細 → 候補一覧 画面が表示できる
+- [ ] 候補詳細（Explain）+ フィードバック 画面が表示できる
+- [ ] フィードバック送信が動作する
+- [ ] 認証（Google OAuth or メール）が動作する
+
+---
+
+### 3.28 全体実装順序（修正版）
+
+Two-Tower → GUI契約層 → GUI の流れ：
+
+| Phase | Step | 内容 | 状態 |
+|-------|------|------|------|
+| 3 | 1 | match_results DDL + 保存 | ✅ 完了 |
+| 3 | 2 | LLM shadow 10% | ⏳ 待機 |
+| 3 | 3 | systemd 本番ループ | ⏳ 待機 |
+| 3 | 3-A | TwoTowerEmbedder + HashTwoTower | 🔴 着手予定 |
+| 3 | 3-B | interaction_logs DDL | ⏳ 待機 |
+| 3.5 | A | MatchResponse DTO + MatchConfig | ⏳ 待機 |
+| 3.5 | B | feedback_events DDL（統一版） | ⏳ 待機 |
+| 3.5 | C | QueueDashboard DTO | ⏳ 待機 |
+| 3.5 | D | HTTP API (Axum) | ⏳ 待機 |
+| 3.5 | E | GUI フロントエンド (Next.js) | 🔜 将来 |
+| 4 | - | Two-Tower 学習 | 🔜 将来 |
+
+---
+
+## Phase 4: Two-Tower モデル学習（Preview）
+
+Phase 3 で骨格と**ログ収集**が完了したら、Phase 4 へ移行。
+
+### 4.1 学習開始の前提条件
 
 | 要件 | 目安 |
 |------|------|
-| 最低ペア数 | 1,000+ accepted/rejected ペア |
-| ラベルバランス | accepted : rejected ≒ 1:3〜1:5 |
-| 期間 | 3ヶ月以上のFB蓄積 |
+| `interaction_logs` 件数 | 1,000+ ペア |
+| accepted : rejected 比率 | ≒ 1:3〜1:5 |
+| アクティブ日数 | 30日+ |
+| HashTwoTower との相関 | ベースライン確認済み |
 
-### 4.3 アーキテクチャ（予定）
+### 4.2 学習パイプライン
 
 ```
-┌─────────────────┐    ┌─────────────────┐
-│  Talent Tower   │    │  Project Tower  │
-│  (BERT/MLP)     │    │  (BERT/MLP)     │
-└────────┬────────┘    └────────┬────────┘
-         │                      │
-         └──────────┬───────────┘
-                    │
-              Cosine Similarity
-                    │
-                    ▼
-              Match Score (0.0〜1.0)
+┌─────────────────────────────────────────────────────────┐
+│  1. データ抽出                                           │
+│     training_pairs → Parquet エクスポート                │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│  2. 学習 (Python / PyTorch)                              │
+│     - Two-Tower 構造: Talent Encoder + Project Encoder   │
+│     - Loss: Contrastive / Triplet / InfoNCE              │
+│     - 出力: ONNX モデル                                   │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│  3. 推論 (Rust / ONNX Runtime)                           │
+│     - OnnxTwoTower でモデル読み込み                       │
+│     - HashTwoTower → OnnxTwoTower に切り替え             │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│  4. 評価・ABテスト                                        │
+│     - Hash vs ONNX の比較                                │
+│     - 重み調整: two_tower_weight を 0.0 → 0.2 → ...      │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 4.4 統合方式
+### 4.3 モデルアーキテクチャ（予定）
 
-```rust
-// Phase 4: rule-based + two-tower の加重平均
-let final_score =
-    WEIGHT_RULE_BASED * rule_based_score +
-    WEIGHT_TWO_TOWER * two_tower_score;
+```
+┌─────────────────────┐    ┌─────────────────────┐
+│  Talent Tower       │    │  Project Tower      │
+│  ┌───────────────┐  │    │  ┌───────────────┐  │
+│  │ Token Embed   │  │    │  │ Token Embed   │  │
+│  │ (shared)      │  │    │  │ (shared)      │  │
+│  └───────┬───────┘  │    │  └───────┬───────┘  │
+│          │          │    │          │          │
+│  ┌───────▼───────┐  │    │  ┌───────▼───────┐  │
+│  │ MLP (256)     │  │    │  │ MLP (256)     │  │
+│  └───────┬───────┘  │    │  └───────┬───────┘  │
+│          │          │    │          │          │
+│  ┌───────▼───────┐  │    │  ┌───────▼───────┐  │
+│  │ L2 Normalize  │  │    │  │ L2 Normalize  │  │
+│  └───────┬───────┘  │    │  └───────┬───────┘  │
+└──────────┼──────────┘    └──────────┼──────────┘
+           │                          │
+           └──────────┬───────────────┘
+                      │
+                ┌─────▼─────┐
+                │  Cosine   │
+                │ Similarity│
+                └─────┬─────┘
+                      │
+                      ▼
+                Match Score
+```
 
-// 初期は rule_based=0.8, two_tower=0.2 で開始
-// FB蓄積に応じて two_tower の重みを上げていく
+### 4.4 環境変数（Phase 4）
+
+```bash
+# Two-Tower 設定
+TWO_TOWER_ENABLED=true
+TWO_TOWER_EMBEDDER=onnx          # hash / onnx / candle
+TWO_TOWER_ONNX_PATH=models/two_tower_v1.onnx
+TWO_TOWER_DIMENSION=256
+TWO_TOWER_WEIGHT=0.2             # 0.0〜1.0
+
+# 学習パイプライン
+TRAINING_DATA_PATH=/data/training_pairs.parquet
+TRAINING_OUTPUT_PATH=/models/
 ```
 
 ---
