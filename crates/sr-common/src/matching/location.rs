@@ -632,6 +632,20 @@ mod tests {
     }
 
     #[test]
+    fn drops_blank_stations_during_normalization() {
+        let mut project = project(Some("東京都"), None, Some("フル出社"));
+        project.work_station = Some("   ".into());
+
+        let mut talent = talent(Some("東京都"), None);
+        talent.nearest_station = Some("\t".into());
+
+        let normalized = normalize_for_matching(&project, &talent);
+
+        assert!(normalized.project.work_station.is_none());
+        assert!(normalized.talent.nearest_station.is_none());
+    }
+
+    #[test]
     fn conflicts_between_given_and_derived_area_trigger_softko() {
         let result = evaluate_location(
             &project(Some("東京都"), Some("近畿"), None),
