@@ -15672,12 +15672,12 @@ pub fn load_config_from_env() -> TwoTowerConfig {
 
 ---
 
-### 3.21 Two-Tower 実装順序
+### 3.21 Two-Tower 実装順序（Phase 4 以降で本格活用）
 
 | Step | 内容 | 状態 |
 |------|------|------|
 | **3-A** | TwoTowerEmbedder trait + HashTwoTower | 🔴 着手予定 |
-| **3-B** | interaction_logs DDL + ログ記録 | ⏳ 待機 |
+| **3-B** | interaction_logs DDL + ログ記録 | ✅ 完了 |
 | **3-C** | OnnxTwoTower / CandleTwoTower スタブ | ⏳ 待機 |
 | **3-D** | GUI に Two-Tower スコア表示 | ⏳ 待機 |
 
@@ -15702,7 +15702,7 @@ pub fn load_config_from_env() -> TwoTowerConfig {
 
 ---
 
-## Phase 3.5: GUI 契約層（GUI直前の薄い層）
+## Phase 3.5: GUI 契約層（Axum → GUI → Two-Tower の順）
 
 Two-Tower が入った状態で GUI に入ると、UI が「表示するだけの箱」になりやすい。
 GUI に入る前に **「GUIが食べるための契約」** を固定する薄い層を挟む。
@@ -16381,23 +16381,30 @@ pub async fn auth_middleware(
 
 ---
 
-### 3.28 全体実装順序（修正版）
+### 3.28 全体実装順序（Axum を先に固定する版）
 
-Two-Tower → GUI契約層 → GUI の流れ：
+Axum（契約層）を先に固定 → GUI で可視化/FB → そのログを Two-Tower 学習に回す流れに揃える。
 
 | Phase | Step | 内容 | 状態 |
 |-------|------|------|------|
 | 3 | 1 | match_results DDL + 保存 | ✅ 完了 |
-| 3 | 2 | LLM shadow 10% | ⏳ 待機 |
-| 3 | 3 | systemd 本番ループ | ⏳ 待機 |
-| 3 | 3-A | TwoTowerEmbedder + HashTwoTower | 🔴 着手予定 |
-| 3 | 3-B | interaction_logs DDL | ⏳ 待機 |
-| 3.5 | A | MatchResponse DTO + MatchConfig | ⏳ 待機 |
-| 3.5 | B | feedback_events DDL（統一版） | ⏳ 待機 |
-| 3.5 | C | QueueDashboard DTO | ⏳ 待機 |
-| 3.5 | D | HTTP API (Axum) | ⏳ 待機 |
-| 3.5 | E | GUI フロントエンド (Next.js) | 🔜 将来 |
-| 4 | - | Two-Tower 学習 | 🔜 将来 |
+| 3 | 2 | LLM shadow 10% 比較 + ログ | ✅ 完了 |
+| 3 | 3 | systemd 本番ループ（常駐運用） | ✅ 完了 |
+| 3 | 3-A | TwoTowerEmbedder + HashTwoTower（重み0.0で置物） | 🔴 着手予定 |
+| 3 | 3-B | interaction_logs DDL | ✅ 完了 |
+| 3.5 | A | MatchResponse DTO + MatchConfig | ✅ 完了 |
+| 3.5 | B | feedback_events DDL（統一版） | ✅ 完了 |
+| 3.5 | C | QueueDashboard DTO | ✅ 完了 |
+| 3.5 | D | HTTP API (Axum) — QueueDashboard / MatchResponse / Feedback | ⏳ 待機 |
+| 3.5 | E | GUI フロントエンド (Next.js) | 🎯 ゴール |
+| 4 | - | Two-Tower 学習（interaction_logs + feedback_events 蓄積後） | 🔜 将来 |
+
+#### 3.5-D Axum の最小スコープ
+
+- `GET /queue/dashboard` → `QueueDashboard` DTO を返却（キュー状況の可視化）
+- `GET /projects/:id/candidates` → `MatchResponse[]`（案件ごとの候補一覧）
+- `POST /feedback` → `feedback_events` への書き込み（`interaction_id + feedback_type + actor` で冪等）
+- （任意）`GET /projects/:id` / `GET /talents/:id` → GUI 詳細表示用の素データ
 
 ---
 

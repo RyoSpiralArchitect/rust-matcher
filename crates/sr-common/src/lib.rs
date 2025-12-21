@@ -1,3 +1,4 @@
+pub mod api;
 pub mod calculation;
 pub mod corrections;
 pub mod date;
@@ -14,6 +15,7 @@ use date::NormalizedStartDate;
 // Commonly used data models for matching functions.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Project {
+    pub id: Option<i64>,
     pub work_todofuken: Option<String>,
     pub work_area: Option<String>,
     pub remote_onsite: Option<String>,
@@ -44,6 +46,7 @@ pub struct Project {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Talent {
+    pub id: Option<i64>,
     pub residential_todofuken: Option<String>,
     pub residential_area: Option<String>,
     pub desired_price_min: Option<u32>,
