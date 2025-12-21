@@ -83,7 +83,7 @@ fn check_skill_ko(project_skills: &[String], talent_skills: &[String]) -> KoDeci
 
     if result.requires_manual_review {
         return KoDecision::SoftKo {
-            reason: "required_skills_missing: 必須スキル要件が空".into(),
+            reason: format!("required_skills_manual_review: {}", result.reason),
         };
     }
 
@@ -398,7 +398,7 @@ mod tests {
         assert!(matches!(
             decision,
             KoDecision::SoftKo { reason }
-                if reason.contains("required_skills_missing")
+                if reason.contains("required_skills_manual_review")
         ));
     }
 
