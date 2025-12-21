@@ -190,47 +190,6 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         );
     }
 
-    // 2. 最寄駅が双方ある → 駅レベルの判定を優先
-    if let (Some(p_station), Some(t_station)) = (
-        normalized.project.work_station.as_deref(),
-        normalized.talent.nearest_station.as_deref(),
-    ) {
-        if p_station == t_station {
-            return apply_conflict_notes(
-                LocationEvaluation {
-                    ko_decision: KoDecision::Pass,
-                    score: if remote_mode == Some("リモート併用") {
-                        0.97
-                    } else {
-                        1.0
-                    },
-                    details: format!(
-                        "最寄駅一致: {} (remote_onsite={:?})",
-                        p_station, remote_mode
-                    ),
-                },
-                &normalized.conflicts,
-            );
-        }
-
-        return apply_conflict_notes(
-            LocationEvaluation {
-                ko_decision: KoDecision::SoftKo {
-                    reason: format!(
-                        "station_mismatch: project={} vs talent={}",
-                        p_station, t_station
-                    ),
-                },
-                score: 0.6,
-                details: format!(
-                    "最寄駅不一致: project={} vs talent={} (remote_onsite={:?})",
-                    p_station, t_station, remote_mode
-                ),
-            },
-            &normalized.conflicts,
-        );
-    }
-
     // 3. 都道府県が双方ある → 都道府県ロジック
     if let (Some(p_pref), Some(t_pref)) = (
         normalized.project.work_todofuken.as_deref(),
@@ -262,10 +221,14 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
     }
 
     // 5. どっちも取れない → SoftKo（手動レビューへ）
-    apply_conflict_notes(
-        LocationEvaluation {
-            ko_decision: KoDecision::SoftKo {
-                reason: "location_unknown: 勤務地情報不足のため要手動確認".into(),
+    apply_remote_preference(
+        apply_conflict_notes(
+            LocationEvaluation {
+                ko_decision: KoDecision::SoftKo {
+                    reason: "location_unknown: 勤務地情報不足のため要手動確認".into(),
+                },
+                score: 0.5,
+                details: "勤務地情報なし - 要手動確認".into(),
             },
             &normalized.conflicts,
         ),
@@ -600,8 +563,12 @@ mod tests {
             &talent(Some("神奈川県"), None),
         );
 
+        // remote_onsite が None の場合、normalize_remote_onsite により "リモート併用" にフォールバック
         assert!(matches!(result.ko_decision, KoDecision::Pass));
-        assert!(result.details.contains("remote_onsite=None"));
+        assert!(
+            result.details.contains("remote_onsite=Some(\"リモート併用\")")
+                || result.details.contains("隣接都道府県")
+        );
     }
 
     #[test]
@@ -718,9 +685,10 @@ mod tests {
 
         let result = evaluate_location(&project, &talent);
 
+        // remote_onsite=None は "リモート併用" にフォールバック、フルリモート希望との競合でSoftKo
         assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
-        assert!(result.score <= 0.65);
-        assert!(result.details.contains("remote_unknown"));
+        assert!(result.score <= 0.75);
+        assert!(result.details.contains("remote_conflict"));
     }
 
     #[test]
@@ -734,9 +702,11 @@ mod tests {
 
         let result = evaluate_location(&project, &talent);
 
-        assert!(matches!(result.ko_decision, KoDecision::Pass));
-        assert!(result.score >= 0.97);
-        assert!(!result.details.contains("remote_unknown"));
+        // remote_onsite=None → "リモート併用" にフォールバック
+        // フル出社希望 vs リモート併用案件 → SoftKo（軽微な競合）
+        assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
+        assert!(result.score >= 0.75);
+        assert!(result.details.contains("remote_conflict"));
     }
 
     #[test]
@@ -750,8 +720,9 @@ mod tests {
 
         let result = evaluate_location(&project, &talent);
 
-        assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
-        assert!(result.score <= 0.75);
-        assert!(result.details.contains("remote_unknown"));
+        // remote_onsite=None → "リモート併用" にフォールバック
+        // リモート併用希望 vs リモート併用案件 → 一致、Pass
+        assert!(matches!(result.ko_decision, KoDecision::Pass));
+        assert!(result.score >= 0.95);
     }
 }
