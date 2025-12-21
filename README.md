@@ -237,7 +237,7 @@ export LLM_API_KEY=$GOOGLE_API_KEY
 | `xai` | `XAI_API_KEY` |
 | `huggingface` / `hf` | `HUGGINGFACE_API_KEY` → なければ `HF_TOKEN` |
 
-影比較中 (`LLM_COMPARE_MODE=shadow`) は `LLM_SHADOW_PROVIDER` に対応するキーを同様に検索します。`LLM_API_KEY`/`LLM_SHADOW_API_KEY` を明示的に指定すればそれが最優先です。
+影比較中 (`LLM_COMPARE_MODE=shadow`) は `LLM_SHADOW_PROVIDER` に対応するキーを同様に検索します。`LLM_API_KEY`/`LLM_SHADOW_API_KEY` を明示的に指定すればそれが最優先です。同一プロバイダで shadow を動かす場合は、`LLM_SHADOW_API_KEY` が空でも primary 用のキーを自動で再利用します。
 
 ### LLM ワーカーの挙動（環境変数に紐づく動作）
 

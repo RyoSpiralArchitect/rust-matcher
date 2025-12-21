@@ -155,6 +155,13 @@ impl LlmRuntimeConfig {
         let shadow_api_key = std::env::var("LLM_SHADOW_API_KEY")
             .ok()
             .or_else(|| provider_api_key(&shadow_provider))
+            .or_else(|| {
+                if shadow_provider.eq_ignore_ascii_case(&provider) && !api_key.is_empty() {
+                    Some(api_key.clone())
+                } else {
+                    None
+                }
+            })
             .unwrap_or_default();
 
         Self {
@@ -566,6 +573,23 @@ mod tests {
                 assert_eq!(cfg.api_key, "openai-main");
                 assert_eq!(cfg.shadow_api_key, "xai-secret");
                 assert_eq!(cfg.shadow_provider, "xai");
+            },
+        );
+    }
+
+    #[test]
+    fn shadow_key_falls_back_to_primary_when_same_provider() {
+        with_env(
+            &[
+                ("LLM_PROVIDER", Some("openai")),
+                ("LLM_SHADOW_PROVIDER", Some("openai")),
+                ("LLM_API_KEY", Some("primary-key")),
+                ("LLM_SHADOW_API_KEY", None),
+            ],
+            || {
+                let cfg = LlmRuntimeConfig::from_env();
+                assert_eq!(cfg.api_key, "primary-key");
+                assert_eq!(cfg.shadow_api_key, "primary-key");
             },
         );
     }
