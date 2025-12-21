@@ -2,6 +2,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::skill_normalizer::normalize_skill_set;
 use crate::corrections::{
     flow_depth::correct_flow_dept,
     remote_onsite::correct_remote_onsite,
@@ -19,6 +20,7 @@ pub struct PartialFields {
     pub work_todofuken: Option<String>,
     pub remote_onsite: Option<String>,
     pub flow_dept: Option<String>,
+    pub required_skills_keywords: Option<Vec<String>>,
     pub project_name: Option<String>,
     pub outcome_tag: Option<String>,
     pub decline_reason_tag: Option<String>,
@@ -191,7 +193,17 @@ pub fn extract_work_todofuken(body_text: &str) -> Option<String> {
 
 /// メールから Tier1/Tier2 を抽出し、品質判定まで含めた結果を返す
 pub fn extract_all_fields(body_text: &str, subject: Option<&str>) -> ExtractorOutput {
+    extract_all_fields_with_skills(body_text, subject, None)
+}
+
+/// メールから Tier1/Tier2 を抽出し、スキルキーワードも正規化した結果を返す
+pub fn extract_all_fields_with_skills(
+    body_text: &str,
+    subject: Option<&str>,
+    required_skills_keywords: Option<Vec<String>>,
+) -> ExtractorOutput {
     let mut partial = extract_partial_fields(body_text);
+    partial.required_skills_keywords = required_skills_keywords;
 
     if let Some(subj) = subject {
         let trimmed = subj.trim();
@@ -199,6 +211,8 @@ pub fn extract_all_fields(body_text: &str, subject: Option<&str>) -> ExtractorOu
             partial.project_name = Some(trimmed.to_string());
         }
     }
+
+    normalize_required_skills(&mut partial);
 
     let (quality, decision) = evaluate_quality(&partial);
 
@@ -249,6 +263,16 @@ pub fn extract_flow_dept(body_text: &str) -> Option<String> {
         None
     } else {
         Some(corrected)
+    }
+}
+
+fn normalize_required_skills(partial: &mut PartialFields) {
+    if let Some(raw) = partial.required_skills_keywords.take() {
+        let mut normalized: Vec<_> = normalize_skill_set(&raw).into_iter().collect();
+        if !normalized.is_empty() {
+            normalized.sort();
+            partial.required_skills_keywords = Some(normalized);
+        }
     }
 }
 
@@ -436,6 +460,20 @@ mod tests {
         assert_eq!(
             output.decision.recommended_method,
             RecommendedMethod::RustRecommended
+        );
+    }
+
+    #[test]
+    fn normalizes_required_skills_after_extraction() {
+        let output = extract_all_fields_with_skills(
+            "月額80万円、勤務地: 大阪府。",
+            Some("データエンジニア"),
+            Some(vec![" JavaScript ".into(), "js".into(), "Rust".into()]),
+        );
+
+        assert_eq!(
+            output.partial.required_skills_keywords.unwrap(),
+            vec!["javascript", "rust"]
         );
     }
 }
