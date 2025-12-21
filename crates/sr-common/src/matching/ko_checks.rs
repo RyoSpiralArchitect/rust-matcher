@@ -6,7 +6,6 @@ use super::{
 use crate::{
     Project, Talent,
     corrections::{
-        contract_type::correct_contract_type,
         english_skill::is_english_ko,
         flow_depth::{
             check_flow_ko as check_flow_depth_ko, parse_flow_limit, parse_talent_flow_depth,
@@ -357,6 +356,28 @@ mod tests {
             precision: StartDatePrecision::ExactDay,
             interpretation_note: None,
         }
+    }
+
+    #[test]
+    fn empty_required_skills_force_manual_review() {
+        let mut project = base_project();
+        project.required_skills_keywords.clear();
+
+        let talent = base_talent();
+        let result = run_all_ko_checks(&project, &talent);
+
+        assert!(result.needs_manual_review);
+        let (_, decision) = result
+            .decisions
+            .iter()
+            .find(|(name, _)| *name == "required_skills")
+            .expect("required_skills decision is present");
+
+        assert!(matches!(
+            decision,
+            KoDecision::SoftKo { reason }
+                if reason.contains("required_skills_missing")
+        ));
     }
 
     #[test]
