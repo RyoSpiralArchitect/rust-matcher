@@ -46,6 +46,16 @@ Phase 2 完了 ─────────────────────�
 
 ---
 
+## 現状できること（MVP準備中のサマリ）
+
+- **直人材パースを最優先で確定**: メール本文（将来は PDF も）からタレント情報を正規化し、案件側は「最低限の正規化 + KO/スコア算出」で運用開始できるよう契約を固め済み。
+- **マッチング結果の契約を確定**: `MatchResponse` / `MatchConfig` / `QueueDashboard` DTO を sr-common に実装済み。フロントはこの契約に沿って開発着手可能。
+- **DDL 整備済み**: `match_results` 保存、`interaction_logs` + `feedback_events`（統一版）のテーブルと、Phase4 向け `training_pairs` / `training_stats` ビューまで設計済み。
+- **LLM ワーカーの環境変数ドリブン動作**: `LLM_ENABLED` で完全 OFF、`LLM_PROVIDER`/`LLM_MODEL`/`LLM_ENDPOINT`/`LLM_API_KEY` で実プロバイダを差し替え、`LLM_COMPARE_MODE=shadow` + `LLM_SHADOW_*` で 10% サンプリングの影比較ログを出力できる。`LLM_TIMEOUT_SECONDS` などリトライ・タイムアウトも環境変数で制御。
+- **systemd 運用準備**: 常駐ループ（アイドルポーリング）とキューのカナリア記録を追加済み。`--exit-on-empty` で単発実行も可能。
+
+---
+
 ## アーキテクチャ
 
 ```
