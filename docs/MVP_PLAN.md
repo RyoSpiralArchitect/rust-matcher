@@ -13061,6 +13061,1364 @@ pub fn validate_llm_response(resp: &LlmResponse) -> Result<(), ValidationError> 
 
 ---
 
+### 3.2.1 LLM Provider 実装詳細
+
+#### ディレクトリ構成（拡張版）
+
+```
+sr-llm-worker/src/llm/
+├── mod.rs              # trait定義 + factory + router
+├── types.rs            # LlmRequest / LlmResponse / LlmError
+├── config.rs           # 環境変数からの設定読み込み
+├── validator.rs        # レスポンス検証
+├── prompt.rs           # 抽出用プロンプトテンプレート
+└── providers/
+    ├── mod.rs          # Provider enum + factory
+    ├── deepseek.rs     # DeepSeek (本番 primary)
+    ├── openai.rs       # OpenAI GPT-4o
+    ├── anthropic.rs    # Anthropic Claude
+    ├── google.rs       # Google Gemini
+    ├── mistral.rs      # Mistral AI
+    ├── huggingface.rs  # HuggingFace Inference API
+    ├── n8n_hook.rs     # n8n webhook経由
+    └── mock.rs         # テスト用
+```
+
+#### Provider 一覧と特性
+
+| Provider | Model例 | Endpoint | 特徴 | 用途 |
+|----------|---------|----------|------|------|
+| **DeepSeek** | `deepseek-chat` | `api.deepseek.com` | 高コスパ、日本語良好 | Primary (本番) |
+| **OpenAI** | `gpt-4o`, `gpt-4o-mini` | `api.openai.com` | 高精度、高コスト | Shadow比較 |
+| **Anthropic** | `claude-3-5-sonnet` | `api.anthropic.com` | 長文対応、安全性高 | Shadow比較 |
+| **Google** | `gemini-1.5-pro` | `generativelanguage.googleapis.com` | マルチモーダル対応 | Shadow比較 |
+| **Mistral** | `mistral-large` | `api.mistral.ai` | EU準拠、高速 | Shadow比較 |
+| **HuggingFace** | 任意のモデル | `api-inference.huggingface.co` | OSS、カスタマイズ可 | 実験用 |
+| **n8n_hook** | (経由) | 設定可能 | 既存n8nワークフロー活用 | 移行期間 |
+| **Mock** | - | - | 固定レスポンス | テスト |
+
+---
+
+#### 環境変数（全プロバイダ対応版）
+
+```bash
+# ==================================================
+# 基本設定
+# ==================================================
+LLM_ENABLED=1                              # 0でLLM無効化
+LLM_TIMEOUT_SECONDS=30                     # タイムアウト
+LLM_MAX_RETRIES=3                          # 最大リトライ
+LLM_RETRY_BACKOFF_SECONDS=5                # リトライ間隔
+
+# ==================================================
+# Primary Provider (本番で使用)
+# ==================================================
+LLM_PROVIDER=deepseek                      # 使用するprovider
+LLM_MODEL=deepseek-chat                    # モデル名
+
+# ==================================================
+# DeepSeek
+# ==================================================
+DEEPSEEK_API_KEY=sk-xxx
+DEEPSEEK_ENDPOINT=https://api.deepseek.com/v1/chat/completions
+DEEPSEEK_MODEL=deepseek-chat
+
+# ==================================================
+# OpenAI
+# ==================================================
+OPENAI_API_KEY=sk-xxx
+OPENAI_ENDPOINT=https://api.openai.com/v1/chat/completions
+OPENAI_MODEL=gpt-4o-mini                   # gpt-4o | gpt-4o-mini | gpt-4-turbo
+OPENAI_ORG_ID=org-xxx                      # Optional
+
+# ==================================================
+# Anthropic
+# ==================================================
+ANTHROPIC_API_KEY=sk-ant-xxx
+ANTHROPIC_ENDPOINT=https://api.anthropic.com/v1/messages
+ANTHROPIC_MODEL=claude-3-5-sonnet-20241022 # claude-3-5-sonnet | claude-3-opus
+ANTHROPIC_VERSION=2023-06-01               # API version header
+
+# ==================================================
+# Google (Gemini)
+# ==================================================
+GOOGLE_API_KEY=AIza-xxx
+GOOGLE_ENDPOINT=https://generativelanguage.googleapis.com/v1beta/models
+GOOGLE_MODEL=gemini-1.5-pro                # gemini-1.5-pro | gemini-1.5-flash
+GOOGLE_PROJECT_ID=sponto-xxx               # Vertex AI使用時
+
+# ==================================================
+# Mistral
+# ==================================================
+MISTRAL_API_KEY=xxx
+MISTRAL_ENDPOINT=https://api.mistral.ai/v1/chat/completions
+MISTRAL_MODEL=mistral-large-latest         # mistral-large | mistral-medium | mistral-small
+
+# ==================================================
+# HuggingFace
+# ==================================================
+HUGGINGFACE_API_KEY=hf_xxx
+HUGGINGFACE_ENDPOINT=https://api-inference.huggingface.co/models
+HUGGINGFACE_MODEL=mistralai/Mixtral-8x7B-Instruct-v0.1
+
+# ==================================================
+# n8n Webhook (既存ワークフロー経由)
+# ==================================================
+N8N_WEBHOOK_URL=https://n8n.sponto.jp/webhook/llm-extraction
+N8N_API_KEY=xxx                            # X-API-Key header
+N8N_TIMEOUT_SECONDS=60                     # n8n経由は長めに
+
+# ==================================================
+# Shadow比較モード
+# ==================================================
+LLM_COMPARE_MODE=shadow                    # none | shadow | ab
+LLM_SHADOW_PROVIDERS=openai,anthropic      # カンマ区切りで複数指定可
+LLM_SHADOW_SAMPLE_PERCENT=10               # 10%のリクエストで比較
+
+# ==================================================
+# A/Bテストモード
+# ==================================================
+# LLM_COMPARE_MODE=ab
+# LLM_AB_PROVIDERS=deepseek,openai
+# LLM_AB_WEIGHTS=70,30                     # deepseek:70%, openai:30%
+```
+
+---
+
+#### Provider 実装例
+
+##### DeepSeek Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/deepseek.rs
+
+use crate::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse};
+use async_trait::async_trait;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
+
+pub struct DeepSeekProvider {
+    client: Client,
+    api_key: String,
+    endpoint: String,
+    model: String,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct DeepSeekRequest {
+    model: String,
+    messages: Vec<Message>,
+    temperature: f32,
+    response_format: ResponseFormat,
+}
+
+#[derive(Serialize)]
+struct Message {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ResponseFormat {
+    #[serde(rename = "type")]
+    format_type: String,
+}
+
+#[derive(Deserialize)]
+struct DeepSeekResponse {
+    choices: Vec<Choice>,
+    usage: Usage,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    message: MessageContent,
+}
+
+#[derive(Deserialize)]
+struct MessageContent {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+}
+
+impl DeepSeekProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("DEEPSEEK_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "DEEPSEEK_API_KEY not set".into() })?,
+            endpoint: std::env::var("DEEPSEEK_ENDPOINT")
+                .unwrap_or_else(|_| "https://api.deepseek.com/v1/chat/completions".into()),
+            model: std::env::var("DEEPSEEK_MODEL")
+                .unwrap_or_else(|_| "deepseek-chat".into()),
+            timeout_secs: std::env::var("LLM_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for DeepSeekProvider {
+    fn name(&self) -> &'static str {
+        "deepseek"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let start = Instant::now();
+
+        let prompt = build_extraction_prompt(&req.email_subject, &req.email_body);
+
+        let api_req = DeepSeekRequest {
+            model: self.model.clone(),
+            messages: vec![
+                Message { role: "system".into(), content: SYSTEM_PROMPT.into() },
+                Message { role: "user".into(), content: prompt },
+            ],
+            temperature: 0.1,
+            response_format: ResponseFormat { format_type: "json_object".into() },
+        };
+
+        let response = self.client
+            .post(&self.endpoint)
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&api_req)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    LlmError::Timeout { timeout_secs: self.timeout_secs }
+                } else {
+                    LlmError::Transient { message: e.to_string() }
+                }
+            })?;
+
+        let status = response.status();
+
+        if status == 429 {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(60);
+            return Err(LlmError::RateLimited { retry_after_secs: retry_after });
+        }
+
+        if status.is_server_error() {
+            return Err(LlmError::Transient {
+                message: format!("Server error: {}", status),
+            });
+        }
+
+        if status.is_client_error() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(LlmError::Permanent {
+                message: format!("Client error {}: {}", status, body),
+            });
+        }
+
+        let api_resp: DeepSeekResponse = response.json().await.map_err(|e| {
+            LlmError::InvalidResponse { message: format!("JSON parse error: {}", e) }
+        })?;
+
+        let content = api_resp.choices
+            .first()
+            .ok_or_else(|| LlmError::InvalidResponse { message: "No choices in response".into() })?
+            .message
+            .content
+            .clone();
+
+        let llm_resp: LlmResponse = serde_json::from_str(&content).map_err(|e| {
+            LlmError::InvalidResponse { message: format!("Response JSON parse error: {}", e) }
+        })?;
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+        tracing::info!(
+            provider = "deepseek",
+            latency_ms = latency_ms,
+            tokens = api_resp.usage.total_tokens,
+            "LLM extraction completed"
+        );
+
+        Ok(llm_resp)
+    }
+
+    async fn health_check(&self) -> Result<(), LlmError> {
+        // 簡易的なヘルスチェック（モデル一覧取得など）
+        Ok(())
+    }
+}
+```
+
+##### Anthropic Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/anthropic.rs
+
+pub struct AnthropicProvider {
+    client: Client,
+    api_key: String,
+    endpoint: String,
+    model: String,
+    version: String,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct AnthropicRequest {
+    model: String,
+    max_tokens: u32,
+    messages: Vec<AnthropicMessage>,
+    system: String,
+}
+
+#[derive(Serialize)]
+struct AnthropicMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct AnthropicResponse {
+    content: Vec<ContentBlock>,
+    usage: AnthropicUsage,
+}
+
+#[derive(Deserialize)]
+struct ContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: Option<String>,
+}
+
+impl AnthropicProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "ANTHROPIC_API_KEY not set".into() })?,
+            endpoint: std::env::var("ANTHROPIC_ENDPOINT")
+                .unwrap_or_else(|_| "https://api.anthropic.com/v1/messages".into()),
+            model: std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into()),
+            version: std::env::var("ANTHROPIC_VERSION")
+                .unwrap_or_else(|_| "2023-06-01".into()),
+            timeout_secs: std::env::var("LLM_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AnthropicProvider {
+    fn name(&self) -> &'static str {
+        "anthropic"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let prompt = build_extraction_prompt(&req.email_subject, &req.email_body);
+
+        let api_req = AnthropicRequest {
+            model: self.model.clone(),
+            max_tokens: 4096,
+            messages: vec![
+                AnthropicMessage { role: "user".into(), content: prompt },
+            ],
+            system: SYSTEM_PROMPT.into(),
+        };
+
+        let response = self.client
+            .post(&self.endpoint)
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", &self.version)
+            .header("Content-Type", "application/json")
+            .json(&api_req)
+            .send()
+            .await?;
+
+        // ... エラーハンドリング (DeepSeekと同様)
+
+        let api_resp: AnthropicResponse = response.json().await?;
+        let content = api_resp.content
+            .iter()
+            .find(|b| b.block_type == "text")
+            .and_then(|b| b.text.clone())
+            .ok_or_else(|| LlmError::InvalidResponse { message: "No text content".into() })?;
+
+        serde_json::from_str(&content).map_err(|e| {
+            LlmError::InvalidResponse { message: format!("JSON parse error: {}", e) }
+        })
+    }
+}
+```
+
+##### Google Gemini Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/google.rs
+
+pub struct GoogleProvider {
+    client: Client,
+    api_key: String,
+    model: String,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct GeminiRequest {
+    contents: Vec<GeminiContent>,
+    generation_config: GenerationConfig,
+}
+
+#[derive(Serialize)]
+struct GeminiContent {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Serialize)]
+struct GeminiPart {
+    text: String,
+}
+
+#[derive(Serialize)]
+struct GenerationConfig {
+    temperature: f32,
+    response_mime_type: String,
+}
+
+impl GoogleProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("GOOGLE_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "GOOGLE_API_KEY not set".into() })?,
+            model: std::env::var("GOOGLE_MODEL")
+                .unwrap_or_else(|_| "gemini-1.5-pro".into()),
+            timeout_secs: 30,
+        })
+    }
+
+    fn endpoint(&self) -> String {
+        format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            self.model, self.api_key
+        )
+    }
+}
+
+#[async_trait]
+impl LlmProvider for GoogleProvider {
+    fn name(&self) -> &'static str {
+        "google"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let prompt = format!("{}\n\n{}", SYSTEM_PROMPT,
+            build_extraction_prompt(&req.email_subject, &req.email_body));
+
+        let api_req = GeminiRequest {
+            contents: vec![GeminiContent {
+                parts: vec![GeminiPart { text: prompt }],
+            }],
+            generation_config: GenerationConfig {
+                temperature: 0.1,
+                response_mime_type: "application/json".into(),
+            },
+        };
+
+        // ... リクエスト送信とレスポンスパース
+        todo!()
+    }
+}
+```
+
+##### Mistral Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/mistral.rs
+
+pub struct MistralProvider {
+    client: Client,
+    api_key: String,
+    endpoint: String,
+    model: String,
+    timeout_secs: u64,
+}
+
+impl MistralProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("MISTRAL_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "MISTRAL_API_KEY not set".into() })?,
+            endpoint: std::env::var("MISTRAL_ENDPOINT")
+                .unwrap_or_else(|_| "https://api.mistral.ai/v1/chat/completions".into()),
+            model: std::env::var("MISTRAL_MODEL")
+                .unwrap_or_else(|_| "mistral-large-latest".into()),
+            timeout_secs: 30,
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for MistralProvider {
+    fn name(&self) -> &'static str {
+        "mistral"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        // OpenAI互換APIフォーマット
+        // DeepSeekと同じ構造で実装可能
+        todo!()
+    }
+}
+```
+
+##### HuggingFace Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/huggingface.rs
+
+pub struct HuggingFaceProvider {
+    client: Client,
+    api_key: String,
+    model: String,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct HuggingFaceRequest {
+    inputs: String,
+    parameters: HuggingFaceParams,
+}
+
+#[derive(Serialize)]
+struct HuggingFaceParams {
+    max_new_tokens: u32,
+    temperature: f32,
+    return_full_text: bool,
+}
+
+impl HuggingFaceProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("HUGGINGFACE_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "HUGGINGFACE_API_KEY not set".into() })?,
+            model: std::env::var("HUGGINGFACE_MODEL")
+                .unwrap_or_else(|_| "mistralai/Mixtral-8x7B-Instruct-v0.1".into()),
+            timeout_secs: 60, // HuggingFaceは遅めなことがある
+        })
+    }
+
+    fn endpoint(&self) -> String {
+        format!("https://api-inference.huggingface.co/models/{}", self.model)
+    }
+}
+
+#[async_trait]
+impl LlmProvider for HuggingFaceProvider {
+    fn name(&self) -> &'static str {
+        "huggingface"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let prompt = format!("{}\n\n{}", SYSTEM_PROMPT,
+            build_extraction_prompt(&req.email_subject, &req.email_body));
+
+        let api_req = HuggingFaceRequest {
+            inputs: prompt,
+            parameters: HuggingFaceParams {
+                max_new_tokens: 4096,
+                temperature: 0.1,
+                return_full_text: false,
+            },
+        };
+
+        // ... リクエスト送信
+        // 注意: HuggingFaceは応答フォーマットがモデルによって異なる
+        todo!()
+    }
+}
+```
+
+##### Provider Factory
+
+```rust
+// sr-llm-worker/src/llm/providers/mod.rs
+
+use crate::llm::{LlmError, LlmProvider};
+
+pub mod deepseek;
+pub mod openai;
+pub mod anthropic;
+pub mod google;
+pub mod mistral;
+pub mod huggingface;
+pub mod n8n_hook;
+pub mod mock;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderType {
+    DeepSeek,
+    OpenAI,
+    Anthropic,
+    Google,
+    Mistral,
+    HuggingFace,
+    N8nHook,
+    Mock,
+}
+
+impl ProviderType {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "deepseek" => Some(Self::DeepSeek),
+            "openai" => Some(Self::OpenAI),
+            "anthropic" | "claude" => Some(Self::Anthropic),
+            "google" | "gemini" => Some(Self::Google),
+            "mistral" => Some(Self::Mistral),
+            "huggingface" | "hf" => Some(Self::HuggingFace),
+            "n8n" | "n8n_hook" => Some(Self::N8nHook),
+            "mock" => Some(Self::Mock),
+            _ => None,
+        }
+    }
+}
+
+pub fn create_provider(provider_type: ProviderType) -> Result<Box<dyn LlmProvider>, LlmError> {
+    match provider_type {
+        ProviderType::DeepSeek => Ok(Box::new(deepseek::DeepSeekProvider::from_env()?)),
+        ProviderType::OpenAI => Ok(Box::new(openai::OpenAIProvider::from_env()?)),
+        ProviderType::Anthropic => Ok(Box::new(anthropic::AnthropicProvider::from_env()?)),
+        ProviderType::Google => Ok(Box::new(google::GoogleProvider::from_env()?)),
+        ProviderType::Mistral => Ok(Box::new(mistral::MistralProvider::from_env()?)),
+        ProviderType::HuggingFace => Ok(Box::new(huggingface::HuggingFaceProvider::from_env()?)),
+        ProviderType::N8nHook => Ok(Box::new(n8n_hook::N8nHookProvider::from_env()?)),
+        ProviderType::Mock => Ok(Box::new(mock::MockProvider::default())),
+    }
+}
+
+pub fn create_providers_from_env() -> Result<(Box<dyn LlmProvider>, Vec<Box<dyn LlmProvider>>), LlmError> {
+    let primary_name = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "deepseek".into());
+    let primary_type = ProviderType::from_str(&primary_name)
+        .ok_or_else(|| LlmError::Permanent { message: format!("Unknown provider: {}", primary_name) })?;
+    let primary = create_provider(primary_type)?;
+
+    let shadow_providers = std::env::var("LLM_SHADOW_PROVIDERS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| {
+            let s = s.trim();
+            if s.is_empty() { return None; }
+            ProviderType::from_str(s).and_then(|t| create_provider(t).ok())
+        })
+        .collect();
+
+    Ok((primary, shadow_providers))
+}
+```
+
+---
+
+### 3.2.2 n8n Webhook 連携
+
+既存の sponto-platform n8n ワークフローを活用して、移行期間中も LLM 抽出を継続できる。
+
+#### n8n Provider 実装
+
+```rust
+// sr-llm-worker/src/llm/providers/n8n_hook.rs
+
+pub struct N8nHookProvider {
+    client: Client,
+    webhook_url: String,
+    api_key: Option<String>,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct N8nWebhookRequest {
+    message_id: String,
+    email_subject: String,
+    email_body: String,
+    callback_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct N8nWebhookResponse {
+    status: String,
+    data: Option<LlmResponse>,
+    error: Option<String>,
+}
+
+impl N8nHookProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            webhook_url: std::env::var("N8N_WEBHOOK_URL")
+                .map_err(|_| LlmError::Permanent { message: "N8N_WEBHOOK_URL not set".into() })?,
+            api_key: std::env::var("N8N_API_KEY").ok(),
+            timeout_secs: std::env::var("N8N_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(60),
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for N8nHookProvider {
+    fn name(&self) -> &'static str {
+        "n8n_hook"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let webhook_req = N8nWebhookRequest {
+            message_id: req.message_id.clone(),
+            email_subject: req.email_subject.clone(),
+            email_body: req.email_body.clone(),
+            callback_url: None, // 同期呼び出し
+        };
+
+        let mut request = self.client
+            .post(&self.webhook_url)
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .header("Content-Type", "application/json")
+            .json(&webhook_req);
+
+        if let Some(ref api_key) = self.api_key {
+            request = request.header("X-API-Key", api_key);
+        }
+
+        let response = request.send().await.map_err(|e| {
+            if e.is_timeout() {
+                LlmError::Timeout { timeout_secs: self.timeout_secs }
+            } else {
+                LlmError::Transient { message: e.to_string() }
+            }
+        })?;
+
+        let webhook_resp: N8nWebhookResponse = response.json().await.map_err(|e| {
+            LlmError::InvalidResponse { message: e.to_string() }
+        })?;
+
+        match webhook_resp.status.as_str() {
+            "success" => webhook_resp.data.ok_or_else(|| {
+                LlmError::InvalidResponse { message: "No data in response".into() }
+            }),
+            "error" => Err(LlmError::Permanent {
+                message: webhook_resp.error.unwrap_or_else(|| "Unknown error".into()),
+            }),
+            _ => Err(LlmError::InvalidResponse {
+                message: format!("Unknown status: {}", webhook_resp.status),
+            }),
+        }
+    }
+}
+```
+
+#### n8n Webhook Workflow 設定
+
+n8n 側で以下のワークフローを作成:
+
+```json
+{
+  "name": "LLM Extraction Webhook",
+  "nodes": [
+    {
+      "type": "n8n-nodes-base.webhook",
+      "name": "Webhook",
+      "parameters": {
+        "path": "llm-extraction",
+        "httpMethod": "POST",
+        "responseMode": "responseNode"
+      }
+    },
+    {
+      "type": "n8n-nodes-base.httpRequest",
+      "name": "DeepSeek API",
+      "parameters": {
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "deepseek-chat" },
+            { "name": "messages", "value": "={{ $json.messages }}" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "n8n-nodes-base.respondToWebhook",
+      "name": "Respond",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'success', data: $json.choices[0].message.content } }}"
+      }
+    }
+  ]
+}
+```
+
+#### sponto-platform との連携フロー
+
+```
+[rust-matcher]                          [n8n.sponto.jp]
+      │                                       │
+      │  POST /webhook/llm-extraction         │
+      │ ────────────────────────────────────> │
+      │   { message_id, subject, body }       │
+      │                                       │
+      │                              ┌────────┴────────┐
+      │                              │ DeepSeek API    │
+      │                              │ (既存ワークフロー) │
+      │                              └────────┬────────┘
+      │                                       │
+      │  Response (JSON)                      │
+      │ <──────────────────────────────────── │
+      │   { status, data: LlmResponse }       │
+      │                                       │
+```
+
+---
+
+### 3.2.3 GWS (Google Workspace) 直結
+
+n8n を経由せず、rust-matcher から直接 Gmail API を呼び出す構成。
+
+#### アーキテクチャ
+
+```
+                                 ┌─────────────────────┐
+                                 │    Gmail API        │
+                                 │  (OAuth2 / SA+DWD)  │
+                                 └──────────┬──────────┘
+                                            │
+              ┌─────────────────────────────┼─────────────────────────────┐
+              │                             │                             │
+              ▼                             ▼                             ▼
+    ┌─────────────────┐          ┌─────────────────┐          ┌─────────────────┐
+    │ sr-gmail-ingestor│         │ Pub/Sub Watch   │          │ History API     │
+    │   (ポーリング)   │          │   (Push通知)    │          │   (差分取得)    │
+    └────────┬────────┘          └────────┬────────┘          └────────┬────────┘
+             │                            │                            │
+             └────────────────────────────┼────────────────────────────┘
+                                          │
+                                          ▼
+                               ┌─────────────────────┐
+                               │   ses.anken_emails  │
+                               │   ses.jinzai_emails │
+                               └──────────┬──────────┘
+                                          │
+                                          ▼
+                               ┌─────────────────────┐
+                               │ ses.extraction_queue │
+                               └─────────────────────┘
+```
+
+#### 認証方式
+
+| 方式 | 説明 | 用途 |
+|------|------|------|
+| **OAuth 2.0** | ユーザー同意ベース | 開発/テスト環境 |
+| **Service Account + DWD** | Domain-Wide Delegation | 本番環境（推奨） |
+
+##### Service Account + DWD 設定手順
+
+1. **GCP Console で Service Account 作成**
+   ```bash
+   # Service Account 作成
+   gcloud iam service-accounts create sr-gmail-ingestor \
+       --display-name="rust-matcher Gmail Ingestor"
+
+   # キーファイル生成
+   gcloud iam service-accounts keys create /etc/sr-matcher/gcp-sa-key.json \
+       --iam-account=sr-gmail-ingestor@sponto-xxx.iam.gserviceaccount.com
+   ```
+
+2. **Google Admin Console で DWD 有効化**
+   - Admin Console → Security → API Controls → Domain-wide Delegation
+   - Client ID: `sr-gmail-ingestor` の OAuth Client ID
+   - Scopes:
+     - `https://www.googleapis.com/auth/gmail.readonly`
+     - `https://www.googleapis.com/auth/gmail.labels`
+     - `https://www.googleapis.com/auth/gmail.modify` (ラベル変更用)
+
+3. **環境変数設定**
+   ```bash
+   # GWS直結設定
+   GWS_ENABLED=1
+   GWS_AUTH_METHOD=service_account_dwd    # oauth2 | service_account_dwd
+   GWS_SERVICE_ACCOUNT_KEY=/etc/sr-matcher/gcp-sa-key.json
+   GWS_IMPERSONATE_USER=n8n@sponto.co.jp  # DWD対象ユーザー
+   GWS_PROJECT_ID=sponto-xxx
+
+   # メール取得設定
+   GWS_POLL_INTERVAL_SECONDS=60           # ポーリング間隔
+   GWS_LABELS=partner                     # 対象ラベル
+   GWS_ANKEN_QUERY=label:partner -{氏名 性別 男性 女性 名前} NOT has:attachment
+   GWS_JINZAI_QUERY=label:partner {氏名 性別 男性 女性 名前} has:attachment
+
+   # Pub/Sub Watch (オプション)
+   GWS_WATCH_ENABLED=0                    # 1で有効化
+   GWS_PUBSUB_TOPIC=projects/sponto-xxx/topics/gmail-notifications
+   GWS_PUBSUB_SUBSCRIPTION=projects/sponto-xxx/subscriptions/sr-gmail-ingestor
+   ```
+
+#### sr-gmail-ingestor 実装
+
+```rust
+// crates/sr-gmail-ingestor/src/main.rs
+
+use clap::Parser;
+use google_gmail1::{Gmail, oauth2};
+use sr_common::db::{create_pool_from_url, PgPool};
+use tokio::time::{interval, Duration};
+use tracing::info;
+
+#[derive(Debug, Parser)]
+#[command(name = "sr-gmail-ingestor", about = "Ingest emails from Gmail directly")]
+struct Cli {
+    #[arg(long, env = "DATABASE_URL")]
+    db_url: String,
+
+    #[arg(long, env = "GWS_SERVICE_ACCOUNT_KEY")]
+    sa_key_path: String,
+
+    #[arg(long, env = "GWS_IMPERSONATE_USER")]
+    impersonate_user: String,
+
+    #[arg(long, env = "GWS_POLL_INTERVAL_SECONDS", default_value = "60")]
+    poll_interval: u64,
+}
+
+struct GmailIngestor {
+    gmail: Gmail,
+    pool: PgPool,
+    anken_query: String,
+    jinzai_query: String,
+    last_history_id: Option<u64>,
+}
+
+impl GmailIngestor {
+    async fn new(
+        sa_key_path: &str,
+        impersonate_user: &str,
+        pool: PgPool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Service Account + DWD 認証
+        let sa_key = oauth2::read_service_account_key(sa_key_path).await?;
+        let auth = oauth2::ServiceAccountAuthenticator::builder(sa_key)
+            .subject(impersonate_user) // DWD: impersonate user
+            .build()
+            .await?;
+
+        let gmail = Gmail::new(
+            hyper::Client::builder().build(hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .https_only()
+                .enable_http1()
+                .build()),
+            auth,
+        );
+
+        Ok(Self {
+            gmail,
+            pool,
+            anken_query: std::env::var("GWS_ANKEN_QUERY")
+                .unwrap_or_else(|_| "label:partner -has:attachment".into()),
+            jinzai_query: std::env::var("GWS_JINZAI_QUERY")
+                .unwrap_or_else(|_| "label:partner has:attachment".into()),
+            last_history_id: None,
+        })
+    }
+
+    async fn poll_once(&mut self) -> Result<u32, Box<dyn std::error::Error>> {
+        let mut processed = 0;
+
+        // 案件メール取得
+        processed += self.fetch_and_store_emails(&self.anken_query.clone(), EmailType::Anken).await?;
+
+        // 人材メール取得
+        processed += self.fetch_and_store_emails(&self.jinzai_query.clone(), EmailType::Jinzai).await?;
+
+        Ok(processed)
+    }
+
+    async fn fetch_and_store_emails(
+        &mut self,
+        query: &str,
+        email_type: EmailType,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        let user_id = "me";
+        let mut processed = 0;
+
+        // メッセージ一覧取得
+        let (_, list_response) = self.gmail
+            .users()
+            .messages_list(user_id)
+            .q(query)
+            .max_results(100)
+            .doit()
+            .await?;
+
+        let messages = list_response.messages.unwrap_or_default();
+
+        for msg_ref in messages {
+            let msg_id = msg_ref.id.unwrap_or_default();
+
+            // 重複チェック
+            if self.is_already_processed(&msg_id).await? {
+                continue;
+            }
+
+            // メッセージ詳細取得
+            let (_, message) = self.gmail
+                .users()
+                .messages_get(user_id, &msg_id)
+                .format("full")
+                .doit()
+                .await?;
+
+            // メール情報抽出
+            let email_data = self.parse_message(&message)?;
+
+            // DB保存
+            match email_type {
+                EmailType::Anken => self.store_anken_email(&email_data).await?,
+                EmailType::Jinzai => self.store_jinzai_email(&email_data).await?,
+            }
+
+            processed += 1;
+            info!(message_id = %msg_id, email_type = ?email_type, "Email ingested");
+        }
+
+        Ok(processed)
+    }
+
+    fn parse_message(&self, message: &google_gmail1::api::Message) -> Result<EmailData, Box<dyn std::error::Error>> {
+        let payload = message.payload.as_ref().ok_or("No payload")?;
+        let headers = payload.headers.as_ref().ok_or("No headers")?;
+
+        let mut email_data = EmailData::default();
+        email_data.message_id = message.id.clone().unwrap_or_default();
+        email_data.thread_id = message.thread_id.clone();
+
+        for header in headers {
+            match header.name.as_deref() {
+                Some("From") => email_data.sender_address = header.value.clone(),
+                Some("Subject") => email_data.subject = header.value.clone(),
+                Some("Date") => {
+                    if let Some(date_str) = &header.value {
+                        email_data.received_at = parse_email_date(date_str);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // 本文抽出 (text/plain または text/html)
+        email_data.body_text = self.extract_body(payload)?;
+
+        // 添付ファイル抽出
+        email_data.attachments = self.extract_attachments(payload)?;
+
+        Ok(email_data)
+    }
+
+    fn extract_body(&self, payload: &google_gmail1::api::MessagePart) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        // MIMEパースロジック
+        // text/plain を優先、なければ text/html を変換
+        if let Some(body) = &payload.body {
+            if let Some(data) = &body.data {
+                let decoded = base64::decode_config(data, base64::URL_SAFE)?;
+                return Ok(Some(String::from_utf8_lossy(&decoded).to_string()));
+            }
+        }
+
+        // multipart の場合は再帰的に探索
+        if let Some(parts) = &payload.parts {
+            for part in parts {
+                if let Some(mime) = &part.mime_type {
+                    if mime == "text/plain" {
+                        return self.extract_body(part);
+                    }
+                }
+            }
+            // text/plain がなければ text/html を探す
+            for part in parts {
+                if let Some(mime) = &part.mime_type {
+                    if mime == "text/html" {
+                        let html = self.extract_body(part)?;
+                        return Ok(html.map(|h| html_to_text(&h)));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn extract_attachments(&self, payload: &google_gmail1::api::MessagePart) -> Result<Vec<Attachment>, Box<dyn std::error::Error>> {
+        let mut attachments = Vec::new();
+
+        if let Some(parts) = &payload.parts {
+            for part in parts {
+                if let Some(filename) = &part.filename {
+                    if !filename.is_empty() {
+                        attachments.push(Attachment {
+                            filename: filename.clone(),
+                            mime_type: part.mime_type.clone().unwrap_or_default(),
+                            attachment_id: part.body.as_ref()
+                                .and_then(|b| b.attachment_id.clone()),
+                            size: part.body.as_ref()
+                                .and_then(|b| b.size)
+                                .unwrap_or(0) as u64,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(attachments)
+    }
+
+    async fn is_already_processed(&self, message_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        // ses.anken_emails または ses.jinzai_emails に既存かチェック
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT 1 FROM ses.anken_emails WHERE message_id = $1
+                 UNION SELECT 1 FROM ses.jinzai_emails WHERE message_id = $1",
+                &[&message_id],
+            )
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn store_anken_email(&self, email: &EmailData) -> Result<(), Box<dyn std::error::Error>> {
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                r#"
+                INSERT INTO ses.anken_emails (
+                    message_id, sender_address, sender_name, subject,
+                    body_text, received_at, thread_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (message_id) DO NOTHING
+                "#,
+                &[
+                    &email.message_id,
+                    &email.sender_address,
+                    &email.sender_name,
+                    &email.subject,
+                    &email.body_text,
+                    &email.received_at,
+                    &email.thread_id,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn store_jinzai_email(&self, email: &EmailData) -> Result<(), Box<dyn std::error::Error>> {
+        // 添付ファイルは Google Drive にアップロード（別途実装）
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                r#"
+                INSERT INTO ses.jinzai_emails (
+                    message_id, sender_address, sender_name, subject,
+                    body_text, received_at, thread_id, skillsheet_url
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (message_id) DO NOTHING
+                "#,
+                &[
+                    &email.message_id,
+                    &email.sender_address,
+                    &email.sender_name,
+                    &email.subject,
+                    &email.body_text,
+                    &email.received_at,
+                    &email.thread_id,
+                    &None::<String>, // skillsheet_url は後で更新
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EmailType {
+    Anken,
+    Jinzai,
+}
+
+#[derive(Debug, Default)]
+struct EmailData {
+    message_id: String,
+    thread_id: Option<String>,
+    sender_address: Option<String>,
+    sender_name: Option<String>,
+    subject: Option<String>,
+    body_text: Option<String>,
+    received_at: Option<chrono::DateTime<chrono::Utc>>,
+    attachments: Vec<Attachment>,
+}
+
+#[derive(Debug)]
+struct Attachment {
+    filename: String,
+    mime_type: String,
+    attachment_id: Option<String>,
+    size: u64,
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
+    tracing_subscriber::fmt::init();
+
+    let args = Cli::parse();
+    let pool = create_pool_from_url(&args.db_url)?;
+
+    let mut ingestor = GmailIngestor::new(
+        &args.sa_key_path,
+        &args.impersonate_user,
+        pool,
+    ).await?;
+
+    info!(poll_interval = args.poll_interval, "Starting Gmail ingestor");
+
+    let mut ticker = interval(Duration::from_secs(args.poll_interval));
+
+    loop {
+        ticker.tick().await;
+
+        match ingestor.poll_once().await {
+            Ok(processed) => {
+                if processed > 0 {
+                    info!(processed = processed, "Emails ingested");
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Poll failed");
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("sr-gmail-ingestor failed: {err}");
+        std::process::exit(1);
+    }
+}
+```
+
+#### Pub/Sub Watch (プッシュ通知)
+
+ポーリングではなくリアルタイム通知を受け取る場合:
+
+```rust
+// Pub/Sub Watch 設定
+async fn setup_watch(gmail: &Gmail, topic: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let watch_request = google_gmail1::api::WatchRequest {
+        topic_name: Some(topic.into()),
+        label_ids: Some(vec!["partner".into()]),
+        label_filter_action: Some("include".into()),
+    };
+
+    let (_, response) = gmail
+        .users()
+        .watch(watch_request, "me")
+        .doit()
+        .await?;
+
+    let history_id = response.history_id.ok_or("No history_id")?;
+    let expiration = response.expiration.ok_or("No expiration")?;
+
+    info!(history_id = history_id, expiration = expiration, "Watch started");
+
+    Ok(history_id)
+}
+
+// Pub/Sub メッセージ受信ハンドラ
+async fn handle_pubsub_notification(
+    notification: PubSubNotification,
+    ingestor: &mut GmailIngestor,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // history_id から差分を取得
+    let history_id = notification.history_id;
+
+    let (_, response) = ingestor.gmail
+        .users()
+        .history_list("me")
+        .start_history_id(history_id)
+        .doit()
+        .await?;
+
+    for history in response.history.unwrap_or_default() {
+        if let Some(messages_added) = history.messages_added {
+            for msg in messages_added {
+                // 新規メッセージ処理
+                if let Some(message) = msg.message {
+                    // ... 処理
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+```
+
+#### n8n → GWS直結 移行手順
+
+| Phase | 状態 | 作業 |
+|-------|------|------|
+| **Phase A** | n8n のみ | 現状維持 |
+| **Phase B** | n8n + GWS並行 | sr-gmail-ingestor を起動、重複チェックで両方取込み |
+| **Phase C** | GWS のみ | n8n の Gmail Trigger を停止 |
+
+```bash
+# Phase B: 並行運用
+# 既存の n8n は継続、sr-gmail-ingestor も起動
+systemctl start sr-gmail-ingestor
+
+# Phase C: n8n 停止
+# n8n 側の jinzai-emails-feeding / project-mail-feeding を停止
+# sr-gmail-ingestor のみで運用
+```
+
+---
+
 ### 3.3 Shadow比較の実装
 
 #### 比較結果の保存

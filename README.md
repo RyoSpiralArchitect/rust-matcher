@@ -95,9 +95,41 @@ sr-llm-worker/src/llm/
 ├── types.rs        # LlmRequest / LlmResponse
 ├── validator.rs    # レスポンス検証
 └── providers/
-    ├── deepseek.rs # primary
-    ├── openai.rs   # shadow
-    └── mock.rs     # test
+    ├── deepseek.rs   # Primary (本番)
+    ├── openai.rs     # Shadow比較
+    ├── anthropic.rs  # Shadow比較 (Claude)
+    ├── google.rs     # Shadow比較 (Gemini)
+    ├── mistral.rs    # Shadow比較
+    ├── huggingface.rs # 実験用
+    ├── n8n_hook.rs   # 既存n8n経由 (移行期間)
+    └── mock.rs       # テスト
+```
+
+**対応プロバイダ**:
+
+| Provider | Model例 | 用途 |
+|----------|---------|------|
+| DeepSeek | `deepseek-chat` | Primary (本番) |
+| OpenAI | `gpt-4o-mini` | Shadow比較 |
+| Anthropic | `claude-3-5-sonnet` | Shadow比較 |
+| Google | `gemini-1.5-pro` | Shadow比較 |
+| Mistral | `mistral-large` | Shadow比較 |
+| HuggingFace | 任意 | 実験用 |
+| n8n_hook | (経由) | 移行期間 |
+
+### 接続方式
+
+| 方式 | 説明 | 状態 |
+|------|------|------|
+| **n8n経由** | 既存ワークフロー活用 | ✅ 現行 |
+| **直接API** | rust-matcherから各LLM直接呼び出し | 🔴 着手予定 |
+| **GWS直結** | Gmail API直接接続（n8n不要） | 🔜 将来 |
+
+```bash
+# 環境変数例
+LLM_PROVIDER=deepseek
+LLM_SHADOW_PROVIDERS=openai,anthropic
+LLM_SHADOW_SAMPLE_PERCENT=10
 ```
 
 詳細は `docs/MVP_PLAN.md` Phase 3 セクションを参照。
