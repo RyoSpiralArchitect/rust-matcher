@@ -93,6 +93,21 @@ impl LlmRuntimeConfig {
             }
         }
 
+        fn provider_api_key(provider: &str) -> Option<String> {
+            let lower = provider.to_ascii_lowercase();
+            match lower.as_str() {
+                "openai" => std::env::var("OPENAI_API_KEY").ok(),
+                "anthropic" => std::env::var("ANTHROPIC_API_KEY").ok(),
+                "google" | "google-genai" => std::env::var("GOOGLE_API_KEY").ok(),
+                "mistral" => std::env::var("MISTRAL_API_KEY").ok(),
+                "xai" => std::env::var("XAI_API_KEY").ok(),
+                "huggingface" | "hf" => std::env::var("HUGGINGFACE_API_KEY")
+                    .ok()
+                    .or_else(|| std::env::var("HF_TOKEN").ok()),
+                _ => None,
+            }
+        }
+
         fn parse_bool(key: &str, default: bool) -> bool {
             match std::env::var(key) {
                 Ok(val) => matches!(val.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
@@ -132,12 +147,22 @@ impl LlmRuntimeConfig {
             .unwrap_or_else(|_| provider.clone());
         let shadow_provider = std::env::var("LLM_SHADOW_PROVIDER").unwrap_or_else(|_| "openai".into());
 
+        let api_key = std::env::var("LLM_API_KEY")
+            .ok()
+            .or_else(|| provider_api_key(&provider))
+            .unwrap_or_default();
+
+        let shadow_api_key = std::env::var("LLM_SHADOW_API_KEY")
+            .ok()
+            .or_else(|| provider_api_key(&shadow_provider))
+            .unwrap_or_default();
+
         Self {
             enabled: parse_bool("LLM_ENABLED", true),
             provider: provider.clone(),
             model: std::env::var("LLM_MODEL").unwrap_or_else(|_| default_model),
             endpoint: std::env::var("LLM_ENDPOINT").unwrap_or_else(|_| default_endpoint),
-            api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
+            api_key,
             timeout_secs: parse_u64("LLM_TIMEOUT_SECONDS", 30),
             max_retries: parse_u32("LLM_MAX_RETRIES", 3),
             retry_backoff_secs: parse_u64("LLM_RETRY_BACKOFF_SECONDS", 5),
@@ -148,7 +173,7 @@ impl LlmRuntimeConfig {
             primary_provider,
             shadow_provider,
             shadow_sample_percent: parse_sample_percent(),
-            shadow_api_key: std::env::var("LLM_SHADOW_API_KEY").unwrap_or_default(),
+            shadow_api_key,
         }
     }
 }
@@ -508,6 +533,41 @@ mod tests {
         assert!(job.requires_manual_review);
         assert!(job.manual_review_reason.is_some());
         assert!(job.locked_by.is_none());
+    }
+
+    #[test]
+    fn provider_specific_api_keys_fill_default() {
+        with_env(
+            &[
+                ("LLM_PROVIDER", Some("anthropic")),
+                ("LLM_API_KEY", None),
+                ("ANTHROPIC_API_KEY", Some("anthropic-secret")),
+            ],
+            || {
+                let cfg = LlmRuntimeConfig::from_env();
+                assert_eq!(cfg.api_key, "anthropic-secret");
+                assert_eq!(cfg.provider, "anthropic");
+            },
+        );
+    }
+
+    #[test]
+    fn shadow_defaults_can_use_provider_specific_keys() {
+        with_env(
+            &[
+                ("LLM_PROVIDER", Some("openai")),
+                ("LLM_SHADOW_PROVIDER", Some("xai")),
+                ("LLM_SHADOW_API_KEY", None),
+                ("LLM_API_KEY", Some("openai-main")),
+                ("XAI_API_KEY", Some("xai-secret")),
+            ],
+            || {
+                let cfg = LlmRuntimeConfig::from_env();
+                assert_eq!(cfg.api_key, "openai-main");
+                assert_eq!(cfg.shadow_api_key, "xai-secret");
+                assert_eq!(cfg.shadow_provider, "xai");
+            },
+        );
     }
 
     #[test]

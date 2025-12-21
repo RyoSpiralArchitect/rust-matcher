@@ -188,7 +188,7 @@ export LLM_RETRY_BACKOFF_SECONDS=5            # 既定: 5 秒
 export LLM_COMPARE_MODE=shadow                # none/shadow（既定: none）
 export LLM_PRIMARY_PROVIDER=deepseek          # 既定: LLM_PROVIDER と同じ
 export LLM_SHADOW_PROVIDER=openai             # 影比較先プロバイダ（既定: openai）
-export LLM_SHADOW_API_KEY=shadow-token        # 影比較の API キー（未設定可）
+export LLM_SHADOW_API_KEY=shadow-token        # 影比較の API キー（未設定可、未設定時は影プロバイダ専用の env を自動検索）
 export LLM_SHADOW_SAMPLE_PERCENT=10           # 0-100（既定: 10、100 で常に影比較）
 export AUTO_MATCH_THRESHOLD=0.7               # MatchResponse 変換用の自動承認閾値
 export TWO_TOWER_ENABLED=false
@@ -215,6 +215,21 @@ export LLM_PROVIDER=google-genai
 export LLM_API_KEY=$GOOGLE_API_KEY
 # model/endpoint 未指定なら gemini-1.5-flash / Google Generative Language API を自動適用
 ```
+
+### プロバイダ別の API キー環境変数解決
+
+`LLM_API_KEY` と `LLM_SHADOW_API_KEY` が未設定の場合でも、以下のプロバイダ固有の環境変数があれば自動で読み込みます。
+
+| プロバイダ | 優先して読む環境変数 |
+|------------|----------------------|
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `google` / `google-genai` | `GOOGLE_API_KEY` |
+| `mistral` | `MISTRAL_API_KEY` |
+| `xai` | `XAI_API_KEY` |
+| `huggingface` / `hf` | `HUGGINGFACE_API_KEY` → なければ `HF_TOKEN` |
+
+影比較中 (`LLM_COMPARE_MODE=shadow`) は `LLM_SHADOW_PROVIDER` に対応するキーを同様に検索します。`LLM_API_KEY`/`LLM_SHADOW_API_KEY` を明示的に指定すればそれが最優先です。
 
 ### LLM ワーカーの挙動（環境変数に紐づく動作）
 
