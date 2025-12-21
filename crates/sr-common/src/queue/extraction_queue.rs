@@ -172,6 +172,10 @@ impl ExtractionQueue {
             .filter(|(_, job)| {
                 job.status == QueueStatus::Pending
                     && job.next_retry_at.map(|ts| ts <= now).unwrap_or(true)
+                    && job
+                        .reprocess_after
+                        .map(|ts| ts <= now)
+                        .unwrap_or(true)
             })
             .max_by(|(_, a), (_, b)| {
                 a.priority
@@ -244,6 +248,14 @@ impl ExtractionQueue {
                 job.next_retry_at =
                     Some(finished_at + retry_after.unwrap_or_else(|| Duration::minutes(5)));
                 job.last_error = Some(message);
+                job.final_method = None;
+                job.partial_fields = None;
+                job.decision_reason = None;
+                job.manual_review_reason = None;
+                job.llm_latency_ms = None;
+                job.completed_at = None;
+                job.requires_manual_review = false;
+                job.processing_started_at = None;
                 job.updated_at = finished_at;
                 job.locked_by = None;
             }
@@ -257,6 +269,7 @@ impl ExtractionQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn sample_job() -> ExtractionJob {
         ExtractionJob::new("msg-1", "subject", Utc::now(), "deadbeef")
@@ -336,6 +349,62 @@ mod tests {
         assert_eq!(job.retry_count, 1);
         assert!(job.next_retry_at.is_some());
         assert!(job.locked_by.is_none());
+    }
+
+    #[test]
+    fn retryable_error_clears_processing_metadata_and_payload() {
+        let mut queue = ExtractionQueue::default();
+        let mut job = sample_job();
+        job.partial_fields = Some(json!({ "k": "v" }));
+        job.decision_reason = Some("previous".into());
+        job.llm_latency_ms = Some(1234);
+        queue.enqueue(job);
+
+        queue.process_next(|_| {
+            Err(JobError::Retryable {
+                message: "temp".into(),
+                retry_after: Some(Duration::minutes(1)),
+            })
+        });
+
+        let job = queue.jobs.first().unwrap();
+        assert_eq!(job.status, QueueStatus::Pending);
+        assert!(job.partial_fields.is_none());
+        assert!(job.decision_reason.is_none());
+        assert!(job.manual_review_reason.is_none());
+        assert!(job.final_method.is_none());
+        assert!(job.completed_at.is_none());
+        assert!(job.processing_started_at.is_none());
+        assert!(job.locked_by.is_none());
+        assert_eq!(job.llm_latency_ms, None);
+        assert!(!job.requires_manual_review);
+    }
+
+    #[test]
+    fn reprocess_after_defers_pending_jobs() {
+        let mut queue = ExtractionQueue::default();
+        let mut job = sample_job();
+        job.reprocess_after = Some(Utc::now() + Duration::minutes(10));
+        queue.enqueue(job);
+
+        // No job should be pulled while reprocess_after is in the future.
+        assert!(queue.process_next(|_| unreachable!()).is_none());
+
+        // Once the time passes, the job becomes eligible.
+        queue.jobs[0].reprocess_after = Some(Utc::now() - Duration::minutes(1));
+        let status = queue.process_next_with_worker("worker", |job| {
+            assert!(job.reprocess_after.is_some());
+            Ok(JobOutcome {
+                final_method: FinalMethod::RustCompleted,
+                partial_fields: None,
+                decision_reason: Some("ok".into()),
+                llm_latency_ms: None,
+                requires_manual_review: false,
+                manual_review_reason: None,
+            })
+        });
+
+        assert_eq!(status, Some(QueueStatus::Completed));
     }
 
     #[test]
