@@ -23,16 +23,26 @@ Phase 2 完了 ─────────────────────�
 | Phase | Step | 内容 | 状態 |
 |-------|------|------|------|
 | 3 | 1 | match_results DDL + 保存 | ✅ 完了 |
-| 3 | 2 | LLM shadow 10% 比較 | ⏳ 待機 |
-| 3 | 3 | systemd 本番ループ | ⏳ 待機 |
+| 3 | 2 | LLM shadow 10% 比較 | ✅ 完了 |
+| 3 | 3 | systemd 本番ループ | ✅ 完了 |
 | 3 | 3-A | Two-Tower 骨格 (HashTwoTower) | 🔴 着手予定 |
-| 3 | 3-B | interaction_logs DDL | ⏳ 待機 |
-| 3.5 | A | MatchResponse DTO + MatchConfig | ⏳ 待機 |
-| 3.5 | B | feedback_events DDL（統一版） | ⏳ 待機 |
-| 3.5 | C | QueueDashboard DTO | ⏳ 待機 |
-| 3.5 | D | HTTP API (Axum) | ⏳ 待機 |
+| 3 | 3-B | interaction_logs DDL | ✅ 完了 |
+| 3.5 | A | HTTP API (Axum) — QueueDashboard / MatchResponse / Feedback | ⏳ 待機 |
+| 3.5 | B | MatchResponse DTO + MatchConfig | ✅ 完了 |
+| 3.5 | C | QueueDashboard DTO | ✅ 完了 |
+| 3.5 | D | feedback_events DDL（統一版） | ✅ 完了 |
 | 3.5 | E | **GUI (Next.js)** | 🎯 **ゴール** |
-| 4 | - | Two-Tower 学習 | 🔜 将来 |
+| 4 | - | Two-Tower 学習（interaction_logs + feedback_events 蓄積後） | 🔜 将来 |
+
+---
+
+## 現状できること（MVP準備中のサマリ）
+
+- **直人材パースを最優先で確定**: メール本文（将来は PDF も）からタレント情報を正規化し、案件側は「最低限の正規化 + KO/スコア算出」で運用開始できるよう契約を固め済み。
+- **マッチング結果の契約を確定**: `MatchResponse` / `MatchConfig` / `QueueDashboard` DTO を sr-common に実装済み。フロントはこの契約に沿って開発着手可能。
+- **DDL 整備済み**: `match_results` 保存、`interaction_logs` + `feedback_events`（統一版）のテーブルと、Phase4 向け `training_pairs` / `training_stats` ビューまで設計済み。
+- **LLM ワーカーの環境変数ドリブン動作**: `LLM_ENABLED` で完全 OFF、`LLM_PROVIDER`/`LLM_MODEL`/`LLM_ENDPOINT`/`LLM_API_KEY` で実プロバイダを差し替え、`LLM_COMPARE_MODE=shadow` + `LLM_SHADOW_*` で 10% サンプリングの影比較ログを出力できる。`LLM_TIMEOUT_SECONDS` などリトライ・タイムアウトも環境変数で制御。
+- **systemd 運用準備**: 常駐ループ（アイドルポーリング）とキューのカナリア記録を追加済み。`--exit-on-empty` で単発実行も可能。
 
 ---
 
@@ -103,6 +113,10 @@ interaction_logs (Exposure)          feedback_events (Label)
               └────────────────────────┘
 ```
 
+- `interaction_logs` = 「誰に何を候補として見せたか」の露出ログ。必ず `match_run_id`（engine_version / config_version を内包）を保存して再現性を確保。
+- `feedback_events` = 「どの露出に対して誰がどんなフィードバックをしたか」のラベル。`actor`/`source` を残し、`is_revoked` で取り消し履歴も保持。
+- `training_pairs` = 上記 2 テーブルを束ねた View。Phase 4 の Two-Tower 学習ではここから教師データを作る。
+
 ### フィードバック統一ENUM
 
 | feedback_type | ソース | label |
@@ -166,16 +180,82 @@ cargo build --release
 # ワーカー起動（開発）
 ./target/release/sr-llm-worker --db-url $DATABASE_URL
 
-# 環境変数例
-DATABASE_URL=postgres://user:pass@host/db
-LLM_PROVIDER=deepseek
-AUTO_MATCH_THRESHOLD=0.7
-TWO_TOWER_ENABLED=false
+# LLM ワーカー向け環境変数のセット例（export または .env で設定）
+export DATABASE_URL=postgres://user:pass@host/db
+export LLM_ENABLED=1                          # 0 にすると LLM を完全停止（KO/スコアだけで処理）
+export LLM_PROVIDER=deepseek                  # 既定: deepseek（LLM_PRIMARY_PROVIDER が未指定ならこれが primary）
+export LLM_MODEL=deepseek-chat                # プロバイダ未指定時の既定モデル。プロバイダ毎の既定は下表を参照
+export LLM_ENDPOINT=http://localhost:8000/api/v1/extract # プロバイダ未指定時の既定エンドポイント
+export LLM_API_KEY=your-token
+export LLM_TIMEOUT_SECONDS=30                 # 既定: 30 秒
+export LLM_MAX_RETRIES=3                      # 既定: 3 回
+export LLM_RETRY_BACKOFF_SECONDS=5            # 既定: 5 秒
+export LLM_COMPARE_MODE=shadow                # none/shadow（既定: none）
+export LLM_PRIMARY_PROVIDER=deepseek          # 既定: LLM_PROVIDER と同じ
+export LLM_SHADOW_PROVIDER=openai             # 影比較先プロバイダ（既定: openai）
+export LLM_SHADOW_API_KEY=shadow-token        # 影比較の API キー（未設定可、未設定時は影プロバイダ専用の env を自動検索）
+export LLM_SHADOW_SAMPLE_PERCENT=10           # 0-100（既定: 10、100 で常に影比較）
+export AUTO_MATCH_THRESHOLD=0.7               # MatchResponse 変換用の自動承認閾値
+export TWO_TOWER_ENABLED=false
 ```
+
+### プロバイダ別のデフォルト設定（sr-llm-worker が想定する前提）
+
+- **Mode A: Unified Gateway（推奨）**: `LLM_ENDPOINT` に自前ゲートウェイ（例: `/api/v1/extract` 互換）を立て、プロバイダ差分を吸収する。
+- **Mode B: Direct Provider（上級者向け）**: `LLM_PROVIDER`/`LLM_MODEL`/`LLM_ENDPOINT` を直接指定し、sr-llm-worker 内部のプロバイダ別アダプタでリクエストを組み立てる。
+
+`LLM_PROVIDER` を設定すると、`LLM_MODEL` と `LLM_ENDPOINT` の未指定時は下表の値が自動で入ります（リクエスト互換性は上記モード前提）。
+
+| LLM_PROVIDER | 既定モデル | 既定エンドポイント |
+|--------------|------------|---------------------------|
+| `openai` | `gpt-4o-mini` | `https://api.openai.com/v1/chat/completions` |
+| `anthropic` | `claude-3-5-sonnet-20240620` | `https://api.anthropic.com/v1/messages` |
+| `google` / `google-genai` | `gemini-1.5-flash` | `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent` |
+| `mistral` | `mistral-large-latest` | `https://api.mistral.ai/v1/chat/completions` |
+| `xai` | `grok-2-latest` | `https://api.x.ai/v1/chat/completions` |
+| `huggingface` / `hf` | `meta-llama/Meta-Llama-3-70B-Instruct` | `https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-70B-Instruct` |
+| `deepseek`（既定） | `deepseek-chat` | `http://localhost:8000/api/v1/extract` |
+
+たとえば Google Vertex AI (Gemini) を使う場合は以下のように上書きします。
+
+```bash
+export LLM_PROVIDER=google-genai
+export LLM_API_KEY=$GOOGLE_API_KEY
+# model/endpoint 未指定なら gemini-1.5-flash / Google Generative Language API を自動適用
+```
+
+### プロバイダ別の API キー環境変数解決
+
+`LLM_API_KEY` と `LLM_SHADOW_API_KEY` が未設定の場合でも、以下のプロバイダ固有の環境変数があれば自動で読み込みます。
+
+| プロバイダ | 優先して読む環境変数 |
+|------------|----------------------|
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `google` / `google-genai` | `GOOGLE_API_KEY` |
+| `mistral` | `MISTRAL_API_KEY` |
+| `xai` | `XAI_API_KEY` |
+| `huggingface` / `hf` | `HUGGINGFACE_API_KEY` → なければ `HF_TOKEN` |
+
+影比較中 (`LLM_COMPARE_MODE=shadow`) は `LLM_SHADOW_PROVIDER` に対応するキーを同様に検索します。`LLM_API_KEY`/`LLM_SHADOW_API_KEY` を明示的に指定すればそれが最優先です。同一プロバイダで shadow を動かす場合は、`LLM_SHADOW_API_KEY` が空でも primary 用のキーを自動で再利用します。
+
+### LLM ワーカーの挙動（環境変数に紐づく動作）
+
+- **停止/バイパス**: `LLM_ENABLED=0` で LLM 呼び出しをスキップし、キューには `LLM_DISABLED` のメッセージだけを残す。
+- **プロバイダ切替**: `LLM_PROVIDER` と `LLM_MODEL` でメイン呼び出し先を変更。`LLM_PRIMARY_PROVIDER` を別途指定すると、実呼び出しとログ上の primary ラベルを分離できる。
+- **影比較 (shadow)**: `LLM_COMPARE_MODE=shadow` + `LLM_SHADOW_PROVIDER`/`LLM_SHADOW_API_KEY` を設定すると、`LLM_SHADOW_SAMPLE_PERCENT` の割合でカナリアログを記録し、primary/shadow 双方のプロバイダ名を保存する。
+- **リトライ/タイムアウト**: `LLM_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES`、`LLM_RETRY_BACKOFF_SECONDS` で REST 呼び出しのタイムアウトとリトライ間隔を細かく調整可能。
+
+### ingestion はプラガブル（n8n / Gmail API）
+
+- 現状は「DB に既にメールが入っている前提」のまま進め、n8n 等のワークフローから `anken_emails` を投入する運用がデフォルト。
+- 将来は `sr-extractor` から Gmail API を直接叩いて `anken_emails` を埋める構成にも切り替え可能にする方針。環境変数で n8n ルート／Gmail 直結のどちらも選べる形を維持する。
 
 ---
 
 ## ディレクトリ構成
+
+Rust workspace crates（Cargo 管理）
 
 ```
 crates/
@@ -189,9 +269,18 @@ crates/
 ├── sr-extractor/       # メール抽出 → キュー投入
 ├── sr-llm-worker/      # LLM処理ワーカー
 ├── sr-queue-recovery/  # 滞留ジョブ復旧
-├── sr-api/             # HTTP API (Axum) ← NEW
-└── sr-gui/             # フロントエンド (Next.js) ← NEW
+└── sr-api/             # HTTP API (Axum)
+```
 
+フロントエンド（別 npm プロジェクト）
+
+```
+sr-gui/                 # Next.js 14 + TypeScript
+```
+
+ドキュメント
+
+```
 docs/
 └── MVP_PLAN.md         # 詳細設計書（15,000行+）
 ```
