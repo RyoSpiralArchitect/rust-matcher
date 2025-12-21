@@ -54,57 +54,80 @@ CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHER
 
 ## Phase 3: LLM統合とマッチングパイプライン接続 (Now)
 
+**目標**: 本番で壊れない形で回しつつ、比較ログ（shadow）を溜めて、勝ち筋を確定する
+
 ### 実装ロードマップ
 
 | Step | 内容 | 状態 |
 |------|------|------|
-| **Step 1** | LLM Provider抽象化 + Shadow比較(10%) | 🔴 着手予定 |
-| **Step 2** | match_results DB保存の本番接続 | ⏳ 待機 |
+| **Step 1** | match_results DDL + 保存 | 🔴 着手予定 |
+| **Step 2** | LLM shadow 10% | ⏳ 待機 |
 | **Step 3** | systemd本番ループ | ⏳ 待機 |
-| **Step 4** | sr-gmail-ingestor (n8n置換) | 🔜 将来 |
+| **Step 4** | GUI（営業FB導線） | 🔜 将来 |
 
-### LLM Provider 設計概要
+### データ設計（Phase 4 を見据える）
+
+```
+ses.match_results          # その時点の判定（再計算可能）
+├── talent_snapshot_id     # Two-Tower用キー
+├── project_snapshot_id    # Two-Tower用キー
+├── match_run_id           # 実行ID（engine_version込み）
+├── ko_reasons             # KO理由 JSONB
+├── score_breakdown        # スコア内訳 JSONB
+└── llm_provider           # どのLLMで処理したか
+
+ses.feedback_events        # 営業の現場真実（不可逆）
+├── match_result_id        # FK → match_results
+├── feedback_type          # accepted/rejected/no_response
+└── created_by             # 営業担当者
+
+ses.llm_comparison_results # Shadow比較ログ
+├── primary_provider       # 本番LLM
+├── shadow_provider        # 比較LLM
+└── diff_summary           # 差分サマリ
+```
+
+### LLM Provider 設計
 
 ```
 sr-llm-worker/src/llm/
 ├── mod.rs          # LlmProvider trait + factory
 ├── types.rs        # LlmRequest / LlmResponse
-├── config.rs       # 環境変数から設定読み込み
 ├── validator.rs    # レスポンス検証
 └── providers/
-    ├── deepseek.rs # 本番用 (primary)
-    ├── openai.rs   # 比較用 (shadow)
-    └── mock.rs     # テスト用
-```
-
-**設計方針**:
-- Provider trait抽象化で差し替え可能
-- Shadow比較モード（10%サンプリング）で本番挙動を変えずにLLM比較
-- LLMレスポンスは必ず検証してから使用
-
-### 環境変数 (MVP)
-
-```bash
-LLM_ENABLED=1
-LLM_PROVIDER=deepseek
-LLM_MODEL=deepseek-chat
-LLM_API_KEY=sk-xxx
-LLM_COMPARE_MODE=shadow
-LLM_SHADOW_PROVIDER=openai
-LLM_SHADOW_SAMPLE_PERCENT=10
+    ├── deepseek.rs # primary
+    ├── openai.rs   # shadow
+    └── mock.rs     # test
 ```
 
 詳細は `docs/MVP_PLAN.md` Phase 3 セクションを参照。
 
 ---
 
-## 未達成・スタブ・今後やること
-MVP_PLAN.md の進行表に沿って、以下は未着手/スタブまたは今後深掘りする項目です。
+## Phase 4: Two-Tower モデル育成 (Preview)
 
-- **LLM統合**: `sr-llm-worker` の LLM 呼び出しは現在スタブ。Provider trait 実装後に実 API 接続予定。
-- **マッチングパイプライン接続**: `run_all_ko_checks()` + スコアリングを本番パスに接続。
-- **永続化まわり**: DDL の本番適用、`match_results` / `extraction_queue` のマイグレーション。
-- **運用フローの整備**: systemd サービス化、ログ出力、Slack 通知の実装。
+**目標**: 営業FBを学習信号としてマッチング精度を継続的に改善
+
+```
+┌─────────────────┐    ┌─────────────────┐
+│  Talent Tower   │    │  Project Tower  │
+└────────┬────────┘    └────────┬────────┘
+         └──────────┬───────────┘
+              Cosine Similarity → Match Score
+```
+
+- **入力**: `training_pairs` ビュー（match_results + feedback_events JOIN）
+- **学習要件**: 1,000+ ペア、3ヶ月以上のFB蓄積
+- **統合**: rule-based (0.8) + two-tower (0.2) の加重平均から開始
+
+---
+
+## 未達成・スタブ・今後やること
+
+- **Step 1**: match_results / feedback_events DDL の本番適用
+- **Step 2**: LLM Provider trait 実装 + shadow 10% 比較
+- **Step 3**: systemd サービス化（落ちても復帰）
+- **Step 4**: GUI で「なぜこのスコア？」を可視化、営業FB入力
 
 ## アーキテクチャ概要
 ```

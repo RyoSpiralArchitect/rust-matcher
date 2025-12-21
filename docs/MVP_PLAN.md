@@ -13188,35 +13188,295 @@ LLM_SHADOW_API_KEY=sk-xxx
 
 ---
 
-### 3.6 Done条件
+### 3.6 Phase 4 を見据えたデータ設計
 
-#### Step 1: LLM Provider抽象化
+Phase 3 = "本番で壊れない形で回しつつ、比較ログ（shadow）を溜めて、勝ち筋を確定するフェーズ"
+Phase 4 = "営業FBを学習信号としてTwo-Towerを育てるフェーズ"
+
+Phase 3 の時点で「理由がUIに出せる形でDBに残っている」を作ることで、Phase 4 への移行がスムーズになる。
+
+#### テーブル分離の設計思想
+
+| テーブル | 役割 | 特性 |
+|----------|------|------|
+| `match_results` | その時点の判定/理由/スコア | 再計算可能（エンジン更新で再生成OK） |
+| `feedback_events` | 営業が後から付けるラベル | 不可逆の現場真実（学習の正解ラベル） |
+
+この分離により：
+- **Phase 3**: match_results に理由が残る → GUIで「なぜこのスコア？」が見える
+- **Phase 4**: feedback_events と match_results を JOIN → Two-Tower の学習データに
+
+#### Two-Tower 用キー設計（先に決めておく）
+
+| キー | 説明 | 用途 |
+|------|------|------|
+| `talent_snapshot_id` | `talents_enum.id`（時点固定） | 人材の状態スナップショット |
+| `project_snapshot_id` | `projects_enum.id`（時点固定） | 案件の状態スナップショット |
+| `match_run_id` | UUID（engine_version込みの実行ID） | どのエンジンバージョンで計算したか |
+
+---
+
+### 3.7 match_results DDL（Two-Tower対応版）
+
+```sql
+-- match_results: その時点の判定（再計算可能）
+CREATE TABLE ses.match_results (
+    id SERIAL PRIMARY KEY,
+
+    -- Two-Tower用キー（Phase 4 で必須）
+    talent_snapshot_id INTEGER NOT NULL,      -- FK → talents_enum.id
+    project_snapshot_id INTEGER NOT NULL,     -- FK → projects_enum.id
+    match_run_id UUID NOT NULL DEFAULT gen_random_uuid(),
+
+    -- KO判定結果
+    is_knockout BOOLEAN NOT NULL,
+    ko_reasons JSONB,                         -- ["tanka_exceeded", "skill_mismatch"]
+    needs_manual_review BOOLEAN NOT NULL DEFAULT false,
+    manual_review_reason TEXT,
+
+    -- スコアリング結果
+    score_total FLOAT,                        -- 0.0〜1.0
+    score_breakdown JSONB NOT NULL,           -- {"tanka": 0.8, "skills": 0.7, ...}
+    auto_match_eligible BOOLEAN NOT NULL DEFAULT false,
+
+    -- LLM Provider 情報（shadow比較用）
+    llm_provider VARCHAR(50),                 -- "deepseek", "openai", etc.
+    llm_latency_ms INTEGER,
+
+    -- バージョン管理
+    engine_version VARCHAR(20) NOT NULL,      -- "1.0.0"
+    rule_version VARCHAR(20),                 -- "2025-01-15"
+
+    -- タイムスタンプ
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- 日次ユニーク制約（同じペアは1日1回まで）
+    UNIQUE(talent_snapshot_id, project_snapshot_id, created_at::date)
+);
+
+-- インデックス
+CREATE INDEX idx_match_results_talent ON ses.match_results(talent_snapshot_id, created_at DESC);
+CREATE INDEX idx_match_results_project ON ses.match_results(project_snapshot_id, created_at DESC);
+CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
+CREATE INDEX idx_match_results_run ON ses.match_results(match_run_id);
+CREATE INDEX idx_match_results_review ON ses.match_results(needs_manual_review, created_at DESC)
+    WHERE needs_manual_review = true;
+
+-- コメント
+COMMENT ON TABLE ses.match_results IS 'マッチング結果スナップショット（再計算可能）';
+COMMENT ON COLUMN ses.match_results.match_run_id IS 'Two-Tower学習時の実行ID';
+COMMENT ON COLUMN ses.match_results.score_breakdown IS '各要素のスコア内訳（tanka/skills/location/experience/contract）';
+```
+
+---
+
+### 3.8 feedback_events DDL（Phase 4 準備）
+
+```sql
+-- feedback_events: 営業の現場真実（不可逆）
+CREATE TABLE ses.feedback_events (
+    id SERIAL PRIMARY KEY,
+
+    -- 対象のマッチング結果
+    match_result_id INTEGER NOT NULL REFERENCES ses.match_results(id),
+
+    -- フィードバック内容
+    feedback_type VARCHAR(30) NOT NULL,       -- 'accepted' | 'rejected' | 'no_response' | 'interview_scheduled'
+    feedback_reason TEXT,                     -- 自由記述（営業のコメント）
+    feedback_tags JSONB,                      -- ["単価NG", "スキル不足"] 等のタグ
+
+    -- 誰がいつ
+    created_by VARCHAR(100) NOT NULL,         -- 営業担当者
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- 取り消しフラグ（間違い訂正用）
+    is_revoked BOOLEAN NOT NULL DEFAULT false,
+    revoked_at TIMESTAMPTZ,
+    revoked_by VARCHAR(100)
+);
+
+-- インデックス
+CREATE INDEX idx_feedback_match ON ses.feedback_events(match_result_id);
+CREATE INDEX idx_feedback_type ON ses.feedback_events(feedback_type, created_at DESC);
+CREATE INDEX idx_feedback_user ON ses.feedback_events(created_by, created_at DESC);
+
+-- Two-Tower学習用ビュー
+CREATE VIEW ses.training_pairs AS
+SELECT
+    mr.talent_snapshot_id,
+    mr.project_snapshot_id,
+    mr.match_run_id,
+    mr.score_total,
+    mr.score_breakdown,
+    mr.engine_version,
+    fe.feedback_type,
+    fe.feedback_tags,
+    CASE
+        WHEN fe.feedback_type = 'accepted' THEN 1.0
+        WHEN fe.feedback_type = 'interview_scheduled' THEN 0.8
+        WHEN fe.feedback_type = 'no_response' THEN 0.3
+        WHEN fe.feedback_type = 'rejected' THEN 0.0
+        ELSE NULL
+    END AS label_score,
+    mr.created_at AS match_created_at,
+    fe.created_at AS feedback_created_at
+FROM ses.match_results mr
+JOIN ses.feedback_events fe ON fe.match_result_id = mr.id
+WHERE fe.is_revoked = false;
+
+COMMENT ON TABLE ses.feedback_events IS '営業フィードバック（Two-Tower学習の正解ラベル）';
+COMMENT ON VIEW ses.training_pairs IS 'Two-Tower学習用のペアデータ';
+```
+
+---
+
+### 3.9 llm_comparison_results DDL（Shadow比較用）
+
+```sql
+-- LLM Shadow比較結果
+CREATE TABLE ses.llm_comparison_results (
+    id SERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL,
+
+    -- Primary (本番)
+    primary_provider VARCHAR(50) NOT NULL,
+    primary_response JSONB NOT NULL,
+    primary_latency_ms INTEGER,
+    primary_error TEXT,
+
+    -- Shadow (比較)
+    shadow_provider VARCHAR(50) NOT NULL,
+    shadow_response JSONB,
+    shadow_latency_ms INTEGER,
+    shadow_error TEXT,
+
+    -- 差分分析
+    diff_summary JSONB,                       -- {"field_diffs": [...], "score_diff": 0.1}
+    fields_matched INTEGER,                   -- 一致したフィールド数
+    fields_total INTEGER,                     -- 比較したフィールド数
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_llm_comparison_message ON ses.llm_comparison_results(message_id);
+CREATE INDEX idx_llm_comparison_created ON ses.llm_comparison_results(created_at DESC);
+CREATE INDEX idx_llm_comparison_providers ON ses.llm_comparison_results(primary_provider, shadow_provider);
+
+-- Shadow比較サマリビュー
+CREATE VIEW ses.llm_comparison_summary AS
+SELECT
+    primary_provider,
+    shadow_provider,
+    DATE_TRUNC('day', created_at) AS date,
+    COUNT(*) AS total_comparisons,
+    AVG(fields_matched::float / NULLIF(fields_total, 0)) AS avg_match_rate,
+    AVG(primary_latency_ms) AS avg_primary_latency,
+    AVG(shadow_latency_ms) AS avg_shadow_latency,
+    COUNT(*) FILTER (WHERE primary_error IS NOT NULL) AS primary_errors,
+    COUNT(*) FILTER (WHERE shadow_error IS NOT NULL) AS shadow_errors
+FROM ses.llm_comparison_results
+GROUP BY primary_provider, shadow_provider, DATE_TRUNC('day', created_at);
+
+COMMENT ON TABLE ses.llm_comparison_results IS 'LLM Shadow比較ログ';
+COMMENT ON VIEW ses.llm_comparison_summary IS 'LLM比較の日次サマリ';
+```
+
+---
+
+### 3.10 実装順序（修正版）
+
+Phase 3 を「サクッと」終わらせるための順序：
+
+| Step | 内容 | 理由 |
+|------|------|------|
+| **Step 1** | match_results DDL + 保存実装 | データ構造が先に固まれば後からLLM provider増えてもスキーマ変更なし |
+| **Step 2** | LLM shadow 10% | データ保存先がある状態で始められる → 比較ログが即座に溜まる |
+| **Step 3** | systemd 本番ループ | 落ちても戻る状態で回せば、shadow比較が自動で蓄積 |
+| **Step 4** | GUI | 溜まったデータを「見える化」→ 営業FBの導線も自然に生える |
+
+---
+
+### 3.11 Done条件（修正版）
+
+#### Step 1: match_results DDL + 保存
+
+- [ ] `match_results` DDL が本番DBに適用されている
+- [ ] `talent_snapshot_id` / `project_snapshot_id` / `match_run_id` が含まれている
+- [ ] `ko_reasons` / `score_breakdown` / `llm_provider` が保存される
+- [ ] `insert_match_result()` が本番パスで呼ばれている
+- [ ] `feedback_events` DDL が本番DBに適用されている（Phase 4 準備）
+
+#### Step 2: LLM shadow 10%
 
 - [ ] `LlmProvider` trait が定義されている
-- [ ] `DeepSeekProvider` が実装されている
+- [ ] `DeepSeekProvider` が実装されている（primary）
 - [ ] `MockProvider` がテスト用に実装されている
-- [ ] 環境変数から設定を読み込む `LlmConfig` がある
-- [ ] `validate_llm_response()` でレスポンス検証が実装されている
-- [ ] Shadow比較モードが動作する
+- [ ] Shadow比較モードが動作する（10%サンプリング）
+- [ ] `llm_comparison_results` に比較ログが保存される
+- [ ] 本番結果は揺らがない（shadow は非同期）
 
-#### Step 2: match_results DB保存
+#### Step 3: systemd 本番ループ
 
-- [ ] `sr-llm-worker` が実際のLLM APIを呼び出す
-- [ ] 抽出結果が正規化されてDB保存される
-- [ ] `run_all_ko_checks()` が本番パスで実行される
-- [ ] `match_results` にスコア・KO理由が保存される
-
-#### Step 3: systemd本番ループ
-
-- [ ] 3サービスがsystemdで起動する
+- [ ] 3サービスがsystemdで起動する（extractor/worker/recovery）
+- [ ] 落ちても自動復帰する（Restart=always）
 - [ ] ログが `/var/log/sr-matcher/` に出力される
 - [ ] エラー時にSlack通知が飛ぶ
 
-#### Step 4: sr-gmail-ingestor (将来)
+#### Step 4: GUI
 
-- [ ] Gmail API認証が動作する
-- [ ] 差分取得 (historyId / watch) が実装されている
-- [ ] n8n経由を完全に廃止できる
+- [ ] match_results の一覧/詳細が表示できる
+- [ ] KO理由 / score_breakdown がUIに表示される
+- [ ] 営業がFBを入力できる（→ feedback_events INSERT）
+- [ ] フィルタ/ソート/検索ができる
+
+---
+
+## Phase 4: Two-Tower モデル育成（Preview）
+
+Phase 3 が安定したら Phase 4 へ移行。
+
+### 4.1 概要
+
+- **目的**: 営業FBを学習信号として、マッチング精度を継続的に改善
+- **手法**: Two-Tower モデル（Talent Encoder + Project Encoder）
+- **入力**: `training_pairs` ビュー（match_results + feedback_events の JOIN）
+- **出力**: 類似度スコア（現在の rule-based スコアを補完/置換）
+
+### 4.2 学習データ要件
+
+| 要件 | 目安 |
+|------|------|
+| 最低ペア数 | 1,000+ accepted/rejected ペア |
+| ラベルバランス | accepted : rejected ≒ 1:3〜1:5 |
+| 期間 | 3ヶ月以上のFB蓄積 |
+
+### 4.3 アーキテクチャ（予定）
+
+```
+┌─────────────────┐    ┌─────────────────┐
+│  Talent Tower   │    │  Project Tower  │
+│  (BERT/MLP)     │    │  (BERT/MLP)     │
+└────────┬────────┘    └────────┬────────┘
+         │                      │
+         └──────────┬───────────┘
+                    │
+              Cosine Similarity
+                    │
+                    ▼
+              Match Score (0.0〜1.0)
+```
+
+### 4.4 統合方式
+
+```rust
+// Phase 4: rule-based + two-tower の加重平均
+let final_score =
+    WEIGHT_RULE_BASED * rule_based_score +
+    WEIGHT_TWO_TOWER * two_tower_score;
+
+// 初期は rule_based=0.8, two_tower=0.2 で開始
+// FB蓄積に応じて two_tower の重みを上げていく
+```
 
 ---
 
