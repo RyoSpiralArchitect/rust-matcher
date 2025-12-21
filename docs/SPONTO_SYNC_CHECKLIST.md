@@ -81,9 +81,9 @@ mod contract_type_tests {
 ```
 
 **Done条件**:
-- [ ] `correct_contract_type()` が `contract_type.rs` に追加されている
-- [ ] テストが通る
-- [ ] `mod.rs` で re-export されている
+- [x] `correct_contract_type()` が `contract_type.rs` に追加されている
+- [x] テストが通る
+- [x] `mod.rs` で re-export されている
 
 ---
 
@@ -118,8 +118,8 @@ pub struct Project {
 - prefilter の単価スコア計算
 
 **Done条件**:
-- [ ] `Project` に `monthly_tanka_min` フィールドが追加されている
-- [ ] 単価関連のKO判定・スコアリングで使用されている
+- [x] `Project` に `monthly_tanka_min` フィールドが追加されている
+- [x] 単価関連のKO判定・スコアリングで使用されている
 
 ---
 
@@ -151,7 +151,7 @@ pub struct Project {
 - 将来的な商流ベースのフィルタリング
 
 **Done条件**:
-- [ ] `Project` に `flow_dept` フィールドが追加されている
+- [x] `Project` に `flow_dept` フィールドが追加されている
 
 ---
 
@@ -181,8 +181,8 @@ pub struct Project {
 - Talent の `nearest_station` との比較
 
 **Done条件**:
-- [ ] `Project` に `work_station` フィールドが追加されている
-- [ ] `normalize_station()` を通して格納される
+- [x] `Project` に `work_station` フィールドが追加されている
+- [x] `normalize_station()` を通して格納される
 
 ---
 
@@ -212,7 +212,7 @@ pub struct Project {
 - Talent の希望案件タイプとの照合
 
 **Done条件**:
-- [ ] `Project` に `project_type` フィールドが追加されている
+- [x] `Project` に `project_type` フィールドが追加されている
 
 ---
 
@@ -240,7 +240,7 @@ pub struct Project {
 ```
 
 **Done条件**:
-- [ ] `Project` に `onsite_frequency` フィールドが追加されている
+- [x] `Project` に `onsite_frequency` フィールドが追加されている
 
 ---
 
@@ -266,7 +266,7 @@ pub struct Project {
 ```
 
 **Done条件**:
-- [ ] `Project` に `settlement_range` フィールドが追加されている
+- [x] `Project` に `settlement_range` フィールドが追加されている
 
 ---
 
@@ -294,7 +294,7 @@ pub struct Project {
 ```
 
 **Done条件**:
-- [ ] `Project` に `interviews_count` フィールドが追加されている
+- [x] `Project` に `interviews_count` フィールドが追加されている
 
 ---
 
@@ -322,7 +322,7 @@ pub struct Project {
 ```
 
 **Done条件**:
-- [ ] `Project` に `hiring_headcount` フィールドが追加されている
+- [x] `Project` に `hiring_headcount` フィールドが追加されている
 
 ---
 
@@ -354,8 +354,8 @@ pub struct Talent {
 - 案件の性別制限がある場合のKO判定（稀だが存在）
 
 **Done条件**:
-- [ ] `Talent` に `gender` フィールドが追加されている
-- [ ] `correct_gender()` を通して格納される
+- [x] `Talent` に `gender` フィールドが追加されている
+- [x] `correct_gender()` を通して格納される
 
 ---
 
@@ -385,8 +385,8 @@ pub struct Talent {
 - Project の `work_station` との距離計算
 
 **Done条件**:
-- [ ] `Talent` に `nearest_station` フィールドが追加されている
-- [ ] `normalize_station()` を通して格納される
+- [x] `Talent` に `nearest_station` フィールドが追加されている
+- [x] `normalize_station()` を通して格納される
 
 ---
 
@@ -417,8 +417,8 @@ pub struct Talent {
 - フルリモート希望者 vs フル出社案件のKO判定
 
 **Done条件**:
-- [ ] `Talent` に `desired_remote_onsite` フィールドが追加されている
-- [ ] `correct_remote_onsite()` を通して格納される
+- [x] `Talent` に `desired_remote_onsite` フィールドが追加されている
+- [x] `correct_remote_onsite()` を通して格納される
 
 ---
 
@@ -626,3 +626,6 @@ CREATE TABLE ses.extraction_queue (
 | 2025-12-20 | Claude | 初版作成。enum_corrections.js, projects_enum.sql, direct_talents.sql との比較結果を記録 |
 | 2025-12-20 | Claude | SKILL_ALIASES同期、DBスキーマ関連、BP人材参考情報、ENUM値一覧を追加 |
 | 2025-12-20 | Claude | sponto-platform凍結に伴い、逆同期項目（SYNC-1: tech_kubun）を削除。rust-matcherを正とする方針に更新 |
+| 2025-12-20 | Claude | 勤務地判定で最寄駅一致/不一致を考慮し、駅レベルでのPass/SoftKo分岐を追加 |
+| 2025-12-21 | Claude | リモート希望と案件リモート形態の整合チェックを追加し、未設定時はSoftKo、フルリモート希望×フル出社案件はHardKoに降格するよう調整 |
+| 2025-12-21 | Claude | 案件リモート未設定時の挙動を精緻化し、フル出社希望は減点なし、リモート併用希望は軽微なSoftKo、フルリモート希望は従来通りのSoftKoに分岐 |
