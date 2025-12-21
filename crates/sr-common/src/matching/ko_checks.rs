@@ -115,11 +115,20 @@ fn check_language_ko(project: &Project, talent: &Talent) -> KoDecision {
         None => soft_reasons.push("japanese_skill_unknown: 日本語スキル情報不足".to_string()),
     }
 
-    if is_english_ko(
+    match (
         project.english_skill.as_deref(),
         talent.english_skill.as_deref(),
     ) {
-        hard_reasons.push("english_skill_insufficient: 英語レベル不足".to_string());
+        (Some(req), None) if req != "不要" => {
+            soft_reasons.push("english_skill_unknown: 英語スキル情報不足".to_string());
+        }
+        _ if is_english_ko(
+            project.english_skill.as_deref(),
+            talent.english_skill.as_deref(),
+        ) => {
+            hard_reasons.push("english_skill_insufficient: 英語レベル不足".to_string());
+        }
+        _ => {}
     }
 
     if !hard_reasons.is_empty() {
@@ -540,6 +549,21 @@ mod tests {
         assert!(matches!(
             decision,
             KoDecision::HardKo { reason } if reason.contains("english_skill_insufficient")
+        ));
+    }
+
+    #[test]
+    fn missing_talent_english_information_requires_manual_review() {
+        let mut project = base_project();
+        project.english_skill = Some("ビジネス".into());
+
+        let mut talent = base_talent();
+        talent.english_skill = None;
+
+        let decision = check_language_ko(&project, &talent);
+        assert!(matches!(
+            decision,
+            KoDecision::SoftKo { reason } if reason.contains("english_skill_unknown")
         ));
     }
 
