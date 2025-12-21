@@ -1,6 +1,7 @@
 use chrono::Utc;
 use clap::Parser;
 use dotenvy::dotenv;
+use rand::Rng;
 use serde_json::json;
 use sr_common::db::{
     MatchResultInsert, create_pool_from_url, insert_match_result, lock_next_pending_job,
@@ -10,7 +11,22 @@ use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
     RecommendedMethod,
 };
+use tokio::time::{sleep, Duration};
 use tracing::info;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompareMode {
+    None,
+    Shadow,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ShadowCompareConfig {
+    mode: CompareMode,
+    sample_percent: u8,
+    shadow_provider: &'static str,
+    primary_provider: &'static str,
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,6 +45,14 @@ struct Cli {
     /// Optional cap on how many jobs to process in one run (default: until queue is empty)
     #[arg(long)]
     max_jobs: Option<usize>,
+
+    /// Continue polling instead of exiting immediately when the queue is empty (default: keep polling)
+    #[arg(long, default_value_t = false)]
+    exit_on_empty: bool,
+
+    /// Idle poll interval in milliseconds when running as a long-lived service
+    #[arg(long, default_value_t = 5000)]
+    idle_poll_interval_ms: u64,
 }
 
 pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
@@ -70,6 +94,65 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
 
 pub fn run_sample_flow() -> ExtractionQueue {
     run_sample_flow_with_worker("sr-llm-worker")
+}
+
+fn shadow_config_from_env() -> ShadowCompareConfig {
+    let mode = std::env::var("LLM_COMPARE_MODE")
+        .unwrap_or_else(|_| "none".into())
+        .to_ascii_lowercase();
+    let sample_percent = std::env::var("LLM_SHADOW_SAMPLE_PERCENT")
+        .ok()
+        .and_then(|raw| raw.parse::<u8>().ok())
+        .unwrap_or(10)
+        .min(100);
+
+    let compare_mode = match mode.as_str() {
+        "shadow" => CompareMode::Shadow,
+        _ => CompareMode::None,
+    };
+
+    ShadowCompareConfig {
+        mode: compare_mode,
+        sample_percent,
+        shadow_provider: "shadow_stub",
+        primary_provider: "primary_stub",
+    }
+}
+
+fn should_sample_shadow(sample_percent: u8) -> bool {
+    if sample_percent == 0 {
+        return false;
+    }
+
+    rand::thread_rng().gen_ratio(u32::from(sample_percent), 100)
+}
+
+fn mark_shadow_canary(job: &mut ExtractionJob, config: ShadowCompareConfig) -> bool {
+    if config.mode == CompareMode::Shadow && should_sample_shadow(config.sample_percent) {
+        job.canary_target = true;
+        return true;
+    }
+
+    false
+}
+
+fn spawn_shadow_log(job: &ExtractionJob, config: ShadowCompareConfig) {
+    if config.mode != CompareMode::Shadow || !job.canary_target {
+        return;
+    }
+
+    let message_id = job.message_id.clone();
+    let shadow_provider = config.shadow_provider;
+    let primary_provider = config.primary_provider;
+
+    tokio::spawn(async move {
+        info!(
+            %message_id,
+            shadow_provider,
+            primary_provider,
+            "shadow comparison sampled; logging for offline diff"
+        );
+    });
 }
 
 fn handle_llm_job(job: &ExtractionJob) -> Result<JobOutcome, JobError> {
@@ -145,11 +228,17 @@ fn apply_outcome(
 async fn process_locked_job(
     pool: &sr_common::db::PgPool,
     worker_id: &str,
-    locked: ExtractionJob,
+    mut locked: ExtractionJob,
+    shadow_config: ShadowCompareConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let shadow_selected = mark_shadow_canary(&mut locked, shadow_config);
     let (processed, _status) = apply_outcome(locked.clone(), handle_llm_job(&locked));
     let rows = upsert_extraction_job(pool, &processed).await?;
     info!(rows, message_id = %processed.message_id, "persisted processed job");
+
+    if shadow_selected {
+        spawn_shadow_log(&processed, shadow_config);
+    }
 
     // Stubbed persistence of a match result snapshot for the processed job.
     let result = MatchResultInsert {
@@ -183,6 +272,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args = Cli::parse();
+    let shadow_config = shadow_config_from_env();
     let pool = create_pool_from_url(&args.db_url)?;
     let status = pool.status();
     info!(
@@ -199,13 +289,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let maybe_job = lock_next_pending_job(&pool, &args.worker_id, Utc::now()).await?;
 
         let Some(job) = maybe_job else {
-            if processed_jobs == 0 {
-                info!("no pending jobs found; exiting");
+            if args.exit_on_empty {
+                if processed_jobs == 0 {
+                    info!("no pending jobs found; exiting");
+                }
+                break;
             }
-            break;
+
+            sleep(Duration::from_millis(args.idle_poll_interval_ms)).await;
+            continue;
         };
 
-        process_locked_job(&pool, &args.worker_id, job).await?;
+        process_locked_job(&pool, &args.worker_id, job, shadow_config).await?;
         processed_jobs += 1;
     }
 
@@ -257,5 +352,33 @@ mod tests {
         assert!(job.requires_manual_review);
         assert!(job.manual_review_reason.is_some());
         assert!(job.locked_by.is_none());
+    }
+
+    #[test]
+    fn shadow_sampling_marks_canary_targets() {
+        let mut job = ExtractionJob::new("shadow-msg", "subject", Utc::now(), "hash");
+        let cfg = ShadowCompareConfig {
+            mode: CompareMode::Shadow,
+            sample_percent: 100,
+            shadow_provider: "shadow_stub",
+            primary_provider: "primary_stub",
+        };
+
+        assert!(mark_shadow_canary(&mut job, cfg));
+        assert!(job.canary_target);
+    }
+
+    #[test]
+    fn no_sampling_when_compare_mode_disabled() {
+        let mut job = ExtractionJob::new("shadow-msg-2", "subject", Utc::now(), "hash");
+        let cfg = ShadowCompareConfig {
+            mode: CompareMode::None,
+            sample_percent: 100,
+            shadow_provider: "shadow_stub",
+            primary_provider: "primary_stub",
+        };
+
+        assert!(!mark_shadow_canary(&mut job, cfg));
+        assert!(!job.canary_target);
     }
 }

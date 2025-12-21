@@ -23,13 +23,13 @@ Phase 2 完了 ─────────────────────�
 | Phase | Step | 内容 | 状態 |
 |-------|------|------|------|
 | 3 | 1 | match_results DDL + 保存 | ✅ 完了 |
-| 3 | 2 | LLM shadow 10% 比較 | ⏳ 待機 |
-| 3 | 3 | systemd 本番ループ | ⏳ 待機 |
+| 3 | 2 | LLM shadow 10% 比較 | ✅ 完了 |
+| 3 | 3 | systemd 本番ループ | ✅ 完了 |
 | 3 | 3-A | Two-Tower 骨格 (HashTwoTower) | 🔴 着手予定 |
-| 3 | 3-B | interaction_logs DDL | ⏳ 待機 |
-| 3.5 | A | MatchResponse DTO + MatchConfig | ⏳ 待機 |
-| 3.5 | B | feedback_events DDL（統一版） | ⏳ 待機 |
-| 3.5 | C | QueueDashboard DTO | ⏳ 待機 |
+| 3 | 3-B | interaction_logs DDL | ✅ 完了 |
+| 3.5 | A | MatchResponse DTO + MatchConfig | ✅ 完了 |
+| 3.5 | B | feedback_events DDL（統一版） | ✅ 完了 |
+| 3.5 | C | QueueDashboard DTO | ✅ 完了 |
 | 3.5 | D | HTTP API (Axum) | ⏳ 待機 |
 | 3.5 | E | **GUI (Next.js)** | 🎯 **ゴール** |
 | 4 | - | Two-Tower 学習 | 🔜 将来 |
