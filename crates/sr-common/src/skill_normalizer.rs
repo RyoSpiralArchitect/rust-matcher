@@ -287,6 +287,14 @@ fn fuzzy_match_canonical(compact: &str) -> Option<String> {
 
     let mut best: Option<(&str, usize)> = None;
     for (alias, canonical) in COMPACT_ALIAS_TO_CANONICAL.iter() {
+        // Avoid fuzzy-matching short canonical tokens (e.g., java, rust, go) to
+        // reduce false positives on brief or ambiguous inputs. Aliases shorter
+        // than 5 characters or canonical targets shorter than 5 are only
+        // matched via exact/alias lookups above.
+        if alias.len() < 5 || compact.len() < 5 || canonical.len() < 5 {
+            continue;
+        }
+
         let distance = damerau_levenshtein(compact, alias);
         if distance == 0 {
             return Some((*canonical).to_string());
@@ -388,6 +396,14 @@ mod tests {
     fn does_not_overmatch_short_tokens() {
         assert_eq!(normalize_skill("ab"), "ab");
         assert_eq!(normalize_skill("x"), "x");
+    }
+
+    #[test]
+    fn does_not_fuzz_short_common_languages() {
+        // Guard against false positives on short canonical tokens by requiring
+        // lengthier inputs for Damerau–Levenshtein fallback.
+        assert_eq!(normalize_skill("javaa"), "javaa");
+        assert_eq!(normalize_skill("rustt"), "rustt");
     }
 
     #[test]

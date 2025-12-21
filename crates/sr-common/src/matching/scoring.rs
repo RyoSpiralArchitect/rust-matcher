@@ -302,7 +302,7 @@ impl BusinessRulesEngine {
                 score: 0.5,
                 max_score: 1.0,
                 status: "UNKNOWN",
-                details: "必須スキル要件が未設定のため中立スコア".into(),
+                details: required.reason,
             };
         }
 
@@ -732,6 +732,20 @@ mod tests {
         assert_eq!(skills.status, "PERFECT_MATCH");
         assert!(skills.score > 0.9);
         assert!(skills.details.contains("歓迎"));
+    }
+
+    #[test]
+    fn missing_talent_skills_propagate_manual_review_reason() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.required_skills_keywords = vec!["Rust".into()];
+        let mut talent = full_talent();
+        talent.possessed_skills_keywords.clear();
+
+        let skills = engine.score_skills(&project, &talent);
+
+        assert_eq!(skills.status, "UNKNOWN");
+        assert!(skills.details.contains("スキル情報が不足"));
     }
 
     #[test]

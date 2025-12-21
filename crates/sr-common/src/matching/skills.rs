@@ -79,17 +79,17 @@ fn check_required_skills_with_threshold(
             match_percentage: 1.0,
             matched_skills: vec![],
             reason: "必須スキル要件なし".to_string(),
-            requires_manual_review: true,
+            requires_manual_review: false,
         };
     }
 
     let talent_skill_set = normalize_skill_set(talent_skills);
     if talent_skill_set.is_empty() {
         return SkillMatchResult {
-            is_knockout: true,
+            is_knockout: false,
             match_percentage: 0.0,
             matched_skills: vec![],
-            reason: "人材スキル情報が不足しているため必須スキルを確認できません".to_string(),
+            reason: "人材スキル情報が不足しているため必須スキルを確認できません (要手動確認)".to_string(),
             requires_manual_review: true,
         };
     }
@@ -156,7 +156,7 @@ mod tests {
         let result = check_required_skills(&[], &[]);
         assert!(!result.is_knockout);
         assert_eq!(result.match_percentage, 1.0);
-        assert!(result.requires_manual_review);
+        assert!(!result.requires_manual_review);
     }
 
     #[test]
@@ -191,7 +191,7 @@ mod tests {
     fn empty_talent_skills_require_manual_review() {
         let result = check_required_skills(&["rust".to_string()], &[]);
 
-        assert!(result.is_knockout);
+        assert!(!result.is_knockout);
         assert!(result.requires_manual_review);
         assert_eq!(result.match_percentage, 0.0);
         assert!(result.reason.contains("不足"));
