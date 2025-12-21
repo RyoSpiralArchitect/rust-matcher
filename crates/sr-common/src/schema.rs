@@ -78,6 +78,26 @@ CREATE INDEX idx_match_results_project ON ses.match_results(project_id, created_
 CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
 "#;
 
+/// 保存場所: `ses.llm_comparison_results` (LLM shadow/AB比較ログ)
+pub const LLM_COMPARISON_RESULTS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS ses.llm_comparison_results (
+    id BIGSERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL,
+    primary_provider VARCHAR(50) NOT NULL,
+    shadow_provider VARCHAR(50) NOT NULL,
+    primary_response JSONB NOT NULL,
+    shadow_response JSONB,
+    primary_latency_ms INTEGER,
+    shadow_latency_ms INTEGER,
+    diff_summary JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_llm_comparison_message ON ses.llm_comparison_results(message_id);
+CREATE INDEX idx_llm_comparison_created ON ses.llm_comparison_results(created_at);
+CREATE INDEX idx_llm_comparison_providers ON ses.llm_comparison_results(primary_provider, shadow_provider);
+"#;
+
 /// Unified event log for GUI and sales feedback.
 pub const FEEDBACK_EVENTS_DDL: &str = r#"
 CREATE TABLE ses.feedback_events (
@@ -239,6 +259,19 @@ mod tests {
             "CREATE OR REPLACE VIEW ses.training_stats",
         ] {
             assert!(INTERACTION_LOGS_DDL.contains(required));
+        }
+    }
+
+    #[test]
+    fn llm_comparison_schema_includes_indexes_and_diff_summary() {
+        for required in [
+            "primary_provider",
+            "shadow_provider",
+            "diff_summary",
+            "idx_llm_comparison_message",
+            "idx_llm_comparison_providers",
+        ] {
+            assert!(LLM_COMPARISON_RESULTS_DDL.contains(required));
         }
     }
 }
