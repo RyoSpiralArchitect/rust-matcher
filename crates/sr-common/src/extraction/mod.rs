@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::skill_normalizer::normalize_skills_vec;
+use crate::skill_normalizer::normalize_skill_set;
 use crate::corrections::{
     flow_depth::correct_flow_dept,
     remote_onsite::correct_remote_onsite,
@@ -268,8 +268,9 @@ pub fn extract_flow_dept(body_text: &str) -> Option<String> {
 
 fn normalize_required_skills(partial: &mut PartialFields) {
     if let Some(raw) = partial.required_skills_keywords.take() {
-        let normalized = normalize_skills_vec(&raw);
+        let mut normalized: Vec<_> = normalize_skill_set(&raw).into_iter().collect();
         if !normalized.is_empty() {
+            normalized.sort();
             partial.required_skills_keywords = Some(normalized);
         }
     }
@@ -470,7 +471,8 @@ mod tests {
             Some(vec![" JavaScript ".into(), "js".into(), "Rust".into()]),
         );
 
-        let skills = output.partial.required_skills_keywords.unwrap();
+        let mut skills = output.partial.required_skills_keywords.unwrap();
+        skills.sort();
         assert_eq!(skills, vec!["javascript", "rust"]);
     }
 }
