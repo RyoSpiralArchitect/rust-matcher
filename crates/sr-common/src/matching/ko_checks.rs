@@ -114,33 +114,36 @@ fn check_location_ko(project: &Project, talent: &Talent) -> KoDecision {
 
 /// 日本語/英語スキルのKO判定
 fn check_language_ko(project: &Project, talent: &Talent) -> KoDecision {
-    let japanese = is_japanese_ko(
+    let mut hard_reasons = Vec::new();
+    let mut soft_reasons = Vec::new();
+
+    match is_japanese_ko(
         project.japanese_skill.as_deref(),
         talent.japanese_skill.as_deref(),
-    );
-
-    if let Some(true) = japanese {
-        return KoDecision::HardKo {
-            reason: "japanese_skill_insufficient: 日本語レベル不足".into(),
-        };
-    }
-
-    if japanese.is_none() {
-        return KoDecision::SoftKo {
-            reason: "japanese_skill_unknown: 日本語スキル情報不足".into(),
-        };
+    ) {
+        Some(true) => hard_reasons.push("japanese_skill_insufficient: 日本語レベル不足".to_string()),
+        Some(false) => {}
+        None => soft_reasons.push("japanese_skill_unknown: 日本語スキル情報不足".to_string()),
     }
 
     if is_english_ko(
         project.english_skill.as_deref(),
         talent.english_skill.as_deref(),
     ) {
-        return KoDecision::HardKo {
-            reason: "english_skill_insufficient: 英語レベル不足".into(),
-        };
+        hard_reasons.push("english_skill_insufficient: 英語レベル不足".to_string());
     }
 
-    KoDecision::Pass
+    if !hard_reasons.is_empty() {
+        KoDecision::HardKo {
+            reason: hard_reasons.join("; "),
+        }
+    } else if !soft_reasons.is_empty() {
+        KoDecision::SoftKo {
+            reason: soft_reasons.join("; "),
+        }
+    } else {
+        KoDecision::Pass
+    }
 }
 
 /// 外国籍可否KO判定
@@ -200,7 +203,7 @@ fn check_contract_type_ko(project: &Project, talent: &Talent) -> KoDecision {
 }
 
 /// 商流制限KO判定
-fn check_flow_limit_ko(project: &Project, talent: &Talent) -> KoDecision {
+pub(crate) fn check_flow_limit_ko(project: &Project, talent: &Talent) -> KoDecision {
     let talent_depth = talent
         .flow_depth
         .as_deref()
@@ -223,18 +226,30 @@ fn check_ng_keyword_ko(
 ) -> KoDecision {
     match (talent_ng_keywords, project_keywords) {
         (Some(ng), Some(project)) => {
-            let ng_set: HashSet<_> = ng.iter().collect();
-            let project_set: HashSet<_> = project.iter().collect();
-            let overlap: Vec<_> = ng_set.intersection(&project_set).collect();
+            let normalize_set = |items: &[String]| -> HashSet<String> {
+                items
+                    .iter()
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            };
+
+            let ng_set = normalize_set(ng);
+            let project_set = normalize_set(project);
+
+            if ng_set.is_empty() || project_set.is_empty() {
+                return KoDecision::SoftKo {
+                    reason: "ng_keyword_unknown: キーワード情報不足のため要確認".into(),
+                };
+            }
+
+            let overlap: Vec<_> = ng_set.intersection(&project_set).take(3).cloned().collect();
 
             if overlap.is_empty() {
                 KoDecision::Pass
             } else {
                 KoDecision::HardKo {
-                    reason: format!(
-                        "ng_keyword_overlap: {:?} が重複",
-                        overlap.iter().take(3).collect::<Vec<_>>()
-                    ),
+                    reason: format!("ng_keyword_overlap: {:?} が重複", overlap),
                 }
             }
         }
@@ -285,7 +300,7 @@ fn check_age_ko(project: &Project, talent: &Talent) -> KoDecision {
 /// 開始日と参画可能日の衝突を検知
 /// - 両者が分かり、タレントの参画可能日が案件開始日より遅い場合は HardKo
 /// - いずれか不明や日付未確定は SoftKo（要確認）
-fn check_availability_ko(project: &Project, talent: &Talent) -> KoDecision {
+pub(crate) fn check_availability_ko(project: &Project, talent: &Talent) -> KoDecision {
     match (&project.start_date, &talent.availability_date) {
         (Some(project_start), Some(talent_available)) => {
             match (project_start.date, talent_available.date) {
@@ -495,6 +510,36 @@ mod tests {
         talent.nationality = Some(" JAPAN ".into());
         let pass = check_foreigner_ko(&project, &talent);
         assert!(matches!(pass, KoDecision::Pass));
+    }
+
+    #[test]
+    fn english_is_checked_even_when_japanese_unknown() {
+        let mut project = base_project();
+        project.japanese_skill = None;
+        project.english_skill = Some("ビジネス".into());
+
+        let mut talent = base_talent();
+        talent.japanese_skill = None;
+        talent.english_skill = Some("会話".into());
+
+        let decision = check_language_ko(&project, &talent);
+        assert!(matches!(
+            decision,
+            KoDecision::HardKo { reason } if reason.contains("english_skill_insufficient")
+        ));
+    }
+
+    #[test]
+    fn ng_keywords_are_trimmed_and_casefolded() {
+        let decision = check_ng_keyword_ko(
+            Some(&[" 金融 ".to_string(), "SaaS".to_string()]),
+            Some(&["saas".to_string(), "FinTech".to_string()]),
+        );
+
+        assert!(matches!(
+            decision,
+            KoDecision::HardKo { reason } if reason.contains("saas")
+        ));
     }
 
     #[test]
