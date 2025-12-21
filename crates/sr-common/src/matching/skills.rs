@@ -79,7 +79,7 @@ fn check_required_skills_with_threshold(
             match_percentage: 1.0,
             matched_skills: vec![],
             reason: "必須スキル要件なし".to_string(),
-            requires_manual_review: true,
+            requires_manual_review: false,
         };
     }
 
@@ -156,7 +156,7 @@ mod tests {
         let result = check_required_skills(&[], &[]);
         assert!(!result.is_knockout);
         assert_eq!(result.match_percentage, 1.0);
-        assert!(result.requires_manual_review);
+        assert!(!result.requires_manual_review);
     }
 
     #[test]

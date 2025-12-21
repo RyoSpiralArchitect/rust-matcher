@@ -381,25 +381,21 @@ mod tests {
     }
 
     #[test]
-    fn empty_required_skills_force_manual_review() {
+    fn empty_required_skills_pass_without_manual_review() {
         let mut project = base_project();
         project.required_skills_keywords.clear();
 
         let talent = base_talent();
         let result = run_all_ko_checks(&project, &talent);
 
-        assert!(result.needs_manual_review);
+        assert!(!result.needs_manual_review);
         let (_, decision) = result
             .decisions
             .iter()
             .find(|(name, _)| *name == "required_skills")
             .expect("required_skills decision is present");
 
-        assert!(matches!(
-            decision,
-            KoDecision::SoftKo { reason }
-                if reason.contains("required_skills_manual_review")
-        ));
+        assert!(matches!(decision, KoDecision::Pass));
     }
 
     #[test]
