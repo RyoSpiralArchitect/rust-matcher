@@ -471,8 +471,9 @@ mod tests {
             Some(vec![" JavaScript ".into(), "js".into(), "Rust".into()]),
         );
 
-        let mut skills = output.partial.required_skills_keywords.unwrap();
-        skills.sort();
-        assert_eq!(skills, vec!["javascript", "rust"]);
+        assert_eq!(
+            output.partial.required_skills_keywords.unwrap(),
+            vec!["javascript", "rust"]
+        );
     }
 }
