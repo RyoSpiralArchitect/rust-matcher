@@ -12863,4 +12863,361 @@ ORDER BY date;
 
 ---
 
+## Phase 3: LLM統合とマッチングパイプライン接続
+
+### 3.1 実装ロードマップ
+
+| Step | 内容 | 優先度 |
+|------|------|--------|
+| **Step 1** | LLM Provider抽象化 + Shadow比較(10%) | P0 |
+| **Step 2** | match_results DB保存の本番接続 | P0 |
+| **Step 3** | systemd本番ループ (extractor/worker/recovery) | P0 |
+| **Step 4** | sr-gmail-ingestor (n8n置換) | P1 (後日) |
+
+---
+
+### 3.2 LLM Provider 設計
+
+#### 設計方針
+
+- **Provider trait抽象化**: LLMは外部サービスとして扱い、差し替え可能に
+- **環境変数ベース設定**: provider/model/endpoint/key/timeout/retryを環境変数で制御
+- **Shadow比較モード**: 本番挙動を変えずに複数LLMの結果を比較保存
+
+#### ディレクトリ構成
+
+```
+sr-llm-worker/src/
+├── main.rs
+└── llm/
+    ├── mod.rs          # trait定義 + factory
+    ├── types.rs        # 共通 Request/Response
+    ├── config.rs       # 環境変数からの設定読み込み
+    ├── validator.rs    # LLMレスポンス検証
+    └── providers/
+        ├── mod.rs
+        ├── deepseek.rs
+        ├── openai.rs
+        ├── anthropic.rs
+        ├── google.rs
+        └── mock.rs     # テスト用
+```
+
+#### Provider Trait
+
+```rust
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait LlmProvider: Send + Sync {
+    /// プロバイダ名 (ログ/メトリクス用)
+    fn name(&self) -> &'static str;
+
+    /// 抽出リクエストを実行
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError>;
+
+    /// ヘルスチェック (optional)
+    async fn health_check(&self) -> Result<(), LlmError> {
+        Ok(())
+    }
+}
+```
+
+#### LlmRequest / LlmResponse
+
+```rust
+/// LLM抽出リクエスト
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmRequest {
+    pub message_id: String,
+    pub email_subject: String,
+    pub email_body: String,
+    pub extraction_hints: Option<ExtractionHints>,
+}
+
+/// LLM抽出レスポンス
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmResponse {
+    pub project_name: Option<String>,
+    pub monthly_tanka_min: Option<u32>,
+    pub monthly_tanka_max: Option<u32>,
+    pub required_skills_keywords: Vec<String>,
+    pub preferred_skills_keywords: Vec<String>,
+    pub work_todofuken: Option<String>,
+    pub work_area: Option<String>,
+    pub remote_onsite: Option<String>,
+    pub min_experience_years: Option<i32>,
+    pub japanese_skill: Option<String>,
+    pub english_skill: Option<String>,
+    pub start_date_raw: Option<String>,
+    pub contract_type: Option<String>,
+    pub flow_dept: Option<String>,
+    // ... その他抽出フィールド
+}
+
+/// LLMエラー分類
+#[derive(Debug, thiserror::Error)]
+pub enum LlmError {
+    #[error("rate limited, retry after {retry_after_secs}s")]
+    RateLimited { retry_after_secs: u64 },
+
+    #[error("transient error: {message}")]
+    Transient { message: String },
+
+    #[error("permanent error: {message}")]
+    Permanent { message: String },
+
+    #[error("timeout after {timeout_secs}s")]
+    Timeout { timeout_secs: u64 },
+
+    #[error("invalid response: {message}")]
+    InvalidResponse { message: String },
+}
+```
+
+#### 環境変数設定
+
+**MVP最小構成**:
+```bash
+# 基本設定
+LLM_ENABLED=1                    # 0でLLM無効化（テスト/デバッグ用）
+LLM_PROVIDER=deepseek            # deepseek|openai|anthropic|google|mock
+LLM_MODEL=deepseek-chat          # provider依存
+LLM_ENDPOINT=https://api.deepseek.com/v1/chat/completions
+LLM_API_KEY=sk-xxx
+LLM_TIMEOUT_SECONDS=30
+LLM_MAX_RETRIES=3
+LLM_RETRY_BACKOFF_SECONDS=5
+```
+
+**Shadow比較モード** (推奨):
+```bash
+LLM_COMPARE_MODE=shadow          # none|shadow|ab
+LLM_PRIMARY_PROVIDER=deepseek    # 本番で使用するprovider
+LLM_SHADOW_PROVIDER=openai       # 比較用provider
+LLM_SHADOW_SAMPLE_PERCENT=10     # 10%のリクエストで比較
+LLM_SHADOW_API_KEY=sk-xxx        # shadow provider用キー
+```
+
+**A/Bテストモード** (将来用):
+```bash
+LLM_COMPARE_MODE=ab
+LLM_PROVIDERS=deepseek,openai
+LLM_AB_PERCENT=50                # deepseek側の割合
+```
+
+#### LLMレスポンス検証
+
+**重要**: LLMのレスポンスは「必ず検証」してから使用する。
+
+```rust
+pub fn validate_llm_response(resp: &LlmResponse) -> Result<(), ValidationError> {
+    let mut errors = Vec::new();
+
+    // 単価範囲チェック (20万〜300万)
+    if let Some(min) = resp.monthly_tanka_min {
+        if min < 20 || min > 300 {
+            errors.push(format!("monthly_tanka_min out of range: {}", min));
+        }
+    }
+    if let Some(max) = resp.monthly_tanka_max {
+        if max < 20 || max > 300 {
+            errors.push(format!("monthly_tanka_max out of range: {}", max));
+        }
+    }
+
+    // 経験年数チェック (0〜50年)
+    if let Some(years) = resp.min_experience_years {
+        if years < 0 || years > 50 {
+            errors.push(format!("min_experience_years out of range: {}", years));
+        }
+    }
+
+    // スキル空配列チェック
+    if resp.required_skills_keywords.is_empty() {
+        errors.push("required_skills_keywords is empty".to_string());
+    }
+
+    // ENUM値チェック
+    if let Some(ref remote) = resp.remote_onsite {
+        let valid = ["フル出社", "リモート併用", "フルリモート"];
+        if !valid.contains(&remote.as_str()) {
+            errors.push(format!("invalid remote_onsite: {}", remote));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationError { errors })
+    }
+}
+```
+
+**検証失敗時の処理**:
+- JSON parseエラー → `Retryable`
+- 必須フィールド欠損 → `partial_fields`に保存 + `manual_review`
+- 値域エラー → `partial_fields`に保存 + `manual_review`
+
+---
+
+### 3.3 Shadow比較の実装
+
+#### 比較結果の保存
+
+```sql
+CREATE TABLE ses.llm_comparison_results (
+    id SERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL,
+    primary_provider VARCHAR(50) NOT NULL,
+    shadow_provider VARCHAR(50) NOT NULL,
+    primary_response JSONB NOT NULL,
+    shadow_response JSONB,
+    primary_latency_ms INTEGER,
+    shadow_latency_ms INTEGER,
+    diff_summary JSONB,  -- 差分サマリ
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_llm_comparison_message ON ses.llm_comparison_results(message_id);
+CREATE INDEX idx_llm_comparison_created ON ses.llm_comparison_results(created_at);
+```
+
+#### 比較ロジック
+
+```rust
+pub async fn run_with_shadow_comparison(
+    primary: &dyn LlmProvider,
+    shadow: &dyn LlmProvider,
+    req: &LlmRequest,
+    sample_percent: u8,
+) -> Result<LlmResponse, LlmError> {
+    // 本番リクエスト (必須)
+    let primary_result = primary.extract(req).await;
+
+    // Shadow比較 (サンプリング)
+    let should_compare = rand::random::<u8>() < (sample_percent * 255 / 100);
+    if should_compare {
+        tokio::spawn({
+            let shadow = shadow.clone();
+            let req = req.clone();
+            async move {
+                let shadow_result = shadow.extract(&req).await;
+                // 比較結果をDBに保存 (非同期、本番には影響しない)
+                save_comparison_result(&req.message_id, &primary_result, &shadow_result).await;
+            }
+        });
+    }
+
+    primary_result
+}
+```
+
+---
+
+### 3.4 マッチングパイプライン接続
+
+#### 処理フロー
+
+```
+sr-extractor
+    │
+    ▼
+ses.extraction_queue (status=pending)
+    │
+    ▼
+sr-llm-worker
+    ├── lock_next_pending_job()
+    ├── LLM Provider.extract()
+    ├── validate_llm_response()
+    ├── apply corrections (normalize_*)
+    ├── upsert_extraction_job() → completed
+    │
+    ▼
+run_all_ko_checks()
+    │
+    ▼
+calculate_detailed_score()
+    │
+    ▼
+ses.match_results (INSERT)
+```
+
+#### match_results 保存内容
+
+```rust
+pub struct MatchResultInsert {
+    pub talent_id: i64,
+    pub project_id: i64,
+    pub is_knockout: bool,
+    pub ko_reasons: Option<serde_json::Value>,  // Vec<String> as JSONB
+    pub needs_manual_review: bool,
+    pub score_total: Option<f64>,
+    pub score_breakdown: Option<serde_json::Value>,
+    pub engine_version: Option<String>,  // "1.0.0"
+    pub rule_version: Option<String>,    // "2025-01-15"
+}
+```
+
+---
+
+### 3.5 systemd 本番デプロイ
+
+#### サービス構成
+
+| サービス | 実行方式 | 説明 |
+|----------|----------|------|
+| `sr-extractor.timer` | 5分間隔 | anken_emails → extraction_queue |
+| `sr-llm-worker.service` | 常駐 | queue処理 + LLM呼び出し |
+| `sr-queue-recovery.timer` | 10分間隔 | 滞留ジョブ復旧 |
+
+#### 環境変数ファイル
+
+`/etc/sr-matcher.env`:
+```bash
+DATABASE_URL=postgres://user:pass@host:5432/sponto
+LLM_ENABLED=1
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=sk-xxx
+LLM_COMPARE_MODE=shadow
+LLM_SHADOW_PROVIDER=openai
+LLM_SHADOW_SAMPLE_PERCENT=10
+LLM_SHADOW_API_KEY=sk-xxx
+```
+
+---
+
+### 3.6 Done条件
+
+#### Step 1: LLM Provider抽象化
+
+- [ ] `LlmProvider` trait が定義されている
+- [ ] `DeepSeekProvider` が実装されている
+- [ ] `MockProvider` がテスト用に実装されている
+- [ ] 環境変数から設定を読み込む `LlmConfig` がある
+- [ ] `validate_llm_response()` でレスポンス検証が実装されている
+- [ ] Shadow比較モードが動作する
+
+#### Step 2: match_results DB保存
+
+- [ ] `sr-llm-worker` が実際のLLM APIを呼び出す
+- [ ] 抽出結果が正規化されてDB保存される
+- [ ] `run_all_ko_checks()` が本番パスで実行される
+- [ ] `match_results` にスコア・KO理由が保存される
+
+#### Step 3: systemd本番ループ
+
+- [ ] 3サービスがsystemdで起動する
+- [ ] ログが `/var/log/sr-matcher/` に出力される
+- [ ] エラー時にSlack通知が飛ぶ
+
+#### Step 4: sr-gmail-ingestor (将来)
+
+- [ ] Gmail API認証が動作する
+- [ ] 差分取得 (historyId / watch) が実装されている
+- [ ] n8n経由を完全に廃止できる
+
+---
+
 **END OF DOCUMENT**

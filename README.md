@@ -52,18 +52,59 @@ CREATE INDEX idx_match_results_project ON ses.match_results(project_id, created_
 CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
 ```
 
+## Phase 3: LLM統合とマッチングパイプライン接続 (Now)
+
+### 実装ロードマップ
+
+| Step | 内容 | 状態 |
+|------|------|------|
+| **Step 1** | LLM Provider抽象化 + Shadow比較(10%) | 🔴 着手予定 |
+| **Step 2** | match_results DB保存の本番接続 | ⏳ 待機 |
+| **Step 3** | systemd本番ループ | ⏳ 待機 |
+| **Step 4** | sr-gmail-ingestor (n8n置換) | 🔜 将来 |
+
+### LLM Provider 設計概要
+
+```
+sr-llm-worker/src/llm/
+├── mod.rs          # LlmProvider trait + factory
+├── types.rs        # LlmRequest / LlmResponse
+├── config.rs       # 環境変数から設定読み込み
+├── validator.rs    # レスポンス検証
+└── providers/
+    ├── deepseek.rs # 本番用 (primary)
+    ├── openai.rs   # 比較用 (shadow)
+    └── mock.rs     # テスト用
+```
+
+**設計方針**:
+- Provider trait抽象化で差し替え可能
+- Shadow比較モード（10%サンプリング）で本番挙動を変えずにLLM比較
+- LLMレスポンスは必ず検証してから使用
+
+### 環境変数 (MVP)
+
+```bash
+LLM_ENABLED=1
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=sk-xxx
+LLM_COMPARE_MODE=shadow
+LLM_SHADOW_PROVIDER=openai
+LLM_SHADOW_SAMPLE_PERCENT=10
+```
+
+詳細は `docs/MVP_PLAN.md` Phase 3 セクションを参照。
+
+---
+
 ## 未達成・スタブ・今後やること
 MVP_PLAN.md の進行表に沿って、以下は未着手/スタブまたは今後深掘りする項目です。
 
-- **抽出系バイナリの実装充実**: `sr-extractor` / `sr-llm-worker` / `sr-queue-recovery` は最小限のスタブフロー。実サービス I/O や
-  エラーハンドリング、LLM 呼び出しなどは未実装。
-- **永続化まわり**: キュー/スキーマはインメモリ想定で、外部ストレージやマイグレーションは未実装。DDL の index など
-  物理設計は `docs/MVP_PLAN.md` の方針に従って今後適用。
-- **スコアリングの運用統合**: `MatchingEngine` で prefilter+詳細スコアの一貫処理は実装済み。実際の I/O やバイナリからの呼び出し、
-  E2E テストの拡充や閾値チューニングはこれから。
-- **抽出ルールの拡充**: regex ベースの抽出は主要項目のみ。MVP_PLAN の残り（例: 契約形態詳細、追加スキル群など）は順次追加予定。
-- **運用フローの整備**: Queue の監視/リカバリ、決定理由のログ出力、Cargo.lock の扱いなど、運用面の方針は `docs/MVP_PLAN.md`
-  へ寄せつつ README でも適宜アップデート予定。
+- **LLM統合**: `sr-llm-worker` の LLM 呼び出しは現在スタブ。Provider trait 実装後に実 API 接続予定。
+- **マッチングパイプライン接続**: `run_all_ko_checks()` + スコアリングを本番パスに接続。
+- **永続化まわり**: DDL の本番適用、`match_results` / `extraction_queue` のマイグレーション。
+- **運用フローの整備**: systemd サービス化、ログ出力、Slack 通知の実装。
 
 ## アーキテクチャ概要
 ```
