@@ -38,6 +38,7 @@ Phase 2 完了 ─────────────────────�
 
 ## 現状できること（MVP準備中のサマリ）
 
+- **直人材パースを最優先で確定**: メール本文（将来は PDF も）からタレント情報を正規化し、案件側は「最低限の正規化 + KO/スコア算出」で運用開始できるよう契約を固め済み。
 - **マッチング結果の契約を確定**: `MatchResponse` / `MatchConfig` / `QueueDashboard` DTO を sr-common に実装済み。フロントはこの契約に沿って開発着手可能。
 - **DDL 整備済み**: `match_results` 保存、`interaction_logs` + `feedback_events`（統一版）のテーブルと、Phase4 向け `training_pairs` / `training_stats` ビューまで設計済み。
 - **LLM ワーカーの環境変数ドリブン動作**: `LLM_ENABLED` で完全 OFF、`LLM_PROVIDER`/`LLM_MODEL`/`LLM_ENDPOINT`/`LLM_API_KEY` で実プロバイダを差し替え、`LLM_COMPARE_MODE=shadow` + `LLM_SHADOW_*` で 10% サンプリングの影比較ログを出力できる。`LLM_TIMEOUT_SECONDS` などリトライ・タイムアウトも環境変数で制御。
@@ -111,6 +112,10 @@ interaction_logs (Exposure)          feedback_events (Label)
               │ label (1.0/0.8/0.0)    │  → Phase 4: Two-Tower 学習
               └────────────────────────┘
 ```
+
+- `interaction_logs` = 「誰に何を候補として見せたか」の露出ログ。必ず `match_run_id`（engine_version / config_version を内包）を保存して再現性を確保。
+- `feedback_events` = 「どの露出に対して誰がどんなフィードバックをしたか」のラベル。`actor`/`source` を残し、`is_revoked` で取り消し履歴も保持。
+- `training_pairs` = 上記 2 テーブルを束ねた View。Phase 4 の Two-Tower 学習ではここから教師データを作る。
 
 ### フィードバック統一ENUM
 
@@ -194,11 +199,14 @@ export AUTO_MATCH_THRESHOLD=0.7               # MatchResponse 変換用の自動
 export TWO_TOWER_ENABLED=false
 ```
 
-### プロバイダ別の実動エンドポイント/既定モデル
+### プロバイダ別のデフォルト設定（sr-llm-worker が想定する前提）
 
-`LLM_PROVIDER` を設定すると、`LLM_MODEL` と `LLM_ENDPOINT` の未指定時は下表の値が自動で入ります（公式 API エンドポイントに準拠）。
+- **Mode A: Unified Gateway（推奨）**: `LLM_ENDPOINT` に自前ゲートウェイ（例: `/api/v1/extract` 互換）を立て、プロバイダ差分を吸収する。
+- **Mode B: Direct Provider（上級者向け）**: `LLM_PROVIDER`/`LLM_MODEL`/`LLM_ENDPOINT` を直接指定し、sr-llm-worker 内部のプロバイダ別アダプタでリクエストを組み立てる。
 
-| LLM_PROVIDER | 既定モデル | 既定エンドポイント（公式） |
+`LLM_PROVIDER` を設定すると、`LLM_MODEL` と `LLM_ENDPOINT` の未指定時は下表の値が自動で入ります（リクエスト互換性は上記モード前提）。
+
+| LLM_PROVIDER | 既定モデル | 既定エンドポイント |
 |--------------|------------|---------------------------|
 | `openai` | `gpt-4o-mini` | `https://api.openai.com/v1/chat/completions` |
 | `anthropic` | `claude-3-5-sonnet-20240620` | `https://api.anthropic.com/v1/messages` |
@@ -238,9 +246,16 @@ export LLM_API_KEY=$GOOGLE_API_KEY
 - **影比較 (shadow)**: `LLM_COMPARE_MODE=shadow` + `LLM_SHADOW_PROVIDER`/`LLM_SHADOW_API_KEY` を設定すると、`LLM_SHADOW_SAMPLE_PERCENT` の割合でカナリアログを記録し、primary/shadow 双方のプロバイダ名を保存する。
 - **リトライ/タイムアウト**: `LLM_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES`、`LLM_RETRY_BACKOFF_SECONDS` で REST 呼び出しのタイムアウトとリトライ間隔を細かく調整可能。
 
+### ingestion はプラガブル（n8n / Gmail API）
+
+- 現状は「DB に既にメールが入っている前提」のまま進め、n8n 等のワークフローから `anken_emails` を投入する運用がデフォルト。
+- 将来は `sr-extractor` から Gmail API を直接叩いて `anken_emails` を埋める構成にも切り替え可能にする方針。環境変数で n8n ルート／Gmail 直結のどちらも選べる形を維持する。
+
 ---
 
 ## ディレクトリ構成
+
+Rust workspace crates（Cargo 管理）
 
 ```
 crates/
@@ -254,9 +269,18 @@ crates/
 ├── sr-extractor/       # メール抽出 → キュー投入
 ├── sr-llm-worker/      # LLM処理ワーカー
 ├── sr-queue-recovery/  # 滞留ジョブ復旧
-├── sr-api/             # HTTP API (Axum) ← NEW
-└── sr-gui/             # フロントエンド (Next.js) ← NEW
+└── sr-api/             # HTTP API (Axum)
+```
 
+フロントエンド（別 npm プロジェクト）
+
+```
+sr-gui/                 # Next.js 14 + TypeScript
+```
+
+ドキュメント
+
+```
 docs/
 └── MVP_PLAN.md         # 詳細設計書（15,000行+）
 ```
