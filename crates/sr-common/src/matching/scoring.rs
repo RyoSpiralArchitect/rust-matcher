@@ -1,4 +1,6 @@
 use super::{
+    ko_checks::{check_availability_ko, check_flow_limit_ko},
+    ko_unified::KoDecision,
     location::evaluate_location,
     skills::{check_preferred_skills, check_required_skills},
     weights::Weights,
@@ -542,6 +544,38 @@ impl BusinessRulesEngine {
             }
         }
 
+        match check_availability_ko(project, talent) {
+            KoDecision::HardKo { reason } => {
+                score = 0.0;
+                status = "MISS";
+                details.push(reason);
+            }
+            KoDecision::SoftKo { reason } => {
+                score = score.min(0.6);
+                if status != "MISS" {
+                    status = "UNKNOWN";
+                }
+                details.push(reason);
+            }
+            KoDecision::Pass => {}
+        }
+
+        match check_flow_limit_ko(project, talent) {
+            KoDecision::HardKo { reason } => {
+                score = 0.0;
+                status = "MISS";
+                details.push(reason);
+            }
+            KoDecision::SoftKo { reason } => {
+                score = score.min(0.6);
+                if status != "MISS" {
+                    status = "UNKNOWN";
+                }
+                details.push(reason);
+            }
+            KoDecision::Pass => {}
+        }
+
         if details.is_empty() {
             details.push("追加要素なし".into());
         }
@@ -579,6 +613,8 @@ fn status_from_score(score: f64, unknown: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::date::{NormalizedStartDate, StartDatePrecision};
+    use chrono::NaiveDate;
 
     fn full_project() -> Project {
         Project {
@@ -590,6 +626,12 @@ mod tests {
             min_experience_years: Some(5),
             contract_type: Some("業務委託".into()),
             age_limit_upper: Some(60),
+            jinzai_flow_limit: Some("商流制限なし".into()),
+            start_date: Some(NormalizedStartDate {
+                date: NaiveDate::from_ymd_opt(2025, 1, 1),
+                precision: StartDatePrecision::ExactDay,
+                interpretation_note: None,
+            }),
             ..Project::default()
         }
     }
@@ -603,6 +645,12 @@ mod tests {
             min_experience_years: Some(6),
             primary_contract_type: Some("業務委託".into()),
             birth_year: Some(Utc::now().year() - 35),
+            flow_depth: Some("1社先".into()),
+            availability_date: Some(NormalizedStartDate {
+                date: NaiveDate::from_ymd_opt(2025, 1, 1),
+                precision: StartDatePrecision::ExactDay,
+                interpretation_note: None,
+            }),
             ..Talent::default()
         }
     }
@@ -876,6 +924,42 @@ mod tests {
         let score = engine.calculate_match_score(&full_project(), &full_talent());
 
         assert_eq!(score.total, score.business_rules_score);
+    }
+
+    #[test]
+    fn other_score_reflects_availability_conflicts() {
+        let mut project = full_project();
+        project.start_date = Some(NormalizedStartDate {
+            date: NaiveDate::from_ymd_opt(2025, 1, 1),
+            precision: StartDatePrecision::ExactDay,
+            interpretation_note: None,
+        });
+
+        let mut talent = full_talent();
+        talent.availability_date = Some(NormalizedStartDate {
+            date: NaiveDate::from_ymd_opt(2025, 2, 1),
+            precision: StartDatePrecision::ExactDay,
+            interpretation_note: None,
+        });
+
+        let score = calculate_detailed_score(&project, &talent);
+
+        assert_eq!(score.other.status, "MISS");
+        assert!(score.other.details.contains("availability_conflict"));
+    }
+
+    #[test]
+    fn other_score_includes_flow_limit_conflicts() {
+        let mut project = full_project();
+        project.jinzai_flow_limit = Some("SPONTO一社先まで".into());
+
+        let mut talent = full_talent();
+        talent.flow_depth = Some("2社先".into());
+
+        let score = calculate_detailed_score(&project, &talent);
+
+        assert_eq!(score.other.status, "MISS");
+        assert!(score.other.details.contains("flow_exceeded"));
     }
 
     #[test]
