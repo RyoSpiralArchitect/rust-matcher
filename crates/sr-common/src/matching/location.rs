@@ -2,7 +2,10 @@ use super::ko_unified::KoDecision;
 use crate::{
     Project, Talent,
     corrections::{
+        contract_type::correct_gender,
+        flow_depth::correct_flow_dept,
         remote_onsite::{correct_remote_onsite, normalize_remote_onsite},
+        station::normalize_station,
         todofuken::{correct_todofuken, correct_work_area},
     },
 };
@@ -52,11 +55,19 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> NormalizedL
             normalize_remote_onsite(project.remote_onsite.as_deref().unwrap_or(""));
         let remote_onsite =
             Some(correct_remote_onsite(&normalized_remote).unwrap_or(normalized_remote));
+        let work_station = project.work_station.as_deref().and_then(normalize_station);
+        let flow_dept = project
+            .flow_dept
+            .as_deref()
+            .map(correct_flow_dept)
+            .filter(|v| v != "不明");
 
         Project {
             work_todofuken,
             work_area,
             remote_onsite,
+            work_station,
+            flow_dept,
             ..Project::default()
         }
     };
@@ -90,6 +101,16 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> NormalizedL
         Talent {
             residential_todofuken,
             residential_area,
+            gender: talent.gender.as_deref().and_then(correct_gender),
+            nearest_station: talent
+                .nearest_station
+                .as_deref()
+                .and_then(normalize_station),
+            desired_remote_onsite: talent
+                .desired_remote_onsite
+                .as_deref()
+                .map(normalize_remote_onsite)
+                .map(|mode| correct_remote_onsite(&mode).unwrap_or(mode)),
             ..Talent::default()
         }
     };
@@ -116,7 +137,48 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         };
     }
 
-    // 2. 都道府県が双方ある → 都道府県ロジック
+    // 2. 最寄駅が双方ある → 駅レベルの判定を優先
+    if let (Some(p_station), Some(t_station)) = (
+        normalized.project.work_station.as_deref(),
+        normalized.talent.nearest_station.as_deref(),
+    ) {
+        if p_station == t_station {
+            return apply_conflict_notes(
+                LocationEvaluation {
+                    ko_decision: KoDecision::Pass,
+                    score: if remote_mode == Some("リモート併用") {
+                        0.97
+                    } else {
+                        1.0
+                    },
+                    details: format!(
+                        "最寄駅一致: {} (remote_onsite={:?})",
+                        p_station, remote_mode
+                    ),
+                },
+                &normalized.conflicts,
+            );
+        }
+
+        return apply_conflict_notes(
+            LocationEvaluation {
+                ko_decision: KoDecision::SoftKo {
+                    reason: format!(
+                        "station_mismatch: project={} vs talent={}",
+                        p_station, t_station
+                    ),
+                },
+                score: 0.6,
+                details: format!(
+                    "最寄駅不一致: project={} vs talent={} (remote_onsite={:?})",
+                    p_station, t_station, remote_mode
+                ),
+            },
+            &normalized.conflicts,
+        );
+    }
+
+    // 3. 都道府県が双方ある → 都道府県ロジック
     if let (Some(p_pref), Some(t_pref)) = (
         normalized.project.work_todofuken.as_deref(),
         normalized.talent.residential_todofuken.as_deref(),
@@ -127,7 +189,7 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         );
     }
 
-    // 3. 片方でも都道府県がない → エリアで粗く判定
+    // 4. 片方でも都道府県がない → エリアで粗く判定
     if let (Some(p_area), Some(t_area)) = (
         normalized.project.work_area.as_deref(),
         normalized.talent.residential_area.as_deref(),
@@ -138,7 +200,7 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         );
     }
 
-    // 4. どっちも取れない → SoftKo（手動レビューへ）
+    // 5. どっちも取れない → SoftKo（手動レビューへ）
     apply_conflict_notes(
         LocationEvaluation {
             ko_decision: KoDecision::SoftKo {
@@ -391,6 +453,36 @@ mod tests {
 
         assert!(matches!(result.ko_decision, KoDecision::HardKo { .. }));
         assert_eq!(result.score, 0.0);
+    }
+
+    #[test]
+    fn matching_stations_pass_quickly() {
+        let mut project = project(None, None, Some("フル出社"));
+        project.work_station = Some("新宿駅".into());
+
+        let mut talent = talent(None, None);
+        talent.nearest_station = Some("新宿".into());
+
+        let result = evaluate_location(&project, &talent);
+
+        assert!(matches!(result.ko_decision, KoDecision::Pass));
+        assert!(result.details.contains("最寄駅一致"));
+        assert!(result.score >= 0.97);
+    }
+
+    #[test]
+    fn station_mismatch_triggers_softko_review() {
+        let mut project = project(None, None, None);
+        project.work_station = Some("新宿駅".into());
+
+        let mut talent = talent(None, None);
+        talent.nearest_station = Some("渋谷".into());
+
+        let result = evaluate_location(&project, &talent);
+
+        assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
+        assert!(result.details.contains("最寄駅不一致"));
+        assert!(result.score <= 0.6);
     }
 
     #[test]
