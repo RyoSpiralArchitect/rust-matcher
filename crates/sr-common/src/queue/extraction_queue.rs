@@ -172,6 +172,10 @@ impl ExtractionQueue {
             .filter(|(_, job)| {
                 job.status == QueueStatus::Pending
                     && job.next_retry_at.map(|ts| ts <= now).unwrap_or(true)
+                    && job
+                        .reprocess_after
+                        .map(|ts| ts <= now)
+                        .unwrap_or(true)
             })
             .max_by(|(_, a), (_, b)| {
                 a.priority
@@ -374,6 +378,33 @@ mod tests {
         assert!(job.locked_by.is_none());
         assert_eq!(job.llm_latency_ms, None);
         assert!(!job.requires_manual_review);
+    }
+
+    #[test]
+    fn reprocess_after_defers_pending_jobs() {
+        let mut queue = ExtractionQueue::default();
+        let mut job = sample_job();
+        job.reprocess_after = Some(Utc::now() + Duration::minutes(10));
+        queue.enqueue(job);
+
+        // No job should be pulled while reprocess_after is in the future.
+        assert!(queue.process_next(|_| unreachable!()).is_none());
+
+        // Once the time passes, the job becomes eligible.
+        queue.jobs[0].reprocess_after = Some(Utc::now() - Duration::minutes(1));
+        let status = queue.process_next_with_worker("worker", |job| {
+            assert!(job.reprocess_after.is_some());
+            Ok(JobOutcome {
+                final_method: FinalMethod::RustCompleted,
+                partial_fields: None,
+                decision_reason: Some("ok".into()),
+                llm_latency_ms: None,
+                requires_manual_review: false,
+                manual_review_reason: None,
+            })
+        });
+
+        assert_eq!(status, Some(QueueStatus::Completed));
     }
 
     #[test]

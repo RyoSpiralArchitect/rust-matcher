@@ -215,16 +215,8 @@ fn check_ng_keyword_ko(
 ) -> KoDecision {
     match (talent_ng_keywords, project_keywords) {
         (Some(ng), Some(project)) => {
-            let normalize_set = |items: &[String]| -> HashSet<String> {
-                items
-                    .iter()
-                    .map(|s| s.trim().to_lowercase())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            };
-
-            let ng_set = normalize_set(ng);
-            let project_set = normalize_set(project);
+            let ng_set = normalize_keywords(ng);
+            let project_set = normalize_keywords(project);
 
             if ng_set.is_empty() || project_set.is_empty() {
                 return KoDecision::SoftKo {
@@ -246,6 +238,23 @@ fn check_ng_keyword_ko(
             reason: "ng_keyword_unknown: キーワード情報不足のため要確認".into(),
         },
     }
+}
+
+fn normalize_keywords(items: &[String]) -> HashSet<String> {
+    items
+        .iter()
+        .flat_map(|raw| {
+            let replaced = raw
+                .replace('\u{3000}', " ")
+                .replace('、', ",")
+                .replace('，', ",");
+            replaced
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// 年齢KO判定: 下限/上限を満たさない場合は HardKo。情報不足は SoftKo。
@@ -545,6 +554,23 @@ mod tests {
             decision,
             KoDecision::HardKo { reason } if reason.contains("saas")
         ));
+    }
+
+    #[test]
+    fn ng_keywords_split_fullwidth_spaces_and_commas() {
+        let decision = check_ng_keyword_ko(
+            Some(&["金融　保険,ゲーム".to_string()]),
+            Some(&["ゲーム".to_string(), "FinTech".to_string()]),
+        );
+
+        assert!(matches!(
+            decision,
+            KoDecision::HardKo { reason }
+                if reason.contains("ゲーム") && reason.contains("金融") == false
+        ));
+
+        let soft = check_ng_keyword_ko(Some(&["  ,  " .to_string()]), Some(&["foo".into()]));
+        assert!(matches!(soft, KoDecision::SoftKo { .. }));
     }
 
     #[test]
