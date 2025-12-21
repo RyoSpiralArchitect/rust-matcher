@@ -12863,4 +12863,3633 @@ ORDER BY date;
 
 ---
 
+## Phase 3: LLM統合とマッチングパイプライン接続
+
+### 3.1 実装ロードマップ
+
+> **⚠️ 最新の実装順序は [3.28 全体実装順序（修正版）](#328-全体実装順序修正版) を参照してください。**
+> 以下は初期計画であり、Phase 3.5（GUI契約層）やTwo-Tower統合を反映した最新版に置き換えられています。
+
+<details>
+<summary>📦 旧ロードマップ（参考用）</summary>
+
+| Step | 内容 | 優先度 |
+|------|------|--------|
+| **Step 1** | LLM Provider抽象化 + Shadow比較(10%) | P0 |
+| **Step 2** | match_results DB保存の本番接続 | P0 |
+| **Step 3** | systemd本番ループ (extractor/worker/recovery) | P0 |
+| **Step 4** | sr-gmail-ingestor (n8n置換) | P1 (後日) |
+
+</details>
+
+---
+
+### 3.2 LLM Provider 設計
+
+#### 設計方針
+
+- **Provider trait抽象化**: LLMは外部サービスとして扱い、差し替え可能に
+- **環境変数ベース設定**: provider/model/endpoint/key/timeout/retryを環境変数で制御
+- **Shadow比較モード**: 本番挙動を変えずに複数LLMの結果を比較保存
+
+#### ディレクトリ構成
+
+```
+sr-llm-worker/src/
+├── main.rs
+└── llm/
+    ├── mod.rs          # trait定義 + factory
+    ├── types.rs        # 共通 Request/Response
+    ├── config.rs       # 環境変数からの設定読み込み
+    ├── validator.rs    # LLMレスポンス検証
+    └── providers/
+        ├── mod.rs
+        ├── deepseek.rs
+        ├── openai.rs
+        ├── anthropic.rs
+        ├── google.rs
+        └── mock.rs     # テスト用
+```
+
+#### Provider Trait
+
+```rust
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait LlmProvider: Send + Sync {
+    /// プロバイダ名 (ログ/メトリクス用)
+    fn name(&self) -> &'static str;
+
+    /// 抽出リクエストを実行
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError>;
+
+    /// ヘルスチェック (optional)
+    async fn health_check(&self) -> Result<(), LlmError> {
+        Ok(())
+    }
+}
+```
+
+#### LlmRequest / LlmResponse
+
+```rust
+/// LLM抽出リクエスト
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmRequest {
+    pub message_id: String,
+    pub email_subject: String,
+    pub email_body: String,
+    pub extraction_hints: Option<ExtractionHints>,
+}
+
+/// LLM抽出レスポンス
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmResponse {
+    pub project_name: Option<String>,
+    pub monthly_tanka_min: Option<u32>,
+    pub monthly_tanka_max: Option<u32>,
+    pub required_skills_keywords: Vec<String>,
+    pub preferred_skills_keywords: Vec<String>,
+    pub work_todofuken: Option<String>,
+    pub work_area: Option<String>,
+    pub remote_onsite: Option<String>,
+    pub min_experience_years: Option<i32>,
+    pub japanese_skill: Option<String>,
+    pub english_skill: Option<String>,
+    pub start_date_raw: Option<String>,
+    pub contract_type: Option<String>,
+    pub flow_dept: Option<String>,
+    // ... その他抽出フィールド
+}
+
+/// LLMエラー分類
+#[derive(Debug, thiserror::Error)]
+pub enum LlmError {
+    #[error("rate limited, retry after {retry_after_secs}s")]
+    RateLimited { retry_after_secs: u64 },
+
+    #[error("transient error: {message}")]
+    Transient { message: String },
+
+    #[error("permanent error: {message}")]
+    Permanent { message: String },
+
+    #[error("timeout after {timeout_secs}s")]
+    Timeout { timeout_secs: u64 },
+
+    #[error("invalid response: {message}")]
+    InvalidResponse { message: String },
+}
+```
+
+#### 環境変数設定
+
+**MVP最小構成**:
+```bash
+# 基本設定
+LLM_ENABLED=1                    # 0でLLM無効化（テスト/デバッグ用）
+LLM_PROVIDER=deepseek            # deepseek|openai|anthropic|google|mock
+LLM_MODEL=deepseek-chat          # provider依存
+LLM_ENDPOINT=https://api.deepseek.com/v1/chat/completions
+LLM_API_KEY=sk-xxx
+LLM_TIMEOUT_SECONDS=30
+LLM_MAX_RETRIES=3
+LLM_RETRY_BACKOFF_SECONDS=5
+```
+
+**Shadow比較モード** (推奨):
+```bash
+LLM_COMPARE_MODE=shadow          # none|shadow|ab
+LLM_PRIMARY_PROVIDER=deepseek    # 本番で使用するprovider
+LLM_SHADOW_PROVIDER=openai       # 比較用provider
+LLM_SHADOW_SAMPLE_PERCENT=10     # 10%のリクエストで比較
+LLM_SHADOW_API_KEY=sk-xxx        # shadow provider用キー
+```
+
+**A/Bテストモード** (将来用):
+```bash
+LLM_COMPARE_MODE=ab
+LLM_PROVIDERS=deepseek,openai
+LLM_AB_PERCENT=50                # deepseek側の割合
+```
+
+#### LLMレスポンス検証
+
+**重要**: LLMのレスポンスは「必ず検証」してから使用する。
+
+```rust
+pub fn validate_llm_response(resp: &LlmResponse) -> Result<(), ValidationError> {
+    let mut errors = Vec::new();
+
+    // 単価範囲チェック (20万〜300万)
+    if let Some(min) = resp.monthly_tanka_min {
+        if min < 20 || min > 300 {
+            errors.push(format!("monthly_tanka_min out of range: {}", min));
+        }
+    }
+    if let Some(max) = resp.monthly_tanka_max {
+        if max < 20 || max > 300 {
+            errors.push(format!("monthly_tanka_max out of range: {}", max));
+        }
+    }
+
+    // 経験年数チェック (0〜50年)
+    if let Some(years) = resp.min_experience_years {
+        if years < 0 || years > 50 {
+            errors.push(format!("min_experience_years out of range: {}", years));
+        }
+    }
+
+    // スキル空配列チェック
+    if resp.required_skills_keywords.is_empty() {
+        errors.push("required_skills_keywords is empty".to_string());
+    }
+
+    // ENUM値チェック
+    if let Some(ref remote) = resp.remote_onsite {
+        let valid = ["フル出社", "リモート併用", "フルリモート"];
+        if !valid.contains(&remote.as_str()) {
+            errors.push(format!("invalid remote_onsite: {}", remote));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationError { errors })
+    }
+}
+```
+
+**検証失敗時の処理**:
+- JSON parseエラー → `Retryable`
+- 必須フィールド欠損 → `partial_fields`に保存 + `manual_review`
+- 値域エラー → `partial_fields`に保存 + `manual_review`
+
+---
+
+### 3.2.1 LLM Provider 実装詳細
+
+#### ディレクトリ構成（拡張版）
+
+```
+sr-llm-worker/src/llm/
+├── mod.rs              # trait定義 + factory + router
+├── types.rs            # LlmRequest / LlmResponse / LlmError
+├── config.rs           # 環境変数からの設定読み込み
+├── validator.rs        # レスポンス検証
+├── prompt.rs           # 抽出用プロンプトテンプレート
+└── providers/
+    ├── mod.rs          # Provider enum + factory
+    ├── deepseek.rs     # DeepSeek (本番 primary)
+    ├── openai.rs       # OpenAI GPT-4o
+    ├── anthropic.rs    # Anthropic Claude
+    ├── google.rs       # Google Gemini
+    ├── mistral.rs      # Mistral AI
+    ├── huggingface.rs  # HuggingFace Inference API
+    ├── n8n_hook.rs     # n8n webhook経由
+    └── mock.rs         # テスト用
+```
+
+#### Provider 一覧と特性
+
+| Provider | Model例 | Endpoint | 特徴 | 用途 |
+|----------|---------|----------|------|------|
+| **DeepSeek** | `deepseek-chat` | `api.deepseek.com` | 高コスパ、日本語良好 | Primary (本番) |
+| **OpenAI** | `gpt-4o`, `gpt-4o-mini` | `api.openai.com` | 高精度、高コスト | Shadow比較 |
+| **Anthropic** | `claude-3-5-sonnet` | `api.anthropic.com` | 長文対応、安全性高 | Shadow比較 |
+| **Google** | `gemini-1.5-pro` | `generativelanguage.googleapis.com` | マルチモーダル対応 | Shadow比較 |
+| **Mistral** | `mistral-large` | `api.mistral.ai` | EU準拠、高速 | Shadow比較 |
+| **HuggingFace** | 任意のモデル | `api-inference.huggingface.co` | OSS、カスタマイズ可 | 実験用 |
+| **n8n_hook** | (経由) | 設定可能 | 既存n8nワークフロー活用 | 移行期間 |
+| **Mock** | - | - | 固定レスポンス | テスト |
+
+---
+
+#### 環境変数（全プロバイダ対応版）
+
+```bash
+# ==================================================
+# 基本設定
+# ==================================================
+LLM_ENABLED=1                              # 0でLLM無効化
+LLM_TIMEOUT_SECONDS=30                     # タイムアウト
+LLM_MAX_RETRIES=3                          # 最大リトライ
+LLM_RETRY_BACKOFF_SECONDS=5                # リトライ間隔
+
+# ==================================================
+# Primary Provider (本番で使用)
+# ==================================================
+LLM_PROVIDER=deepseek                      # 使用するprovider
+LLM_MODEL=deepseek-chat                    # モデル名
+
+# ==================================================
+# DeepSeek
+# ==================================================
+DEEPSEEK_API_KEY=sk-xxx
+DEEPSEEK_ENDPOINT=https://api.deepseek.com/v1/chat/completions
+DEEPSEEK_MODEL=deepseek-chat
+
+# ==================================================
+# OpenAI
+# ==================================================
+OPENAI_API_KEY=sk-xxx
+OPENAI_ENDPOINT=https://api.openai.com/v1/chat/completions
+OPENAI_MODEL=gpt-4o-mini                   # gpt-4o | gpt-4o-mini | gpt-4-turbo
+OPENAI_ORG_ID=org-xxx                      # Optional
+
+# ==================================================
+# Anthropic
+# ==================================================
+ANTHROPIC_API_KEY=sk-ant-xxx
+ANTHROPIC_ENDPOINT=https://api.anthropic.com/v1/messages
+ANTHROPIC_MODEL=claude-3-5-sonnet-20241022 # claude-3-5-sonnet | claude-3-opus
+ANTHROPIC_VERSION=2023-06-01               # API version header
+
+# ==================================================
+# Google (Gemini)
+# ==================================================
+GOOGLE_API_KEY=AIza-xxx
+GOOGLE_ENDPOINT=https://generativelanguage.googleapis.com/v1beta/models
+GOOGLE_MODEL=gemini-1.5-pro                # gemini-1.5-pro | gemini-1.5-flash
+GOOGLE_PROJECT_ID=sponto-xxx               # Vertex AI使用時
+
+# ==================================================
+# Mistral
+# ==================================================
+MISTRAL_API_KEY=xxx
+MISTRAL_ENDPOINT=https://api.mistral.ai/v1/chat/completions
+MISTRAL_MODEL=mistral-large-latest         # mistral-large | mistral-medium | mistral-small
+
+# ==================================================
+# HuggingFace
+# ==================================================
+HUGGINGFACE_API_KEY=hf_xxx
+HUGGINGFACE_ENDPOINT=https://api-inference.huggingface.co/models
+HUGGINGFACE_MODEL=mistralai/Mixtral-8x7B-Instruct-v0.1
+
+# ==================================================
+# n8n Webhook (既存ワークフロー経由)
+# ==================================================
+N8N_WEBHOOK_URL=https://n8n.sponto.jp/webhook/llm-extraction
+N8N_API_KEY=xxx                            # X-API-Key header
+N8N_TIMEOUT_SECONDS=60                     # n8n経由は長めに
+
+# ==================================================
+# Shadow比較モード
+# ==================================================
+LLM_COMPARE_MODE=shadow                    # none | shadow | ab
+LLM_SHADOW_PROVIDERS=openai,anthropic      # カンマ区切りで複数指定可
+LLM_SHADOW_SAMPLE_PERCENT=10               # 10%のリクエストで比較
+
+# ==================================================
+# A/Bテストモード
+# ==================================================
+# LLM_COMPARE_MODE=ab
+# LLM_AB_PROVIDERS=deepseek,openai
+# LLM_AB_WEIGHTS=70,30                     # deepseek:70%, openai:30%
+```
+
+---
+
+#### Provider 実装例
+
+##### DeepSeek Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/deepseek.rs
+
+use crate::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse};
+use async_trait::async_trait;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
+
+pub struct DeepSeekProvider {
+    client: Client,
+    api_key: String,
+    endpoint: String,
+    model: String,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct DeepSeekRequest {
+    model: String,
+    messages: Vec<Message>,
+    temperature: f32,
+    response_format: ResponseFormat,
+}
+
+#[derive(Serialize)]
+struct Message {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ResponseFormat {
+    #[serde(rename = "type")]
+    format_type: String,
+}
+
+#[derive(Deserialize)]
+struct DeepSeekResponse {
+    choices: Vec<Choice>,
+    usage: Usage,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    message: MessageContent,
+}
+
+#[derive(Deserialize)]
+struct MessageContent {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+}
+
+impl DeepSeekProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("DEEPSEEK_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "DEEPSEEK_API_KEY not set".into() })?,
+            endpoint: std::env::var("DEEPSEEK_ENDPOINT")
+                .unwrap_or_else(|_| "https://api.deepseek.com/v1/chat/completions".into()),
+            model: std::env::var("DEEPSEEK_MODEL")
+                .unwrap_or_else(|_| "deepseek-chat".into()),
+            timeout_secs: std::env::var("LLM_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for DeepSeekProvider {
+    fn name(&self) -> &'static str {
+        "deepseek"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let start = Instant::now();
+
+        let prompt = build_extraction_prompt(&req.email_subject, &req.email_body);
+
+        let api_req = DeepSeekRequest {
+            model: self.model.clone(),
+            messages: vec![
+                Message { role: "system".into(), content: SYSTEM_PROMPT.into() },
+                Message { role: "user".into(), content: prompt },
+            ],
+            temperature: 0.1,
+            response_format: ResponseFormat { format_type: "json_object".into() },
+        };
+
+        let response = self.client
+            .post(&self.endpoint)
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&api_req)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    LlmError::Timeout { timeout_secs: self.timeout_secs }
+                } else {
+                    LlmError::Transient { message: e.to_string() }
+                }
+            })?;
+
+        let status = response.status();
+
+        if status == 429 {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(60);
+            return Err(LlmError::RateLimited { retry_after_secs: retry_after });
+        }
+
+        if status.is_server_error() {
+            return Err(LlmError::Transient {
+                message: format!("Server error: {}", status),
+            });
+        }
+
+        if status.is_client_error() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(LlmError::Permanent {
+                message: format!("Client error {}: {}", status, body),
+            });
+        }
+
+        let api_resp: DeepSeekResponse = response.json().await.map_err(|e| {
+            LlmError::InvalidResponse { message: format!("JSON parse error: {}", e) }
+        })?;
+
+        let content = api_resp.choices
+            .first()
+            .ok_or_else(|| LlmError::InvalidResponse { message: "No choices in response".into() })?
+            .message
+            .content
+            .clone();
+
+        let llm_resp: LlmResponse = serde_json::from_str(&content).map_err(|e| {
+            LlmError::InvalidResponse { message: format!("Response JSON parse error: {}", e) }
+        })?;
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+        tracing::info!(
+            provider = "deepseek",
+            latency_ms = latency_ms,
+            tokens = api_resp.usage.total_tokens,
+            "LLM extraction completed"
+        );
+
+        Ok(llm_resp)
+    }
+
+    async fn health_check(&self) -> Result<(), LlmError> {
+        // 簡易的なヘルスチェック（モデル一覧取得など）
+        Ok(())
+    }
+}
+```
+
+##### Anthropic Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/anthropic.rs
+
+pub struct AnthropicProvider {
+    client: Client,
+    api_key: String,
+    endpoint: String,
+    model: String,
+    version: String,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct AnthropicRequest {
+    model: String,
+    max_tokens: u32,
+    messages: Vec<AnthropicMessage>,
+    system: String,
+}
+
+#[derive(Serialize)]
+struct AnthropicMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct AnthropicResponse {
+    content: Vec<ContentBlock>,
+    usage: AnthropicUsage,
+}
+
+#[derive(Deserialize)]
+struct ContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: Option<String>,
+}
+
+impl AnthropicProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "ANTHROPIC_API_KEY not set".into() })?,
+            endpoint: std::env::var("ANTHROPIC_ENDPOINT")
+                .unwrap_or_else(|_| "https://api.anthropic.com/v1/messages".into()),
+            model: std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into()),
+            version: std::env::var("ANTHROPIC_VERSION")
+                .unwrap_or_else(|_| "2023-06-01".into()),
+            timeout_secs: std::env::var("LLM_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AnthropicProvider {
+    fn name(&self) -> &'static str {
+        "anthropic"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let prompt = build_extraction_prompt(&req.email_subject, &req.email_body);
+
+        let api_req = AnthropicRequest {
+            model: self.model.clone(),
+            max_tokens: 4096,
+            messages: vec![
+                AnthropicMessage { role: "user".into(), content: prompt },
+            ],
+            system: SYSTEM_PROMPT.into(),
+        };
+
+        let response = self.client
+            .post(&self.endpoint)
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", &self.version)
+            .header("Content-Type", "application/json")
+            .json(&api_req)
+            .send()
+            .await?;
+
+        // ... エラーハンドリング (DeepSeekと同様)
+
+        let api_resp: AnthropicResponse = response.json().await?;
+        let content = api_resp.content
+            .iter()
+            .find(|b| b.block_type == "text")
+            .and_then(|b| b.text.clone())
+            .ok_or_else(|| LlmError::InvalidResponse { message: "No text content".into() })?;
+
+        serde_json::from_str(&content).map_err(|e| {
+            LlmError::InvalidResponse { message: format!("JSON parse error: {}", e) }
+        })
+    }
+}
+```
+
+##### Google Gemini Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/google.rs
+
+pub struct GoogleProvider {
+    client: Client,
+    api_key: String,
+    model: String,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct GeminiRequest {
+    contents: Vec<GeminiContent>,
+    generation_config: GenerationConfig,
+}
+
+#[derive(Serialize)]
+struct GeminiContent {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Serialize)]
+struct GeminiPart {
+    text: String,
+}
+
+#[derive(Serialize)]
+struct GenerationConfig {
+    temperature: f32,
+    response_mime_type: String,
+}
+
+impl GoogleProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("GOOGLE_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "GOOGLE_API_KEY not set".into() })?,
+            model: std::env::var("GOOGLE_MODEL")
+                .unwrap_or_else(|_| "gemini-1.5-pro".into()),
+            timeout_secs: 30,
+        })
+    }
+
+    fn endpoint(&self) -> String {
+        format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            self.model, self.api_key
+        )
+    }
+}
+
+#[async_trait]
+impl LlmProvider for GoogleProvider {
+    fn name(&self) -> &'static str {
+        "google"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let prompt = format!("{}\n\n{}", SYSTEM_PROMPT,
+            build_extraction_prompt(&req.email_subject, &req.email_body));
+
+        let api_req = GeminiRequest {
+            contents: vec![GeminiContent {
+                parts: vec![GeminiPart { text: prompt }],
+            }],
+            generation_config: GenerationConfig {
+                temperature: 0.1,
+                response_mime_type: "application/json".into(),
+            },
+        };
+
+        // ... リクエスト送信とレスポンスパース
+        todo!()
+    }
+}
+```
+
+##### Mistral Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/mistral.rs
+
+pub struct MistralProvider {
+    client: Client,
+    api_key: String,
+    endpoint: String,
+    model: String,
+    timeout_secs: u64,
+}
+
+impl MistralProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("MISTRAL_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "MISTRAL_API_KEY not set".into() })?,
+            endpoint: std::env::var("MISTRAL_ENDPOINT")
+                .unwrap_or_else(|_| "https://api.mistral.ai/v1/chat/completions".into()),
+            model: std::env::var("MISTRAL_MODEL")
+                .unwrap_or_else(|_| "mistral-large-latest".into()),
+            timeout_secs: 30,
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for MistralProvider {
+    fn name(&self) -> &'static str {
+        "mistral"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        // OpenAI互換APIフォーマット
+        // DeepSeekと同じ構造で実装可能
+        todo!()
+    }
+}
+```
+
+##### HuggingFace Provider
+
+```rust
+// sr-llm-worker/src/llm/providers/huggingface.rs
+
+pub struct HuggingFaceProvider {
+    client: Client,
+    api_key: String,
+    model: String,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct HuggingFaceRequest {
+    inputs: String,
+    parameters: HuggingFaceParams,
+}
+
+#[derive(Serialize)]
+struct HuggingFaceParams {
+    max_new_tokens: u32,
+    temperature: f32,
+    return_full_text: bool,
+}
+
+impl HuggingFaceProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            api_key: std::env::var("HUGGINGFACE_API_KEY")
+                .map_err(|_| LlmError::Permanent { message: "HUGGINGFACE_API_KEY not set".into() })?,
+            model: std::env::var("HUGGINGFACE_MODEL")
+                .unwrap_or_else(|_| "mistralai/Mixtral-8x7B-Instruct-v0.1".into()),
+            timeout_secs: 60, // HuggingFaceは遅めなことがある
+        })
+    }
+
+    fn endpoint(&self) -> String {
+        format!("https://api-inference.huggingface.co/models/{}", self.model)
+    }
+}
+
+#[async_trait]
+impl LlmProvider for HuggingFaceProvider {
+    fn name(&self) -> &'static str {
+        "huggingface"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let prompt = format!("{}\n\n{}", SYSTEM_PROMPT,
+            build_extraction_prompt(&req.email_subject, &req.email_body));
+
+        let api_req = HuggingFaceRequest {
+            inputs: prompt,
+            parameters: HuggingFaceParams {
+                max_new_tokens: 4096,
+                temperature: 0.1,
+                return_full_text: false,
+            },
+        };
+
+        // ... リクエスト送信
+        // 注意: HuggingFaceは応答フォーマットがモデルによって異なる
+        todo!()
+    }
+}
+```
+
+##### Provider Factory
+
+```rust
+// sr-llm-worker/src/llm/providers/mod.rs
+
+use crate::llm::{LlmError, LlmProvider};
+
+pub mod deepseek;
+pub mod openai;
+pub mod anthropic;
+pub mod google;
+pub mod mistral;
+pub mod huggingface;
+pub mod n8n_hook;
+pub mod mock;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderType {
+    DeepSeek,
+    OpenAI,
+    Anthropic,
+    Google,
+    Mistral,
+    HuggingFace,
+    N8nHook,
+    Mock,
+}
+
+impl ProviderType {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "deepseek" => Some(Self::DeepSeek),
+            "openai" => Some(Self::OpenAI),
+            "anthropic" | "claude" => Some(Self::Anthropic),
+            "google" | "gemini" => Some(Self::Google),
+            "mistral" => Some(Self::Mistral),
+            "huggingface" | "hf" => Some(Self::HuggingFace),
+            "n8n" | "n8n_hook" => Some(Self::N8nHook),
+            "mock" => Some(Self::Mock),
+            _ => None,
+        }
+    }
+}
+
+pub fn create_provider(provider_type: ProviderType) -> Result<Box<dyn LlmProvider>, LlmError> {
+    match provider_type {
+        ProviderType::DeepSeek => Ok(Box::new(deepseek::DeepSeekProvider::from_env()?)),
+        ProviderType::OpenAI => Ok(Box::new(openai::OpenAIProvider::from_env()?)),
+        ProviderType::Anthropic => Ok(Box::new(anthropic::AnthropicProvider::from_env()?)),
+        ProviderType::Google => Ok(Box::new(google::GoogleProvider::from_env()?)),
+        ProviderType::Mistral => Ok(Box::new(mistral::MistralProvider::from_env()?)),
+        ProviderType::HuggingFace => Ok(Box::new(huggingface::HuggingFaceProvider::from_env()?)),
+        ProviderType::N8nHook => Ok(Box::new(n8n_hook::N8nHookProvider::from_env()?)),
+        ProviderType::Mock => Ok(Box::new(mock::MockProvider::default())),
+    }
+}
+
+pub fn create_providers_from_env() -> Result<(Box<dyn LlmProvider>, Vec<Box<dyn LlmProvider>>), LlmError> {
+    let primary_name = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "deepseek".into());
+    let primary_type = ProviderType::from_str(&primary_name)
+        .ok_or_else(|| LlmError::Permanent { message: format!("Unknown provider: {}", primary_name) })?;
+    let primary = create_provider(primary_type)?;
+
+    let shadow_providers = std::env::var("LLM_SHADOW_PROVIDERS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| {
+            let s = s.trim();
+            if s.is_empty() { return None; }
+            ProviderType::from_str(s).and_then(|t| create_provider(t).ok())
+        })
+        .collect();
+
+    Ok((primary, shadow_providers))
+}
+```
+
+---
+
+### 3.2.2 n8n Webhook 連携
+
+既存の sponto-platform n8n ワークフローを活用して、移行期間中も LLM 抽出を継続できる。
+
+#### n8n Provider 実装
+
+```rust
+// sr-llm-worker/src/llm/providers/n8n_hook.rs
+
+pub struct N8nHookProvider {
+    client: Client,
+    webhook_url: String,
+    api_key: Option<String>,
+    timeout_secs: u64,
+}
+
+#[derive(Serialize)]
+struct N8nWebhookRequest {
+    message_id: String,
+    email_subject: String,
+    email_body: String,
+    callback_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct N8nWebhookResponse {
+    status: String,
+    data: Option<LlmResponse>,
+    error: Option<String>,
+}
+
+impl N8nHookProvider {
+    pub fn from_env() -> Result<Self, LlmError> {
+        Ok(Self {
+            client: Client::new(),
+            webhook_url: std::env::var("N8N_WEBHOOK_URL")
+                .map_err(|_| LlmError::Permanent { message: "N8N_WEBHOOK_URL not set".into() })?,
+            api_key: std::env::var("N8N_API_KEY").ok(),
+            timeout_secs: std::env::var("N8N_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(60),
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for N8nHookProvider {
+    fn name(&self) -> &'static str {
+        "n8n_hook"
+    }
+
+    async fn extract(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let webhook_req = N8nWebhookRequest {
+            message_id: req.message_id.clone(),
+            email_subject: req.email_subject.clone(),
+            email_body: req.email_body.clone(),
+            callback_url: None, // 同期呼び出し
+        };
+
+        let mut request = self.client
+            .post(&self.webhook_url)
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .header("Content-Type", "application/json")
+            .json(&webhook_req);
+
+        if let Some(ref api_key) = self.api_key {
+            request = request.header("X-API-Key", api_key);
+        }
+
+        let response = request.send().await.map_err(|e| {
+            if e.is_timeout() {
+                LlmError::Timeout { timeout_secs: self.timeout_secs }
+            } else {
+                LlmError::Transient { message: e.to_string() }
+            }
+        })?;
+
+        let webhook_resp: N8nWebhookResponse = response.json().await.map_err(|e| {
+            LlmError::InvalidResponse { message: e.to_string() }
+        })?;
+
+        match webhook_resp.status.as_str() {
+            "success" => webhook_resp.data.ok_or_else(|| {
+                LlmError::InvalidResponse { message: "No data in response".into() }
+            }),
+            "error" => Err(LlmError::Permanent {
+                message: webhook_resp.error.unwrap_or_else(|| "Unknown error".into()),
+            }),
+            _ => Err(LlmError::InvalidResponse {
+                message: format!("Unknown status: {}", webhook_resp.status),
+            }),
+        }
+    }
+}
+```
+
+#### n8n Webhook Workflow 設定
+
+n8n 側で以下のワークフローを作成:
+
+```json
+{
+  "name": "LLM Extraction Webhook",
+  "nodes": [
+    {
+      "type": "n8n-nodes-base.webhook",
+      "name": "Webhook",
+      "parameters": {
+        "path": "llm-extraction",
+        "httpMethod": "POST",
+        "responseMode": "responseNode"
+      }
+    },
+    {
+      "type": "n8n-nodes-base.httpRequest",
+      "name": "DeepSeek API",
+      "parameters": {
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "deepseek-chat" },
+            { "name": "messages", "value": "={{ $json.messages }}" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "n8n-nodes-base.respondToWebhook",
+      "name": "Respond",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'success', data: $json.choices[0].message.content } }}"
+      }
+    }
+  ]
+}
+```
+
+#### sponto-platform との連携フロー
+
+```
+[rust-matcher]                          [n8n.sponto.jp]
+      │                                       │
+      │  POST /webhook/llm-extraction         │
+      │ ────────────────────────────────────> │
+      │   { message_id, subject, body }       │
+      │                                       │
+      │                              ┌────────┴────────┐
+      │                              │ DeepSeek API    │
+      │                              │ (既存ワークフロー) │
+      │                              └────────┬────────┘
+      │                                       │
+      │  Response (JSON)                      │
+      │ <──────────────────────────────────── │
+      │   { status, data: LlmResponse }       │
+      │                                       │
+```
+
+---
+
+### 3.2.3 GWS (Google Workspace) 直結
+
+n8n を経由せず、rust-matcher から直接 Gmail API を呼び出す構成。
+
+#### アーキテクチャ
+
+```
+                                 ┌─────────────────────┐
+                                 │    Gmail API        │
+                                 │  (OAuth2 / SA+DWD)  │
+                                 └──────────┬──────────┘
+                                            │
+              ┌─────────────────────────────┼─────────────────────────────┐
+              │                             │                             │
+              ▼                             ▼                             ▼
+    ┌─────────────────┐          ┌─────────────────┐          ┌─────────────────┐
+    │ sr-gmail-ingestor│         │ Pub/Sub Watch   │          │ History API     │
+    │   (ポーリング)   │          │   (Push通知)    │          │   (差分取得)    │
+    └────────┬────────┘          └────────┬────────┘          └────────┬────────┘
+             │                            │                            │
+             └────────────────────────────┼────────────────────────────┘
+                                          │
+                                          ▼
+                               ┌─────────────────────┐
+                               │   ses.anken_emails  │
+                               │   ses.jinzai_emails │
+                               └──────────┬──────────┘
+                                          │
+                                          ▼
+                               ┌─────────────────────┐
+                               │ ses.extraction_queue │
+                               └─────────────────────┘
+```
+
+#### 認証方式
+
+| 方式 | 説明 | 用途 |
+|------|------|------|
+| **OAuth 2.0** | ユーザー同意ベース | 開発/テスト環境 |
+| **Service Account + DWD** | Domain-Wide Delegation | 本番環境（推奨） |
+
+##### Service Account + DWD 設定手順
+
+1. **GCP Console で Service Account 作成**
+   ```bash
+   # Service Account 作成
+   gcloud iam service-accounts create sr-gmail-ingestor \
+       --display-name="rust-matcher Gmail Ingestor"
+
+   # キーファイル生成
+   gcloud iam service-accounts keys create /etc/sr-matcher/gcp-sa-key.json \
+       --iam-account=sr-gmail-ingestor@sponto-xxx.iam.gserviceaccount.com
+   ```
+
+2. **Google Admin Console で DWD 有効化**
+   - Admin Console → Security → API Controls → Domain-wide Delegation
+   - Client ID: `sr-gmail-ingestor` の OAuth Client ID
+   - Scopes:
+     - `https://www.googleapis.com/auth/gmail.readonly`
+     - `https://www.googleapis.com/auth/gmail.labels`
+     - `https://www.googleapis.com/auth/gmail.modify` (ラベル変更用)
+
+3. **環境変数設定**
+   ```bash
+   # GWS直結設定
+   GWS_ENABLED=1
+   GWS_AUTH_METHOD=service_account_dwd    # oauth2 | service_account_dwd
+   GWS_SERVICE_ACCOUNT_KEY=/etc/sr-matcher/gcp-sa-key.json
+   GWS_IMPERSONATE_USER=n8n@sponto.co.jp  # DWD対象ユーザー
+   GWS_PROJECT_ID=sponto-xxx
+
+   # メール取得設定
+   GWS_POLL_INTERVAL_SECONDS=60           # ポーリング間隔
+   GWS_LABELS=partner                     # 対象ラベル
+   GWS_ANKEN_QUERY=label:partner -{氏名 性別 男性 女性 名前} NOT has:attachment
+   GWS_JINZAI_QUERY=label:partner {氏名 性別 男性 女性 名前} has:attachment
+
+   # Pub/Sub Watch (オプション)
+   GWS_WATCH_ENABLED=0                    # 1で有効化
+   GWS_PUBSUB_TOPIC=projects/sponto-xxx/topics/gmail-notifications
+   GWS_PUBSUB_SUBSCRIPTION=projects/sponto-xxx/subscriptions/sr-gmail-ingestor
+   ```
+
+#### sr-gmail-ingestor 実装
+
+```rust
+// crates/sr-gmail-ingestor/src/main.rs
+
+use clap::Parser;
+use google_gmail1::{Gmail, oauth2};
+use sr_common::db::{create_pool_from_url, PgPool};
+use tokio::time::{interval, Duration};
+use tracing::info;
+
+#[derive(Debug, Parser)]
+#[command(name = "sr-gmail-ingestor", about = "Ingest emails from Gmail directly")]
+struct Cli {
+    #[arg(long, env = "DATABASE_URL")]
+    db_url: String,
+
+    #[arg(long, env = "GWS_SERVICE_ACCOUNT_KEY")]
+    sa_key_path: String,
+
+    #[arg(long, env = "GWS_IMPERSONATE_USER")]
+    impersonate_user: String,
+
+    #[arg(long, env = "GWS_POLL_INTERVAL_SECONDS", default_value = "60")]
+    poll_interval: u64,
+}
+
+struct GmailIngestor {
+    gmail: Gmail,
+    pool: PgPool,
+    anken_query: String,
+    jinzai_query: String,
+    last_history_id: Option<u64>,
+}
+
+impl GmailIngestor {
+    async fn new(
+        sa_key_path: &str,
+        impersonate_user: &str,
+        pool: PgPool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Service Account + DWD 認証
+        let sa_key = oauth2::read_service_account_key(sa_key_path).await?;
+        let auth = oauth2::ServiceAccountAuthenticator::builder(sa_key)
+            .subject(impersonate_user) // DWD: impersonate user
+            .build()
+            .await?;
+
+        let gmail = Gmail::new(
+            hyper::Client::builder().build(hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .https_only()
+                .enable_http1()
+                .build()),
+            auth,
+        );
+
+        Ok(Self {
+            gmail,
+            pool,
+            anken_query: std::env::var("GWS_ANKEN_QUERY")
+                .unwrap_or_else(|_| "label:partner -has:attachment".into()),
+            jinzai_query: std::env::var("GWS_JINZAI_QUERY")
+                .unwrap_or_else(|_| "label:partner has:attachment".into()),
+            last_history_id: None,
+        })
+    }
+
+    async fn poll_once(&mut self) -> Result<u32, Box<dyn std::error::Error>> {
+        let mut processed = 0;
+
+        // 案件メール取得
+        processed += self.fetch_and_store_emails(&self.anken_query.clone(), EmailType::Anken).await?;
+
+        // 人材メール取得
+        processed += self.fetch_and_store_emails(&self.jinzai_query.clone(), EmailType::Jinzai).await?;
+
+        Ok(processed)
+    }
+
+    async fn fetch_and_store_emails(
+        &mut self,
+        query: &str,
+        email_type: EmailType,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        let user_id = "me";
+        let mut processed = 0;
+
+        // メッセージ一覧取得
+        let (_, list_response) = self.gmail
+            .users()
+            .messages_list(user_id)
+            .q(query)
+            .max_results(100)
+            .doit()
+            .await?;
+
+        let messages = list_response.messages.unwrap_or_default();
+
+        for msg_ref in messages {
+            let msg_id = msg_ref.id.unwrap_or_default();
+
+            // 重複チェック
+            if self.is_already_processed(&msg_id).await? {
+                continue;
+            }
+
+            // メッセージ詳細取得
+            let (_, message) = self.gmail
+                .users()
+                .messages_get(user_id, &msg_id)
+                .format("full")
+                .doit()
+                .await?;
+
+            // メール情報抽出
+            let email_data = self.parse_message(&message)?;
+
+            // DB保存
+            match email_type {
+                EmailType::Anken => self.store_anken_email(&email_data).await?,
+                EmailType::Jinzai => self.store_jinzai_email(&email_data).await?,
+            }
+
+            processed += 1;
+            info!(message_id = %msg_id, email_type = ?email_type, "Email ingested");
+        }
+
+        Ok(processed)
+    }
+
+    fn parse_message(&self, message: &google_gmail1::api::Message) -> Result<EmailData, Box<dyn std::error::Error>> {
+        let payload = message.payload.as_ref().ok_or("No payload")?;
+        let headers = payload.headers.as_ref().ok_or("No headers")?;
+
+        let mut email_data = EmailData::default();
+        email_data.message_id = message.id.clone().unwrap_or_default();
+        email_data.thread_id = message.thread_id.clone();
+
+        for header in headers {
+            match header.name.as_deref() {
+                Some("From") => email_data.sender_address = header.value.clone(),
+                Some("Subject") => email_data.subject = header.value.clone(),
+                Some("Date") => {
+                    if let Some(date_str) = &header.value {
+                        email_data.received_at = parse_email_date(date_str);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // 本文抽出 (text/plain または text/html)
+        email_data.body_text = self.extract_body(payload)?;
+
+        // 添付ファイル抽出
+        email_data.attachments = self.extract_attachments(payload)?;
+
+        Ok(email_data)
+    }
+
+    fn extract_body(&self, payload: &google_gmail1::api::MessagePart) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        // MIMEパースロジック
+        // text/plain を優先、なければ text/html を変換
+        if let Some(body) = &payload.body {
+            if let Some(data) = &body.data {
+                let decoded = base64::decode_config(data, base64::URL_SAFE)?;
+                return Ok(Some(String::from_utf8_lossy(&decoded).to_string()));
+            }
+        }
+
+        // multipart の場合は再帰的に探索
+        if let Some(parts) = &payload.parts {
+            for part in parts {
+                if let Some(mime) = &part.mime_type {
+                    if mime == "text/plain" {
+                        return self.extract_body(part);
+                    }
+                }
+            }
+            // text/plain がなければ text/html を探す
+            for part in parts {
+                if let Some(mime) = &part.mime_type {
+                    if mime == "text/html" {
+                        let html = self.extract_body(part)?;
+                        return Ok(html.map(|h| html_to_text(&h)));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn extract_attachments(&self, payload: &google_gmail1::api::MessagePart) -> Result<Vec<Attachment>, Box<dyn std::error::Error>> {
+        let mut attachments = Vec::new();
+
+        if let Some(parts) = &payload.parts {
+            for part in parts {
+                if let Some(filename) = &part.filename {
+                    if !filename.is_empty() {
+                        attachments.push(Attachment {
+                            filename: filename.clone(),
+                            mime_type: part.mime_type.clone().unwrap_or_default(),
+                            attachment_id: part.body.as_ref()
+                                .and_then(|b| b.attachment_id.clone()),
+                            size: part.body.as_ref()
+                                .and_then(|b| b.size)
+                                .unwrap_or(0) as u64,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(attachments)
+    }
+
+    async fn is_already_processed(&self, message_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        // ses.anken_emails または ses.jinzai_emails に既存かチェック
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT 1 FROM ses.anken_emails WHERE message_id = $1
+                 UNION SELECT 1 FROM ses.jinzai_emails WHERE message_id = $1",
+                &[&message_id],
+            )
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn store_anken_email(&self, email: &EmailData) -> Result<(), Box<dyn std::error::Error>> {
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                r#"
+                INSERT INTO ses.anken_emails (
+                    message_id, sender_address, sender_name, subject,
+                    body_text, received_at, thread_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (message_id) DO NOTHING
+                "#,
+                &[
+                    &email.message_id,
+                    &email.sender_address,
+                    &email.sender_name,
+                    &email.subject,
+                    &email.body_text,
+                    &email.received_at,
+                    &email.thread_id,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn store_jinzai_email(&self, email: &EmailData) -> Result<(), Box<dyn std::error::Error>> {
+        // 添付ファイルは Google Drive にアップロード（別途実装）
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                r#"
+                INSERT INTO ses.jinzai_emails (
+                    message_id, sender_address, sender_name, subject,
+                    body_text, received_at, thread_id, skillsheet_url
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (message_id) DO NOTHING
+                "#,
+                &[
+                    &email.message_id,
+                    &email.sender_address,
+                    &email.sender_name,
+                    &email.subject,
+                    &email.body_text,
+                    &email.received_at,
+                    &email.thread_id,
+                    &None::<String>, // skillsheet_url は後で更新
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EmailType {
+    Anken,
+    Jinzai,
+}
+
+#[derive(Debug, Default)]
+struct EmailData {
+    message_id: String,
+    thread_id: Option<String>,
+    sender_address: Option<String>,
+    sender_name: Option<String>,
+    subject: Option<String>,
+    body_text: Option<String>,
+    received_at: Option<chrono::DateTime<chrono::Utc>>,
+    attachments: Vec<Attachment>,
+}
+
+#[derive(Debug)]
+struct Attachment {
+    filename: String,
+    mime_type: String,
+    attachment_id: Option<String>,
+    size: u64,
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
+    tracing_subscriber::fmt::init();
+
+    let args = Cli::parse();
+    let pool = create_pool_from_url(&args.db_url)?;
+
+    let mut ingestor = GmailIngestor::new(
+        &args.sa_key_path,
+        &args.impersonate_user,
+        pool,
+    ).await?;
+
+    info!(poll_interval = args.poll_interval, "Starting Gmail ingestor");
+
+    let mut ticker = interval(Duration::from_secs(args.poll_interval));
+
+    loop {
+        ticker.tick().await;
+
+        match ingestor.poll_once().await {
+            Ok(processed) => {
+                if processed > 0 {
+                    info!(processed = processed, "Emails ingested");
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Poll failed");
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("sr-gmail-ingestor failed: {err}");
+        std::process::exit(1);
+    }
+}
+```
+
+#### Pub/Sub Watch (プッシュ通知)
+
+ポーリングではなくリアルタイム通知を受け取る場合:
+
+```rust
+// Pub/Sub Watch 設定
+async fn setup_watch(gmail: &Gmail, topic: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let watch_request = google_gmail1::api::WatchRequest {
+        topic_name: Some(topic.into()),
+        label_ids: Some(vec!["partner".into()]),
+        label_filter_action: Some("include".into()),
+    };
+
+    let (_, response) = gmail
+        .users()
+        .watch(watch_request, "me")
+        .doit()
+        .await?;
+
+    let history_id = response.history_id.ok_or("No history_id")?;
+    let expiration = response.expiration.ok_or("No expiration")?;
+
+    info!(history_id = history_id, expiration = expiration, "Watch started");
+
+    Ok(history_id)
+}
+
+// Pub/Sub メッセージ受信ハンドラ
+async fn handle_pubsub_notification(
+    notification: PubSubNotification,
+    ingestor: &mut GmailIngestor,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // history_id から差分を取得
+    let history_id = notification.history_id;
+
+    let (_, response) = ingestor.gmail
+        .users()
+        .history_list("me")
+        .start_history_id(history_id)
+        .doit()
+        .await?;
+
+    for history in response.history.unwrap_or_default() {
+        if let Some(messages_added) = history.messages_added {
+            for msg in messages_added {
+                // 新規メッセージ処理
+                if let Some(message) = msg.message {
+                    // ... 処理
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+```
+
+#### n8n → GWS直結 移行手順
+
+| Phase | 状態 | 作業 |
+|-------|------|------|
+| **Phase A** | n8n のみ | 現状維持 |
+| **Phase B** | n8n + GWS並行 | sr-gmail-ingestor を起動、重複チェックで両方取込み |
+| **Phase C** | GWS のみ | n8n の Gmail Trigger を停止 |
+
+```bash
+# Phase B: 並行運用
+# 既存の n8n は継続、sr-gmail-ingestor も起動
+systemctl start sr-gmail-ingestor
+
+# Phase C: n8n 停止
+# n8n 側の jinzai-emails-feeding / project-mail-feeding を停止
+# sr-gmail-ingestor のみで運用
+```
+
+---
+
+### 3.3 Shadow比較の実装
+
+#### 比較結果の保存
+
+```sql
+CREATE TABLE ses.llm_comparison_results (
+    id SERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL,
+    primary_provider VARCHAR(50) NOT NULL,
+    shadow_provider VARCHAR(50) NOT NULL,
+    primary_response JSONB NOT NULL,
+    shadow_response JSONB,
+    primary_latency_ms INTEGER,
+    shadow_latency_ms INTEGER,
+    diff_summary JSONB,  -- 差分サマリ
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_llm_comparison_message ON ses.llm_comparison_results(message_id);
+CREATE INDEX idx_llm_comparison_created ON ses.llm_comparison_results(created_at);
+```
+
+#### 比較ロジック
+
+```rust
+pub async fn run_with_shadow_comparison(
+    primary: &dyn LlmProvider,
+    shadow: &dyn LlmProvider,
+    req: &LlmRequest,
+    sample_percent: u8,
+) -> Result<LlmResponse, LlmError> {
+    // 本番リクエスト (必須)
+    let primary_result = primary.extract(req).await;
+
+    // Shadow比較 (サンプリング)
+    let should_compare = rand::random::<u8>() < (sample_percent * 255 / 100);
+    if should_compare {
+        tokio::spawn({
+            let shadow = shadow.clone();
+            let req = req.clone();
+            async move {
+                let shadow_result = shadow.extract(&req).await;
+                // 比較結果をDBに保存 (非同期、本番には影響しない)
+                save_comparison_result(&req.message_id, &primary_result, &shadow_result).await;
+            }
+        });
+    }
+
+    primary_result
+}
+```
+
+---
+
+### 3.4 マッチングパイプライン接続
+
+#### 処理フロー
+
+```
+sr-extractor
+    │
+    ▼
+ses.extraction_queue (status=pending)
+    │
+    ▼
+sr-llm-worker
+    ├── lock_next_pending_job()
+    ├── LLM Provider.extract()
+    ├── validate_llm_response()
+    ├── apply corrections (normalize_*)
+    ├── upsert_extraction_job() → completed
+    │
+    ▼
+run_all_ko_checks()
+    │
+    ▼
+calculate_detailed_score()
+    │
+    ▼
+ses.match_results (INSERT)
+```
+
+#### match_results 保存内容
+
+```rust
+pub struct MatchResultInsert {
+    pub talent_id: i64,
+    pub project_id: i64,
+    pub is_knockout: bool,
+    pub ko_reasons: Option<serde_json::Value>,  // Vec<String> as JSONB
+    pub needs_manual_review: bool,
+    pub score_total: Option<f64>,
+    pub score_breakdown: Option<serde_json::Value>,
+    pub engine_version: Option<String>,  // "1.0.0"
+    pub rule_version: Option<String>,    // "2025-01-15"
+}
+```
+
+---
+
+### 3.5 systemd 本番デプロイ
+
+#### サービス構成
+
+| サービス | 実行方式 | 説明 |
+|----------|----------|------|
+| `sr-extractor.timer` | 5分間隔 | anken_emails → extraction_queue |
+| `sr-llm-worker.service` | 常駐 | queue処理 + LLM呼び出し |
+| `sr-queue-recovery.timer` | 10分間隔 | 滞留ジョブ復旧 |
+
+#### 環境変数ファイル
+
+`/etc/sr-matcher.env`:
+```bash
+DATABASE_URL=postgres://user:pass@host:5432/sponto
+LLM_ENABLED=1
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=sk-xxx
+LLM_COMPARE_MODE=shadow
+LLM_SHADOW_PROVIDER=openai
+LLM_SHADOW_SAMPLE_PERCENT=10
+LLM_SHADOW_API_KEY=sk-xxx
+```
+
+---
+
+### 3.6 Phase 4 を見据えたデータ設計
+
+Phase 3 = "本番で壊れない形で回しつつ、比較ログ（shadow）を溜めて、勝ち筋を確定するフェーズ"
+Phase 4 = "営業FBを学習信号としてTwo-Towerを育てるフェーズ"
+
+Phase 3 の時点で「理由がUIに出せる形でDBに残っている」を作ることで、Phase 4 への移行がスムーズになる。
+
+#### テーブル分離の設計思想
+
+| テーブル | 役割 | 特性 |
+|----------|------|------|
+| `match_results` | その時点の判定/理由/スコア | 再計算可能（エンジン更新で再生成OK） |
+| `feedback_events` | 営業が後から付けるラベル | 不可逆の現場真実（学習の正解ラベル） |
+
+この分離により：
+- **Phase 3**: match_results に理由が残る → GUIで「なぜこのスコア？」が見える
+- **Phase 4**: feedback_events と match_results を JOIN → Two-Tower の学習データに
+
+#### Two-Tower 用キー設計（先に決めておく）
+
+| キー | 説明 | 用途 |
+|------|------|------|
+| `talent_snapshot_id` | `talents_enum.id`（時点固定） | 人材の状態スナップショット |
+| `project_snapshot_id` | `projects_enum.id`（時点固定） | 案件の状態スナップショット |
+| `match_run_id` | UUID（engine_version込みの実行ID） | どのエンジンバージョンで計算したか |
+
+---
+
+### 3.7 match_results DDL（Two-Tower対応版）
+
+```sql
+-- match_results: その時点の判定（再計算可能）
+CREATE TABLE ses.match_results (
+    id SERIAL PRIMARY KEY,
+
+    -- Two-Tower用キー（Phase 4 で必須）
+    talent_snapshot_id INTEGER NOT NULL,      -- FK → talents_enum.id
+    project_snapshot_id INTEGER NOT NULL,     -- FK → projects_enum.id
+    match_run_id UUID NOT NULL DEFAULT gen_random_uuid(),
+
+    -- KO判定結果
+    is_knockout BOOLEAN NOT NULL,
+    ko_reasons JSONB,                         -- ["tanka_exceeded", "skill_mismatch"]
+    needs_manual_review BOOLEAN NOT NULL DEFAULT false,
+    manual_review_reason TEXT,
+
+    -- スコアリング結果
+    score_total FLOAT,                        -- 0.0〜1.0
+    score_breakdown JSONB NOT NULL,           -- {"tanka": 0.8, "skills": 0.7, ...}
+    auto_match_eligible BOOLEAN NOT NULL DEFAULT false,
+
+    -- LLM Provider 情報（shadow比較用）
+    llm_provider VARCHAR(50),                 -- "deepseek", "openai", etc.
+    llm_latency_ms INTEGER,
+
+    -- バージョン管理
+    engine_version VARCHAR(20) NOT NULL,      -- "1.0.0"
+    rule_version VARCHAR(20),                 -- "2025-01-15"
+
+    -- タイムスタンプ
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- 日次ユニーク制約（同じペアは1日1回まで）
+    UNIQUE(talent_snapshot_id, project_snapshot_id, created_at::date)
+);
+
+-- インデックス
+CREATE INDEX idx_match_results_talent ON ses.match_results(talent_snapshot_id, created_at DESC);
+CREATE INDEX idx_match_results_project ON ses.match_results(project_snapshot_id, created_at DESC);
+CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
+CREATE INDEX idx_match_results_run ON ses.match_results(match_run_id);
+CREATE INDEX idx_match_results_review ON ses.match_results(needs_manual_review, created_at DESC)
+    WHERE needs_manual_review = true;
+
+-- コメント
+COMMENT ON TABLE ses.match_results IS 'マッチング結果スナップショット（再計算可能）';
+COMMENT ON COLUMN ses.match_results.match_run_id IS 'Two-Tower学習時の実行ID';
+COMMENT ON COLUMN ses.match_results.score_breakdown IS '各要素のスコア内訳（tanka/skills/location/experience/contract）';
+```
+
+---
+
+### 3.8 feedback_events DDL（統一版）
+
+**設計思想**: GUIの評価（thumbs_up/down, review_ok/ng/pending）と営業プロセスの結果（accepted/rejected/interview_scheduled/no_response）は**両方起きうる**。どちらかを捨てるのではなく、イベントログとして両方入る形に統一。
+
+```sql
+-- feedback_events: 営業/GUI の全フィードバックを統一イベントログ化
+CREATE TABLE ses.feedback_events (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- 紐付け（interaction_logs への FK を推奨）
+    interaction_id BIGINT REFERENCES ses.interaction_logs(id),
+    match_result_id INTEGER REFERENCES ses.match_results(id),
+    project_id BIGINT NOT NULL,
+    talent_id BIGINT NOT NULL,
+
+    -- フィードバック内容（統一ENUM: GUI評価 + 営業プロセス）
+    feedback_type TEXT NOT NULL,
+    -- 許容値:
+    --   GUI評価: thumbs_up, thumbs_down, review_ok, review_ng, review_pending
+    --   営業プロセス: accepted, rejected, interview_scheduled, no_response
+
+    -- NG理由（review_ng / thumbs_down / rejected 時のみ）
+    ng_reason_category TEXT,  -- tanka / skill / availability / location / flow / other
+
+    -- 自由記述・タグ
+    comment TEXT,
+    feedback_tags JSONB,  -- ["単価NG", "スキル不足"] 等の自由配列
+
+    -- 取り消しフラグ（間違い訂正用）
+    is_revoked BOOLEAN NOT NULL DEFAULT false,
+    revoked_at TIMESTAMPTZ,
+
+    -- 誰が・どこから
+    actor TEXT NOT NULL,   -- user_id / "sales" / "ops" / "system"
+    source TEXT NOT NULL,  -- "gui" / "crm" / "api" / "import"
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- インデックス
+CREATE INDEX idx_feedback_interaction ON ses.feedback_events(interaction_id);
+CREATE INDEX idx_feedback_match ON ses.feedback_events(match_result_id);
+CREATE INDEX idx_feedback_project_talent ON ses.feedback_events(project_id, talent_id);
+CREATE INDEX idx_feedback_type ON ses.feedback_events(feedback_type, created_at DESC);
+CREATE INDEX idx_feedback_actor ON ses.feedback_events(actor, created_at DESC);
+CREATE INDEX idx_feedback_not_revoked ON ses.feedback_events(interaction_id, created_at DESC)
+    WHERE is_revoked = false;
+
+COMMENT ON TABLE ses.feedback_events IS '営業/GUIフィードバックの統一イベントログ（Two-Tower学習の正解ラベル源）';
+```
+
+#### feedback_type の分類とラベル変換
+
+| feedback_type | ソース | label (学習用) |
+|---------------|--------|----------------|
+| `thumbs_up` | GUI | 1.0 (positive) |
+| `thumbs_down` | GUI | 0.0 (negative) |
+| `review_ok` | GUI | 1.0 (positive) |
+| `review_ng` | GUI | 0.0 (negative) |
+| `review_pending` | GUI | NULL (除外) |
+| `accepted` | 営業 | 1.0 (positive) |
+| `rejected` | 営業 | 0.0 (negative) |
+| `interview_scheduled` | 営業 | 0.8 (weak positive) |
+| `no_response` | 営業 | NULL (除外) |
+
+---
+
+### 3.8.1 interaction_logs と feedback_events の関係
+
+**明文化**:
+
+| テーブル | 役割 | 内容 |
+|----------|------|------|
+| `interaction_logs` | **Exposure/Impression** | モデルが提示/推奨したログ（scores込み） |
+| `feedback_events` | **Supervision/Label** | 人間が付けた正解ラベル（不可逆イベント） |
+
+**紐付けキー**:
+- **推奨**: `feedback_events.interaction_id` → `interaction_logs.id`
+- **代替**: `(project_id, talent_id, DATE(created_at))` の複合キー
+
+**データフロー**:
+```
+interaction_logs (exposure)
+    │
+    ├── Two-Tower 予測スコア
+    ├── Business スコア
+    └── マッチ実行時に INSERT
+            │
+            ▼
+feedback_events (label)
+    │
+    ├── GUI: thumbs_up/down, review_ok/ng/pending
+    ├── 営業: accepted/rejected/interview_scheduled/no_response
+    └── 人間の判断で随時 INSERT
+            │
+            ▼
+training_pairs (学習データ)
+    │
+    └── interaction_logs LEFT JOIN 最新の feedback_events
+```
+
+---
+
+### 3.8.2 training_pairs VIEW（統一版）
+
+**設計**: `interaction_logs` を母集団（提示したもの全て）にして、`feedback_events` をラベルとして LEFT JOIN。
+
+```sql
+-- 最新の有効フィードバックを取得するビュー
+CREATE OR REPLACE VIEW ses.latest_feedback AS
+SELECT DISTINCT ON (interaction_id)
+    interaction_id,
+    feedback_type,
+    ng_reason_category,
+    feedback_tags,
+    actor,
+    source,
+    created_at AS feedback_at
+FROM ses.feedback_events
+WHERE is_revoked = false
+  AND interaction_id IS NOT NULL
+ORDER BY interaction_id, created_at DESC;
+
+-- Two-Tower 学習用ペアデータ
+CREATE OR REPLACE VIEW ses.training_pairs AS
+SELECT
+    il.id AS interaction_id,
+    il.talent_id,
+    il.project_id,
+    il.two_tower_score,
+    il.two_tower_embedder,
+    il.business_score,
+    lf.feedback_type,
+    lf.ng_reason_category,
+    lf.feedback_tags,
+    -- ラベル変換
+    CASE
+        WHEN lf.feedback_type IN ('thumbs_up', 'review_ok', 'accepted') THEN 1.0
+        WHEN lf.feedback_type = 'interview_scheduled' THEN 0.8
+        WHEN lf.feedback_type IN ('thumbs_down', 'review_ng', 'rejected') THEN 0.0
+        ELSE NULL  -- review_pending, no_response は学習から除外
+    END AS label,
+    il.created_at AS exposure_at,
+    lf.feedback_at
+FROM ses.interaction_logs il
+LEFT JOIN ses.latest_feedback lf ON lf.interaction_id = il.id;
+
+-- 学習データ統計（ラベル付きのみカウント）
+CREATE OR REPLACE VIEW ses.training_stats AS
+SELECT
+    COUNT(*) AS total_interactions,
+    COUNT(*) FILTER (WHERE label IS NOT NULL) AS labeled_count,
+    COUNT(*) FILTER (WHERE label = 1.0) AS positive_count,
+    COUNT(*) FILTER (WHERE label = 0.0) AS negative_count,
+    COUNT(*) FILTER (WHERE label = 0.8) AS weak_positive_count,
+    MIN(exposure_at) AS first_exposure_at,
+    MAX(exposure_at) AS last_exposure_at,
+    COUNT(DISTINCT DATE_TRUNC('day', exposure_at)) AS active_days
+FROM ses.training_pairs;
+
+COMMENT ON VIEW ses.latest_feedback IS '各interaction_idに対する最新の有効フィードバック';
+COMMENT ON VIEW ses.training_pairs IS 'Two-Tower学習用ペアデータ（interaction_logs + feedback_events）';
+COMMENT ON VIEW ses.training_stats IS '学習データの統計情報';
+```
+
+---
+
+### 3.9 llm_comparison_results DDL（Shadow比較用）
+
+```sql
+-- LLM Shadow比較結果
+CREATE TABLE ses.llm_comparison_results (
+    id SERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL,
+
+    -- Primary (本番)
+    primary_provider VARCHAR(50) NOT NULL,
+    primary_response JSONB NOT NULL,
+    primary_latency_ms INTEGER,
+    primary_error TEXT,
+
+    -- Shadow (比較)
+    shadow_provider VARCHAR(50) NOT NULL,
+    shadow_response JSONB,
+    shadow_latency_ms INTEGER,
+    shadow_error TEXT,
+
+    -- 差分分析
+    diff_summary JSONB,                       -- {"field_diffs": [...], "score_diff": 0.1}
+    fields_matched INTEGER,                   -- 一致したフィールド数
+    fields_total INTEGER,                     -- 比較したフィールド数
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_llm_comparison_message ON ses.llm_comparison_results(message_id);
+CREATE INDEX idx_llm_comparison_created ON ses.llm_comparison_results(created_at DESC);
+CREATE INDEX idx_llm_comparison_providers ON ses.llm_comparison_results(primary_provider, shadow_provider);
+
+-- Shadow比較サマリビュー
+CREATE VIEW ses.llm_comparison_summary AS
+SELECT
+    primary_provider,
+    shadow_provider,
+    DATE_TRUNC('day', created_at) AS date,
+    COUNT(*) AS total_comparisons,
+    AVG(fields_matched::float / NULLIF(fields_total, 0)) AS avg_match_rate,
+    AVG(primary_latency_ms) AS avg_primary_latency,
+    AVG(shadow_latency_ms) AS avg_shadow_latency,
+    COUNT(*) FILTER (WHERE primary_error IS NOT NULL) AS primary_errors,
+    COUNT(*) FILTER (WHERE shadow_error IS NOT NULL) AS shadow_errors
+FROM ses.llm_comparison_results
+GROUP BY primary_provider, shadow_provider, DATE_TRUNC('day', created_at);
+
+COMMENT ON TABLE ses.llm_comparison_results IS 'LLM Shadow比較ログ';
+COMMENT ON VIEW ses.llm_comparison_summary IS 'LLM比較の日次サマリ';
+```
+
+---
+
+### 3.10 実装順序
+
+> **⚠️ 最新の実装順序は [3.28 全体実装順序（修正版）](#328-全体実装順序修正版) を参照してください。**
+> Phase 3.5（GUI契約層）とTwo-Tower統合ステップを含む最新版が正です。
+
+---
+
+### 3.11 Done条件
+
+#### Step 1: match_results DDL + 保存
+
+- [ ] `match_results` DDL が本番DBに適用されている
+- [ ] `talent_snapshot_id` / `project_snapshot_id` / `match_run_id` が含まれている
+- [ ] `ko_reasons` / `score_breakdown` / `llm_provider` が保存される
+- [ ] `insert_match_result()` が本番パスで呼ばれている
+- [ ] `feedback_events` DDL が本番DBに適用されている（Phase 4 準備）
+
+#### Step 2: LLM shadow 10%
+
+- [ ] `LlmProvider` trait が定義されている
+- [ ] `DeepSeekProvider` が実装されている（primary）
+- [ ] `MockProvider` がテスト用に実装されている
+- [ ] Shadow比較モードが動作する（10%サンプリング）
+- [ ] `llm_comparison_results` に比較ログが保存される
+- [ ] 本番結果は揺らがない（shadow は非同期）
+
+#### Step 3: systemd 本番ループ
+
+- [ ] 3サービスがsystemdで起動する（extractor/worker/recovery）
+- [ ] 落ちても自動復帰する（Restart=always）
+- [ ] ログが `/var/log/sr-matcher/` に出力される
+- [ ] エラー時にSlack通知が飛ぶ
+
+#### Step 4: GUI
+
+- [ ] match_results の一覧/詳細が表示できる
+- [ ] KO理由 / score_breakdown がUIに表示される
+- [ ] 営業がFBを入力できる（→ feedback_events INSERT）
+- [ ] フィルタ/ソート/検索ができる
+
+---
+
+### 3.12 Two-Tower 詳細設計
+
+Phase 3 でTwo-Towerの「骨格」を仕込み、ログを溜めておく。学習はPhase 4で行う。
+
+#### 前提条件: ドメインモデルの拡張
+
+Two-Tower で `rank_talents()` を使うには、`Project` / `Talent` に `id` フィールドが必要：
+
+```rust
+// crates/sr-common/src/lib.rs への追加
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Project {
+    pub id: Option<i64>,  // ← 追加（DB主キー or 外部ID）
+    pub work_todofuken: Option<String>,
+    pub work_area: Option<String>,
+    // ... 既存フィールド
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Talent {
+    pub id: Option<i64>,  // ← 追加（DB主キー or 外部ID）
+    pub residential_todofuken: Option<String>,
+    pub residential_area: Option<String>,
+    // ... 既存フィールド
+}
+```
+
+> **Note**: `Option<i64>` にしているのは、テスト時やリテラル構築時に id を省略できるようにするため。
+> 本番パスでは `unwrap_or(0)` で処理するか、`id` を必須にするかは運用で決める。
+
+#### 設計思想
+
+1. **インターフェース先行**: `TwoTowerEmbedder` trait を先に定義し、実装は差し替え可能に
+2. **決定論的埋め込みから開始**: 最初は Feature Hashing（HashTwoTower）で ML不要に動作
+3. **ログ収集を仕込む**: `interaction_logs` テーブルに予測とFBを記録し、Phase 4の学習データに
+4. **モデル差し替え可能**: Hash → ONNX → Candle と段階的に高度化
+
+#### 不変条件
+
+- **HardKo は常に勝つ**: Two-Tower スコアが高くても HardKo は覆らない
+- **Two-Tower は順位づけ**: KO判定ではなく、Pass候補の中での優先度を決める
+- **rule-based との重み付き合成**: `total_score = business × semantic × historical × two_tower`
+
+#### モジュール構成
+
+```
+crates/sr-common/src/two_tower/
+├── mod.rs              # TwoTowerEmbedder trait + factory
+├── config.rs           # TwoTowerConfig (dimension, weight)
+├── embedding.rs        # Embedding 型 + 類似度計算
+├── tokenizer.rs        # Token 生成ロジック（正規化済みフィールド→トークン列）
+├── hash_tower.rs       # HashTwoTower: Feature Hashing 実装
+├── onnx_tower.rs       # OnnxTwoTower: ONNX Runtime 実装（Phase 4）
+└── candle_tower.rs     # CandleTwoTower: Candle 実装（Phase 4+）
+```
+
+---
+
+### 3.13 TwoTowerEmbedder Trait
+
+```rust
+// crates/sr-common/src/two_tower/mod.rs
+
+use crate::{Project, Talent};
+
+/// Two-Tower モデルの抽象インターフェース
+///
+/// 実装例:
+/// - HashTwoTower: Feature Hashing（決定論的、学習不要）
+/// - OnnxTwoTower: ONNX Runtime（学習済みモデル読み込み）
+/// - CandleTwoTower: Candle（Rust-native推論）
+pub trait TwoTowerEmbedder: Send + Sync {
+    /// 実装名（ログ/比較用）
+    fn name(&self) -> &'static str;
+
+    /// 埋め込み次元数
+    fn dimension(&self) -> usize;
+
+    /// 案件を埋め込みベクトルに変換
+    fn embed_project(&self, project: &Project) -> Embedding;
+
+    /// 人材を埋め込みベクトルに変換
+    fn embed_talent(&self, talent: &Talent) -> Embedding;
+
+    /// 2つの埋め込みベクトルの類似度（0.0〜1.0）
+    fn similarity(&self, a: &Embedding, b: &Embedding) -> f32 {
+        cosine_similarity(&a.vector, &b.vector)
+    }
+
+    /// 複数の人材を案件に対してランキング
+    fn rank_talents<'a>(
+        &self,
+        project: &Project,
+        talents: impl Iterator<Item = &'a Talent>,
+    ) -> Vec<(i64, f32)> {
+        let project_emb = self.embed_project(project);
+        let mut scores: Vec<_> = talents
+            .map(|t| {
+                let talent_emb = self.embed_talent(t);
+                let sim = self.similarity(&project_emb, &talent_emb);
+                (t.id.unwrap_or(0), sim)
+            })
+            .collect();
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scores
+    }
+}
+
+/// 埋め込みベクトル
+#[derive(Debug, Clone)]
+pub struct Embedding {
+    pub vector: Vec<f32>,
+    pub source_type: EmbeddingSource,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EmbeddingSource {
+    Project,
+    Talent,
+}
+
+/// コサイン類似度
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "embedding dimension mismatch");
+
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+
+    // Clamp to [0, 1] for normalized similarity
+    ((dot / (norm_a * norm_b)) + 1.0) / 2.0
+}
+```
+
+---
+
+### 3.14 Tokenizer（正規化フィールド → トークン列）
+
+```rust
+// crates/sr-common/src/two_tower/tokenizer.rs
+
+use crate::{Project, Talent};
+
+/// トークン形式:
+/// - skill:req:<normalized>    (案件の必須スキル)
+/// - skill:pref:<normalized>   (案件の優遇スキル)
+/// - skill:have:<normalized>   (人材の保有スキル)
+/// - loc:pref:<normalized>     (都道府県/エリア)
+/// - loc:station:<normalized>  (最寄り駅)
+/// - remote:<type>             (フルリモート/ハイブリッド/オンサイト)
+/// - exp:years:<bucket>        (経験年数バケット: 0-2, 3-5, 6-10, 11+)
+/// - contract:<type>           (契約形態)
+/// - tanka:range:<bucket>      (単価レンジバケット)
+/// - lang:ja:<level>           (日本語レベル)
+/// - lang:en:<level>           (英語レベル)
+
+pub fn tokenize_project(project: &Project) -> Vec<String> {
+    let mut tokens = Vec::new();
+
+    // 必須スキル
+    for skill in &project.required_skills_keywords {
+        tokens.push(format!("skill:req:{}", skill.to_lowercase()));
+    }
+
+    // 優遇スキル
+    for skill in &project.preferred_skills_keywords {
+        tokens.push(format!("skill:pref:{}", skill.to_lowercase()));
+    }
+
+    // 勤務地
+    if let Some(ref pref) = project.work_todofuken {
+        tokens.push(format!("loc:pref:{}", pref));
+    }
+    if let Some(ref area) = project.work_area {
+        tokens.push(format!("loc:area:{}", area));
+    }
+    if let Some(ref station) = project.work_station {
+        tokens.push(format!("loc:station:{}", station));
+    }
+
+    // リモート
+    if let Some(ref remote) = project.remote_onsite {
+        tokens.push(format!("remote:{}", remote));
+    }
+
+    // 経験年数（バケット化）
+    if let Some(years) = project.min_experience_years {
+        let bucket = exp_years_bucket(years);
+        tokens.push(format!("exp:years:{}", bucket));
+    }
+
+    // 契約形態
+    if let Some(ref contract) = project.contract_type {
+        tokens.push(format!("contract:{}", contract));
+    }
+
+    // 単価レンジ（バケット化）
+    if let Some(min_tanka) = project.monthly_tanka_min {
+        let bucket = tanka_bucket(min_tanka);
+        tokens.push(format!("tanka:min:{}", bucket));
+    }
+    if let Some(max_tanka) = project.monthly_tanka_max {
+        let bucket = tanka_bucket(max_tanka);
+        tokens.push(format!("tanka:max:{}", bucket));
+    }
+
+    // 日本語・英語
+    if let Some(ref ja) = project.japanese_skill {
+        tokens.push(format!("lang:ja:{}", ja));
+    }
+    if let Some(ref en) = project.english_skill {
+        tokens.push(format!("lang:en:{}", en));
+    }
+
+    tokens
+}
+
+pub fn tokenize_talent(talent: &Talent) -> Vec<String> {
+    let mut tokens = Vec::new();
+
+    // 保有スキル
+    for skill in &talent.possessed_skills_keywords {
+        tokens.push(format!("skill:have:{}", skill.to_lowercase()));
+    }
+
+    // 居住地
+    if let Some(ref pref) = talent.residential_todofuken {
+        tokens.push(format!("loc:pref:{}", pref));
+    }
+    if let Some(ref area) = talent.residential_area {
+        tokens.push(format!("loc:area:{}", area));
+    }
+    if let Some(ref station) = talent.nearest_station {
+        tokens.push(format!("loc:station:{}", station));
+    }
+
+    // 希望リモート
+    if let Some(ref remote) = talent.desired_remote_onsite {
+        tokens.push(format!("remote:{}", remote));
+    }
+
+    // 経験年数
+    if let Some(years) = talent.min_experience_years {
+        let bucket = exp_years_bucket(years);
+        tokens.push(format!("exp:years:{}", bucket));
+    }
+
+    // 契約形態（primary + secondary）
+    if let Some(ref contract) = talent.primary_contract_type {
+        tokens.push(format!("contract:primary:{}", contract));
+    }
+    if let Some(ref contract) = talent.secondary_contract_type {
+        tokens.push(format!("contract:secondary:{}", contract));
+    }
+
+    // 希望単価
+    if let Some(min_price) = talent.desired_price_min {
+        let bucket = tanka_bucket(min_price);
+        tokens.push(format!("tanka:desired:{}", bucket));
+    }
+
+    // 日本語・英語
+    if let Some(ref ja) = talent.japanese_skill {
+        tokens.push(format!("lang:ja:{}", ja));
+    }
+    if let Some(ref en) = talent.english_skill {
+        tokens.push(format!("lang:en:{}", en));
+    }
+
+    tokens
+}
+
+/// 経験年数バケット: 0-2, 3-5, 6-10, 11+
+fn exp_years_bucket(years: i32) -> &'static str {
+    match years {
+        0..=2 => "0-2",
+        3..=5 => "3-5",
+        6..=10 => "6-10",
+        _ => "11+",
+    }
+}
+
+/// 単価バケット: 30以下, 30-50, 50-70, 70-100, 100+（万円）
+fn tanka_bucket(tanka: u32) -> &'static str {
+    match tanka {
+        0..=29 => "under30",
+        30..=49 => "30-50",
+        50..=69 => "50-70",
+        70..=99 => "70-100",
+        _ => "100+",
+    }
+}
+```
+
+---
+
+### 3.15 HashTwoTower 実装（Feature Hashing）
+
+```rust
+// crates/sr-common/src/two_tower/hash_tower.rs
+
+use super::{Embedding, EmbeddingSource, TwoTowerEmbedder};
+use crate::{Project, Talent};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+/// Feature Hashing を用いた決定論的 Two-Tower
+///
+/// - 学習不要（固定ハッシュ関数）
+/// - 高速（O(n) where n = token count）
+/// - スパース表現をハッシュで固定次元に圧縮
+pub struct HashTwoTower {
+    pub config: TwoTowerConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct TwoTowerConfig {
+    /// 埋め込み次元数（2のべき乗推奨: 256, 512, 1024）
+    pub dimension: usize,
+    /// Two-Tower スコアの重み（total_score 計算時）
+    pub weight: f32,
+    /// 有効/無効フラグ
+    pub enabled: bool,
+}
+
+impl Default for TwoTowerConfig {
+    fn default() -> Self {
+        Self {
+            dimension: 256,
+            weight: 0.0, // MVP では無効
+            enabled: false,
+        }
+    }
+}
+
+impl HashTwoTower {
+    pub fn new(config: TwoTowerConfig) -> Self {
+        Self { config }
+    }
+
+    /// トークンをハッシュして次元インデックスに変換
+    fn hash_token(&self, token: &str) -> usize {
+        let mut hasher = DefaultHasher::new();
+        token.hash(&mut hasher);
+        (hasher.finish() as usize) % self.config.dimension
+    }
+
+    /// トークン列を埋め込みベクトルに変換
+    fn tokens_to_embedding(&self, tokens: Vec<String>, source: EmbeddingSource) -> Embedding {
+        let mut vector = vec![0.0f32; self.config.dimension];
+
+        for token in &tokens {
+            let idx = self.hash_token(token);
+            // Sign hashing: 偶数ハッシュ → +1, 奇数ハッシュ → -1
+            let sign = if self.hash_token(&format!("{}_sign", token)) % 2 == 0 {
+                1.0
+            } else {
+                -1.0
+            };
+            vector[idx] += sign;
+        }
+
+        // L2正規化
+        let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in &mut vector {
+                *v /= norm;
+            }
+        }
+
+        Embedding {
+            vector,
+            source_type: source,
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+
+impl TwoTowerEmbedder for HashTwoTower {
+    fn name(&self) -> &'static str {
+        "hash"
+    }
+
+    fn dimension(&self) -> usize {
+        self.config.dimension
+    }
+
+    fn embed_project(&self, project: &Project) -> Embedding {
+        let tokens = super::tokenizer::tokenize_project(project);
+        self.tokens_to_embedding(tokens, EmbeddingSource::Project)
+    }
+
+    fn embed_talent(&self, talent: &Talent) -> Embedding {
+        let tokens = super::tokenizer::tokenize_talent(talent);
+        self.tokens_to_embedding(tokens, EmbeddingSource::Talent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_tower_produces_normalized_vectors() {
+        let tower = HashTwoTower::new(TwoTowerConfig::default());
+
+        let project = Project {
+            required_skills_keywords: vec!["rust".into(), "python".into()],
+            work_todofuken: Some("東京都".into()),
+            ..Default::default()
+        };
+
+        let emb = tower.embed_project(&project);
+
+        // L2ノルムが1.0であることを確認
+        let norm: f32 = emb.vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "L2 norm should be 1.0, got {}", norm);
+    }
+
+    #[test]
+    fn similar_inputs_have_higher_similarity() {
+        let tower = HashTwoTower::new(TwoTowerConfig::default());
+
+        let project = Project {
+            required_skills_keywords: vec!["rust".into(), "aws".into()],
+            work_todofuken: Some("東京都".into()),
+            ..Default::default()
+        };
+
+        let similar_talent = Talent {
+            possessed_skills_keywords: vec!["rust".into(), "aws".into(), "docker".into()],
+            residential_todofuken: Some("東京都".into()),
+            ..Default::default()
+        };
+
+        let different_talent = Talent {
+            possessed_skills_keywords: vec!["cobol".into(), "oracle".into()],
+            residential_todofuken: Some("北海道".into()),
+            ..Default::default()
+        };
+
+        let proj_emb = tower.embed_project(&project);
+        let similar_emb = tower.embed_talent(&similar_talent);
+        let different_emb = tower.embed_talent(&different_talent);
+
+        let similar_score = tower.similarity(&proj_emb, &similar_emb);
+        let different_score = tower.similarity(&proj_emb, &different_emb);
+
+        assert!(
+            similar_score > different_score,
+            "Similar talent should have higher score: {} vs {}",
+            similar_score,
+            different_score
+        );
+    }
+}
+```
+
+---
+
+### 3.16 interaction_logs DDL（学習データ収集）
+
+```sql
+-- Phase 4 の学習に向けて、予測とFBのペアを記録
+
+CREATE TABLE ses.interaction_logs (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- マッチング情報
+    match_result_id INTEGER REFERENCES ses.match_results(id),
+    talent_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+
+    -- Two-Tower 予測
+    two_tower_score FLOAT,          -- 予測スコア
+    two_tower_embedder VARCHAR(50), -- hash / onnx / candle
+    two_tower_version VARCHAR(20),  -- モデルバージョン
+
+    -- ビジネスルールスコア（比較用）
+    business_score FLOAT,
+
+    -- 結果（後から更新）
+    outcome VARCHAR(20),  -- accepted / rejected / no_response / NULL
+    feedback_at TIMESTAMPTZ,
+
+    -- メタデータ
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    -- インデックス
+    CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, created_at::date)
+);
+
+-- Phase 4 学習用のビュー
+CREATE OR REPLACE VIEW ses.training_pairs AS
+SELECT
+    il.talent_id,
+    il.project_id,
+    il.two_tower_score,
+    il.business_score,
+    il.outcome,
+    CASE
+        WHEN il.outcome = 'accepted' THEN 1.0
+        WHEN il.outcome = 'rejected' THEN 0.0
+        ELSE NULL  -- no_response は除外
+    END AS label,
+    il.created_at
+FROM ses.interaction_logs il
+WHERE il.outcome IN ('accepted', 'rejected');
+
+-- 学習データ統計
+CREATE OR REPLACE VIEW ses.training_stats AS
+SELECT
+    COUNT(*) FILTER (WHERE outcome = 'accepted') AS accepted_count,
+    COUNT(*) FILTER (WHERE outcome = 'rejected') AS rejected_count,
+    COUNT(*) FILTER (WHERE outcome IS NULL) AS pending_count,
+    MIN(created_at) AS first_log_at,
+    MAX(created_at) AS last_log_at,
+    COUNT(DISTINCT DATE_TRUNC('day', created_at)) AS active_days
+FROM ses.interaction_logs;
+```
+
+---
+
+### 3.17 OnnxTwoTower スタブ（Phase 4 準備）
+
+```rust
+// crates/sr-common/src/two_tower/onnx_tower.rs
+
+use super::{Embedding, EmbeddingSource, TwoTowerEmbedder};
+use crate::{Project, Talent};
+
+/// ONNX Runtime を使用した Two-Tower
+///
+/// Phase 4 で学習済みモデルを読み込む
+pub struct OnnxTwoTower {
+    // session: ort::Session, // Phase 4 で有効化
+    model_path: String,
+    dimension: usize,
+}
+
+impl OnnxTwoTower {
+    pub fn new(model_path: &str, dimension: usize) -> Result<Self, String> {
+        // Phase 4: ONNX ランタイム初期化
+        // let session = ort::Session::new(model_path)?;
+
+        Ok(Self {
+            model_path: model_path.to_string(),
+            dimension,
+        })
+    }
+}
+
+impl TwoTowerEmbedder for OnnxTwoTower {
+    fn name(&self) -> &'static str {
+        "onnx"
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn embed_project(&self, _project: &Project) -> Embedding {
+        // Phase 4: ONNX 推論
+        // let input = tokenize_and_encode(project);
+        // let output = self.session.run(input)?;
+
+        Embedding {
+            vector: vec![0.0; self.dimension],
+            source_type: EmbeddingSource::Project,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn embed_talent(&self, _talent: &Talent) -> Embedding {
+        // Phase 4: ONNX 推論
+        Embedding {
+            vector: vec![0.0; self.dimension],
+            source_type: EmbeddingSource::Talent,
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+```
+
+---
+
+### 3.18 CandleTwoTower スタブ（Phase 4+）
+
+```rust
+// crates/sr-common/src/two_tower/candle_tower.rs
+
+use super::{Embedding, EmbeddingSource, TwoTowerEmbedder};
+use crate::{Project, Talent};
+
+/// Candle (Rust-native) を使用した Two-Tower
+///
+/// Phase 4+ でPyTorchモデルをRustに移植
+pub struct CandleTwoTower {
+    // model: candle::Model, // Phase 4+ で有効化
+    dimension: usize,
+}
+
+impl CandleTwoTower {
+    pub fn new(dimension: usize) -> Self {
+        Self { dimension }
+    }
+}
+
+impl TwoTowerEmbedder for CandleTwoTower {
+    fn name(&self) -> &'static str {
+        "candle"
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn embed_project(&self, _project: &Project) -> Embedding {
+        // Phase 4+: Candle 推論
+        Embedding {
+            vector: vec![0.0; self.dimension],
+            source_type: EmbeddingSource::Project,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn embed_talent(&self, _talent: &Talent) -> Embedding {
+        // Phase 4+: Candle 推論
+        Embedding {
+            vector: vec![0.0; self.dimension],
+            source_type: EmbeddingSource::Talent,
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+```
+
+---
+
+### 3.19 Two-Tower と既存スコアリングの統合
+
+```rust
+// crates/sr-common/src/matching/scoring.rs への追加
+
+use crate::two_tower::{TwoTowerConfig, TwoTowerEmbedder, HashTwoTower};
+
+/// 総合スコア計算（Two-Tower 込み）
+pub fn calculate_total_score_with_two_tower(
+    business_score: f32,
+    semantic_score: f32,
+    historical_score: f32,
+    two_tower_score: Option<f32>,
+    weights: &TotalScoreWeights,
+    two_tower_config: &TwoTowerConfig,
+) -> f32 {
+    // 既存の 3要素スコア
+    let base_score = calculate_total_score(
+        business_score,
+        semantic_score,
+        historical_score,
+        weights,
+    );
+
+    // Two-Tower が無効または未計算の場合はそのまま返す
+    if !two_tower_config.enabled {
+        return base_score;
+    }
+
+    let tt_score = two_tower_score.unwrap_or(0.5); // デフォルト: 中立
+
+    // 重み付き合成
+    // MVP: two_tower_weight = 0.0 なので影響なし
+    let total_weight = 1.0 + two_tower_config.weight;
+    let combined = (base_score + two_tower_config.weight * tt_score) / total_weight;
+
+    combined.clamp(0.0, 1.0)
+}
+
+/// MatchingEngine への Two-Tower 統合
+impl MatchingEngine {
+    /// Two-Tower 付きマッチング
+    pub fn match_with_two_tower(
+        &self,
+        project: &Project,
+        talents: &[Talent],
+        embedder: &dyn TwoTowerEmbedder,
+    ) -> Vec<MatchResult> {
+        // 1. 既存の prefilter + 詳細スコア計算
+        let mut results = self.match_project_to_talents(project, talents);
+
+        // 2. Two-Tower スコアを追加
+        let project_emb = embedder.embed_project(project);
+
+        for result in &mut results {
+            if let Some(talent) = talents.iter().find(|t| t.id == Some(result.talent_id)) {
+                let talent_emb = embedder.embed_talent(talent);
+                let tt_score = embedder.similarity(&project_emb, &talent_emb);
+                result.two_tower_score = Some(tt_score);
+            }
+        }
+
+        // 3. 総合スコアを再計算
+        for result in &mut results {
+            result.total_score = calculate_total_score_with_two_tower(
+                result.business_score,
+                result.semantic_score.unwrap_or(0.0),
+                result.historical_score.unwrap_or(0.0),
+                result.two_tower_score,
+                &self.weights,
+                &self.two_tower_config,
+            );
+        }
+
+        // 4. スコア順でソート（KO は除外済み）
+        results.sort_by(|a, b| {
+            b.total_score
+                .partial_cmp(&a.total_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        results
+    }
+}
+```
+
+---
+
+### 3.20 Two-Tower ファクトリ
+
+```rust
+// crates/sr-common/src/two_tower/mod.rs への追加
+
+/// Two-Tower 実装のファクトリ
+pub fn create_embedder(name: &str, config: TwoTowerConfig) -> Box<dyn TwoTowerEmbedder> {
+    match name {
+        "hash" => Box::new(HashTwoTower::new(config)),
+        "onnx" => {
+            // Phase 4: モデルパスを設定から読み込み
+            let model_path = std::env::var("TWO_TOWER_ONNX_PATH")
+                .unwrap_or_else(|_| "models/two_tower.onnx".into());
+            Box::new(OnnxTwoTower::new(&model_path, config.dimension).unwrap())
+        }
+        "candle" => Box::new(CandleTwoTower::new(config.dimension)),
+        _ => Box::new(HashTwoTower::new(config)), // デフォルト
+    }
+}
+
+/// 環境変数から Two-Tower 設定を読み込み
+pub fn load_config_from_env() -> TwoTowerConfig {
+    TwoTowerConfig {
+        dimension: std::env::var("TWO_TOWER_DIMENSION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(256),
+        weight: std::env::var("TWO_TOWER_WEIGHT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0),
+        enabled: std::env::var("TWO_TOWER_ENABLED")
+            .ok()
+            .map(|s| s == "true" || s == "1")
+            .unwrap_or(false),
+    }
+}
+```
+
+---
+
+### 3.21 Two-Tower 実装順序
+
+| Step | 内容 | 状態 |
+|------|------|------|
+| **3-A** | TwoTowerEmbedder trait + HashTwoTower | 🔴 着手予定 |
+| **3-B** | interaction_logs DDL + ログ記録 | ⏳ 待機 |
+| **3-C** | OnnxTwoTower / CandleTwoTower スタブ | ⏳ 待機 |
+| **3-D** | GUI に Two-Tower スコア表示 | ⏳ 待機 |
+
+#### 3-A Done 条件
+
+- [ ] `TwoTowerEmbedder` trait が定義されている
+- [ ] `HashTwoTower` が実装されている
+- [ ] `tokenize_project()` / `tokenize_talent()` が動作する
+- [ ] `cargo test` で類似度テストが通る
+
+#### 3-B Done 条件
+
+- [ ] `interaction_logs` DDL が本番DBに適用されている
+- [ ] マッチング実行時に `interaction_logs` にINSERTされる
+- [ ] `training_pairs` ビューが動作する
+
+#### 3-C Done 条件
+
+- [ ] `OnnxTwoTower` / `CandleTwoTower` のスタブが実装されている
+- [ ] `create_embedder("onnx", ...)` / `create_embedder("candle", ...)` がコンパイル通る
+- [ ] 環境変数 `TWO_TOWER_EMBEDDER` で切り替え可能
+
+---
+
+## Phase 3.5: GUI 契約層（GUI直前の薄い層）
+
+Two-Tower が入った状態で GUI に入ると、UI が「表示するだけの箱」になりやすい。
+GUI に入る前に **「GUIが食べるための契約」** を固定する薄い層を挟む。
+
+### 3.22 GUIに入れる開始条件
+
+以下の3つが揃った瞬間、GUIは「作れる」から「運用に乗る」になる：
+
+| 条件 | 内容 |
+|------|------|
+| **(A)** | 返せるレスポンスが固定されている（GUIの土台） |
+| **(B)** | フィードバックを書き戻せる導線がある（UIの意味） |
+| **(C)** | キュー/ジョブの可視化ができる（運用できるUI） |
+
+---
+
+### 3.23 (A) マッチャー呼び出し口の固定
+
+GUIが必要とするのは「点数」よりも **理由**。最低限このセットが返る状態を作る：
+
+```rust
+// crates/sr-common/src/api/match_response.rs
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// GUI向けマッチング結果レスポンス
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchResponse {
+    /// タレントID
+    pub talent_id: i64,
+    /// 案件ID
+    pub project_id: i64,
+
+    // === 判定結果 ===
+    /// 自動マッチ推奨（HardKoなし & score > threshold）
+    pub auto_match_eligible: bool,
+    /// 手動レビュー必要（SoftKo or 閾値ギリギリ）
+    pub manual_review_required: bool,
+
+    // === スコア ===
+    /// 最終スコア（0.0〜1.0）
+    pub score: f32,
+    /// スコア内訳
+    pub score_breakdown: ScoreBreakdown,
+    /// Two-Tower スコア（有効時のみ）
+    pub two_tower_score: Option<f32>,
+
+    // === KO判定 ===
+    /// KO判定の詳細（チェック名 → KoDecision）
+    pub ko_decisions: HashMap<String, KoDecisionDto>,
+    /// 表示用KO理由（整形済み）
+    pub ko_reasons: Vec<String>,
+
+    // === 説明 ===
+    /// 各項目の詳細説明
+    pub details: MatchDetails,
+
+    // === メタデータ ===
+    pub engine_version: String,
+    pub rule_version: String,
+    pub matched_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// スコア内訳
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScoreBreakdown {
+    /// 単価スコア（0.0〜1.0）
+    pub tanka: f32,
+    /// ロケーションスコア（0.0〜1.0）
+    pub location: f32,
+    /// スキルスコア（0.0〜1.0）
+    pub skills: f32,
+    /// 経験年数スコア（0.0〜1.0）
+    pub experience: f32,
+    /// 契約形態スコア（0.0〜1.0）
+    pub contract: f32,
+    /// ビジネスルール総合（prefilter用）
+    pub business_total: f32,
+}
+
+/// KO判定DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KoDecisionDto {
+    /// KOタイプ: "hard_ko" / "soft_ko" / "pass"
+    pub ko_type: String,
+    /// KO理由（nullならPass）
+    pub reason: Option<String>,
+    /// 詳細説明
+    pub details: Option<String>,
+}
+
+/// 詳細説明
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MatchDetails {
+    /// ロケーション詳細（例: "東京都 → 東京都（一致）"）
+    pub location: Option<String>,
+    /// スキルマッチ詳細（例: "3/5 必須スキル一致"）
+    pub skills: Option<String>,
+    /// 単価詳細（例: "希望60万 vs 案件50-70万（範囲内）"）
+    pub tanka: Option<String>,
+    /// 経験詳細（例: "5年 >= 3年（要件満たす）"）
+    pub experience: Option<String>,
+    /// 契約詳細（例: "業務委託 ⊂ {業務委託,派遣}（OK）"）
+    pub contract: Option<String>,
+    /// フロー詳細（例: "2次請け <= 3次請けまで（OK）"）
+    pub flow: Option<String>,
+    /// 日本語詳細
+    pub japanese: Option<String>,
+    /// 英語詳細
+    pub english: Option<String>,
+    /// 年齢詳細（例: "35歳 ∈ [25, 45]（OK）"）
+    pub age: Option<String>,
+    /// 国籍詳細
+    pub nationality: Option<String>,
+    /// 稼働開始詳細
+    pub availability: Option<String>,
+}
+
+/// マッチング設定（環境変数から読み込み）
+#[derive(Debug, Clone)]
+pub struct MatchConfig {
+    /// 自動マッチ推奨の閾値（デフォルト: 0.7）
+    pub auto_match_threshold: f32,
+    /// 手動レビュー推奨のマージン（閾値±margin で manual_review_required = true）
+    pub manual_review_margin: f32,
+}
+
+impl Default for MatchConfig {
+    fn default() -> Self {
+        Self {
+            auto_match_threshold: 0.7,
+            manual_review_margin: 0.1,
+        }
+    }
+}
+
+impl MatchConfig {
+    /// 環境変数から設定を読み込み
+    pub fn from_env() -> Self {
+        Self {
+            auto_match_threshold: std::env::var("AUTO_MATCH_THRESHOLD")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.7),
+            manual_review_margin: std::env::var("MANUAL_REVIEW_MARGIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.1),
+        }
+    }
+}
+
+impl MatchResponse {
+    /// KO判定からauto_match_eligibleを判定
+    pub fn is_auto_match_eligible(&self, config: &MatchConfig) -> bool {
+        !self.ko_decisions.values().any(|d| d.ko_type == "hard_ko")
+            && self.score >= config.auto_match_threshold
+            && !self.manual_review_required
+    }
+
+    /// 閾値ギリギリかどうか（手動レビュー推奨）
+    pub fn is_near_threshold(&self, config: &MatchConfig) -> bool {
+        let lower = config.auto_match_threshold - config.manual_review_margin;
+        let upper = config.auto_match_threshold + config.manual_review_margin;
+        self.score >= lower && self.score <= upper
+    }
+}
+```
+
+**環境変数**:
+```bash
+# 自動マッチ推奨の閾値（デフォルト: 0.7）
+AUTO_MATCH_THRESHOLD=0.7
+
+# 手動レビュー推奨のマージン（閾値±0.1 で推奨）
+MANUAL_REVIEW_MARGIN=0.1
+```
+
+---
+
+### 3.24 (B) フィードバック書き戻しの設計
+
+営業FBがないとUIの意味が薄い。GUIから押せるのはこれ：
+
+| ボタン | feedback_type | 意味 |
+|--------|---------------|------|
+| 👍 | `thumbs_up` | 推奨として良い |
+| 👎 | `thumbs_down` | 推奨として悪い |
+| ✅ OK | `review_ok` | 手動レビューの結論：合格 |
+| ❌ NG | `review_ng` | 手動レビューの結論：不合格 |
+| ⏸️ 保留 | `review_pending` | 手動レビューの結論：保留 |
+
+> **DDL**: [3.8 feedback_events DDL（統一版）](#38-feedback_events-ddl統一版) を参照。
+> GUIの評価（thumbs_up/down, review_ok/ng/pending）と営業プロセス（accepted/rejected等）を統一イベントログとして保存。
+
+#### フィードバックDTO
+
+```rust
+// crates/sr-common/src/api/feedback.rs
+
+use serde::{Deserialize, Serialize};
+
+/// フィードバック送信リクエスト
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackRequest {
+    /// 紐付け先の interaction_logs.id（推奨）
+    pub interaction_id: Option<i64>,
+    /// 対象マッチ結果ID（interaction_id がない場合の代替）
+    pub match_result_id: Option<i64>,
+    /// タレントID
+    pub talent_id: i64,
+    /// 案件ID
+    pub project_id: i64,
+    /// フィードバックタイプ
+    pub feedback_type: FeedbackType,
+    /// NG理由カテゴリ（NG時のみ）
+    pub ng_reason_category: Option<NgReasonCategory>,
+    /// コメント（任意）
+    pub comment: Option<String>,
+    /// タグ（任意）
+    pub feedback_tags: Option<Vec<String>>,
+    /// 送信者（user_id / "sales" / "ops"）
+    pub actor: String,
+    /// 送信元（"gui" / "crm" / "api"）
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackType {
+    // --- GUI評価 ---
+    /// 👍 推奨として良い
+    ThumbsUp,
+    /// 👎 推奨として悪い
+    ThumbsDown,
+    /// ✅ 手動レビュー合格
+    ReviewOk,
+    /// ❌ 手動レビュー不合格
+    ReviewNg,
+    /// ⏸️ 手動レビュー保留
+    ReviewPending,
+    // --- 営業プロセス ---
+    /// 採用決定
+    Accepted,
+    /// 不採用
+    Rejected,
+    /// 面談設定
+    InterviewScheduled,
+    /// 応答なし
+    NoResponse,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NgReasonCategory {
+    /// 単価が合わない
+    Tanka,
+    /// スキルが足りない
+    Skill,
+    /// 稼働開始が合わない
+    Availability,
+    /// 勤務地が合わない
+    Location,
+    /// 商流が合わない
+    Flow,
+    /// その他
+    Other,
+}
+
+impl FeedbackType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ThumbsUp => "thumbs_up",
+            Self::ThumbsDown => "thumbs_down",
+            Self::ReviewOk => "review_ok",
+            Self::ReviewNg => "review_ng",
+            Self::ReviewPending => "review_pending",
+        }
+    }
+
+    /// Two-Tower学習用のラベル変換
+    pub fn to_training_label(&self) -> Option<f32> {
+        match self {
+            Self::ThumbsUp | Self::ReviewOk => Some(1.0),
+            Self::ThumbsDown | Self::ReviewNg => Some(0.0),
+            Self::ReviewPending => None, // 学習から除外
+        }
+    }
+}
+
+impl NgReasonCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tanka => "tanka",
+            Self::Skill => "skill",
+            Self::Availability => "availability",
+            Self::Location => "location",
+            Self::Flow => "flow",
+            Self::Other => "other",
+        }
+    }
+}
+```
+
+---
+
+### 3.25 (C) キュー/ジョブの可視化
+
+3-binary構成の前提で、GUIで最初に一番効くのはここ：
+
+#### キューダッシュボードDTO
+
+```rust
+// crates/sr-common/src/api/queue_dashboard.rs
+
+use serde::{Deserialize, Serialize};
+
+/// キューダッシュボード集計
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QueueDashboard {
+    /// ステータス別件数
+    pub status_counts: StatusCounts,
+    /// 手動レビュー待ち件数
+    pub manual_review_count: i64,
+    /// エラー件数（last_error IS NOT NULL）
+    pub error_count: i64,
+    /// 処理中（10分以上）の滞留件数
+    pub stale_processing_count: i64,
+    /// 最終更新時刻
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StatusCounts {
+    pub pending: i64,
+    pub processing: i64,
+    pub completed: i64,
+}
+
+/// キュージョブ一覧用DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueJobSummary {
+    /// ジョブID（message_id）
+    pub message_id: String,
+    /// 件名
+    pub subject: String,
+    /// ステータス
+    pub status: String,
+    /// 推奨メソッド
+    pub recommended_method: Option<String>,
+    /// 最終メソッド
+    pub final_method: Option<String>,
+    /// ロック者
+    pub locked_by: Option<String>,
+    /// 処理開始時刻
+    pub processing_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 最終エラー
+    pub last_error: Option<String>,
+    /// 判定理由
+    pub decision_reason: Option<String>,
+    /// 手動レビュー必要
+    pub requires_manual_review: bool,
+    /// リトライ回数
+    pub retry_count: i32,
+    /// 受信日時
+    pub received_at: chrono::DateTime<chrono::Utc>,
+    /// 更新日時
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// キュージョブ詳細DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueJobDetail {
+    /// 基本情報
+    #[serde(flatten)]
+    pub summary: QueueJobSummary,
+    /// 抽出フィールド（JSON）
+    pub partial_fields: Option<serde_json::Value>,
+    /// 優先度
+    pub priority: i32,
+    /// LLMレイテンシ（ms）
+    pub llm_latency_ms: Option<i64>,
+    /// 手動レビュー理由
+    pub manual_review_reason: Option<String>,
+    /// 作成日時
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 完了日時
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+```
+
+#### キュー統計SQL
+
+```sql
+-- ダッシュボード用集計クエリ
+SELECT
+    COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+    COUNT(*) FILTER (WHERE status = 'processing') AS processing,
+    COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+    COUNT(*) FILTER (WHERE requires_manual_review) AS manual_review_count,
+    COUNT(*) FILTER (WHERE last_error IS NOT NULL) AS error_count,
+    COUNT(*) FILTER (
+        WHERE status = 'processing'
+        AND processing_started_at < NOW() - INTERVAL '10 minutes'
+    ) AS stale_processing_count
+FROM ses.extraction_queue;
+
+-- 手動レビュー待ち一覧
+SELECT *
+FROM ses.extraction_queue
+WHERE requires_manual_review = true
+  AND status = 'completed'
+  AND final_method = 'manual_review'
+ORDER BY updated_at DESC
+LIMIT 50;
+```
+
+---
+
+### 3.26 GUI 最小構成（最初に作るべき3画面）
+
+「3ヶ月でGUI」なら、最初はこれで十分強い：
+
+#### 画面1: Queue Dashboard
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Queue Dashboard                                    [更新]   │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
+│  │ Pending  │  │Processing│  │Completed │  │  Error   │    │
+│  │   42     │  │    3     │  │   1,234  │  │    5     │    │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
+│                                                             │
+│  ⚠️ Manual Review Required: 12件                            │
+│  ⏰ Stale Processing (>10min): 1件                          │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│  Recent Jobs                                                │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ Status  │ Subject         │ Method │ Error │ Updated   ││
+│  ├─────────────────────────────────────────────────────────┤│
+│  │ 🟡 pend │ 【案件】Java...  │ LLM    │       │ 10:32     ││
+│  │ 🔵 proc │ RE: Python...   │ Rust   │       │ 10:31     ││
+│  │ 🟢 comp │ 【急募】AWS...  │ LLM    │       │ 10:30     ││
+│  │ 🔴 err  │ Fwd: ...        │ LLM    │ timeout│ 10:28    ││
+│  └─────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 画面2: 案件詳細 → 候補一覧（Ranking）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  案件: Java/Spring Boot エンジニア（東京）          ID: 123  │
+├─────────────────────────────────────────────────────────────┤
+│  単価: 60-75万  │  勤務地: 東京都渋谷区  │  リモート: 週2出社 │
+│  必須: Java, Spring Boot, AWS  │  経験: 5年以上             │
+├─────────────────────────────────────────────────────────────┤
+│  Filter: [SoftKo含む ☑] [リモート可のみ □] [エリア: 全て ▼] │
+├─────────────────────────────────────────────────────────────┤
+│  候補一覧（HardKo除外済み）                     Total: 47名  │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ # │Score│ Name      │ Skills        │ Tanka │ KO      ││
+│  ├─────────────────────────────────────────────────────────┤│
+│  │ 1 │ 0.92│ 田中太郎  │ Java,AWS,K8s  │ 65万  │ Pass    ││
+│  │ 2 │ 0.87│ 山田花子  │ Java,Spring   │ 60万  │ Pass    ││
+│  │ 3 │ 0.81│ 佐藤次郎  │ Java,Python   │ 70万  │ SoftKo  ││
+│  │   │     │           │               │       │ (単価↑) ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                         [1] [2] [3] ... [5] │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 画面3: 候補詳細（Explain）+ フィードバック
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  候補詳細: 田中太郎 ← 案件: Java/Spring Boot       [← 戻る] │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────── Score Breakdown ───────┐                         │
+│  │ Total Score:     0.92         │  ┌─ フィードバック ─┐   │
+│  │ ├─ Tanka:        0.95 ████▉   │  │                  │   │
+│  │ ├─ Location:     1.00 █████   │  │  [👍 良い]       │   │
+│  │ ├─ Skills:       0.85 ████▎   │  │  [👎 悪い]       │   │
+│  │ ├─ Experience:   0.90 ████▌   │  │                  │   │
+│  │ ├─ Contract:     1.00 █████   │  │  ── 手動レビュー ─│   │
+│  │ └─ Two-Tower:    0.88 ████▍   │  │  [✅ OK]         │   │
+│  └───────────────────────────────┘  │  [❌ NG ▼]       │   │
+│                                      │   └ 理由選択     │   │
+│  ┌─────── KO Decisions ──────────┐  │  [⏸️ 保留]       │   │
+│  │ ✅ Tanka:       Pass          │  │                  │   │
+│  │    └ 65万 ∈ [60, 75]          │  │  コメント:       │   │
+│  │ ✅ Location:    Pass          │  │  ┌────────────┐ │   │
+│  │    └ 東京都 → 東京都（一致）   │  │  │            │ │   │
+│  │ ✅ Skills:      Pass          │  │  └────────────┘ │   │
+│  │    └ 3/3 必須スキル一致       │  │  [送信]          │   │
+│  │ ✅ Contract:    Pass          │  └──────────────────┘   │
+│  │    └ 業務委託 ∈ {業務委託}    │                         │
+│  │ ✅ Flow:        Pass          │                         │
+│  │    └ 2次請け <= 3次まで       │                         │
+│  └───────────────────────────────┘                         │
+│                                                             │
+│  ┌─────── フィードバック履歴 ────┐                         │
+│  │ 2024-01-15 10:30 山田(営業): 👍                         │
+│  │ 2024-01-15 11:45 佐藤(営業): ✅ OK "スキル良好"          │
+│  └───────────────────────────────┘                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 3.26.1 GUI 技術選定
+
+3ヶ月でGUIなら「速い / 人が増やせる / 枯れてる」が勝ち。
+
+| レイヤー | 選定 | 理由 |
+|----------|------|------|
+| **フロントエンド** | Next.js 14 + TypeScript | App Router、RSC対応、Vercel親和性 |
+| **UIライブラリ** | shadcn/ui | Tailwind CSS ベース、カスタマイズ容易 |
+| **状態管理** | TanStack Query (React Query) | サーバー状態はQuery、ローカル状態は最小限 |
+| **API通信** | fetch + zod | 型安全、バンドルサイズ小 |
+| **認証** | NextAuth.js (Auth.js) | Google OAuth / メール認証 |
+| **バックエンド** | Axum (Rust) | 既存 sr-common との統合、型安全 |
+
+**ディレクトリ構成（フロント）**:
+```
+sr-gui/
+├── app/
+│   ├── (dashboard)/
+│   │   ├── queue/page.tsx         # Queue Dashboard
+│   │   ├── projects/[id]/page.tsx # 案件詳細 + 候補一覧
+│   │   └── matches/[id]/page.tsx  # 候補詳細 + フィードバック
+│   ├── api/                       # API Routes (BFF層)
+│   └── layout.tsx
+├── components/
+│   ├── ui/                        # shadcn components
+│   ├── queue/                     # キュー関連
+│   ├── match/                     # マッチング関連
+│   └── feedback/                  # フィードバック関連
+└── lib/
+    ├── api.ts                     # API client
+    └── types.ts                   # 共有型定義
+```
+
+---
+
+### 3.26.2 HTTP API エンドポイント詳細
+
+GUIに繋ぐための最小 API。Axum で実装。
+
+```rust
+// crates/sr-api/src/routes.rs
+
+use axum::{routing::{get, post}, Router};
+
+pub fn api_routes() -> Router {
+    Router::new()
+        // ヘルスチェック
+        .route("/health", get(health_check))
+
+        // キュー関連
+        .route("/api/queue/dashboard", get(get_queue_dashboard))
+        .route("/api/queue/jobs", get(list_queue_jobs))
+        .route("/api/queue/jobs/:id", get(get_queue_job))
+        .route("/api/queue/retry/:id", post(retry_queue_job))
+
+        // マッチング関連
+        .route("/api/match", post(run_match))
+        .route("/api/matches/:id", get(get_match_result))
+        .route("/api/projects/:id/candidates", get(list_candidates))
+
+        // フィードバック
+        .route("/api/feedback", post(submit_feedback))
+        .route("/api/feedback/history/:interaction_id", get(get_feedback_history))
+}
+```
+
+#### エンドポイント一覧
+
+| Method | Path | 説明 | Request | Response |
+|--------|------|------|---------|----------|
+| `GET` | `/health` | ヘルスチェック | - | `{ "status": "ok" }` |
+| `GET` | `/api/queue/dashboard` | ダッシュボード集計 | - | `QueueDashboard` |
+| `GET` | `/api/queue/jobs` | ジョブ一覧 | `?status=pending&limit=50` | `Vec<QueueJobSummary>` |
+| `GET` | `/api/queue/jobs/:id` | ジョブ詳細 | - | `QueueJobDetail` |
+| `POST` | `/api/queue/retry/:id` | ジョブ再試行 | - | `{ "success": true }` |
+| `POST` | `/api/match` | マッチング実行 | `MatchRequest` | `Vec<MatchResponse>` |
+| `GET` | `/api/matches/:id` | マッチ結果詳細 | - | `MatchResponse` |
+| `GET` | `/api/projects/:id/candidates` | 案件の候補一覧 | `?include_softko=true` | `Vec<MatchResponse>` |
+| `POST` | `/api/feedback` | フィードバック送信 | `FeedbackRequest` | `{ "id": 123 }` |
+| `GET` | `/api/feedback/history/:id` | FB履歴 | - | `Vec<FeedbackEvent>` |
+
+#### MatchRequest
+
+```rust
+#[derive(Debug, Deserialize)]
+pub struct MatchRequest {
+    pub project: Project,
+    pub talent_ids: Option<Vec<i64>>,  // 指定があればそのタレントのみ
+    pub include_softko: bool,          // SoftKo も含めるか
+    pub limit: Option<usize>,          // 上位N件
+}
+```
+
+#### 認証（MVP）
+
+```rust
+// JWT Bearer Token（NextAuth.js が発行）
+// Authorization: Bearer <token>
+
+pub async fn auth_middleware(
+    TypedHeader(auth): TypedHeader<Authorization<Bearer>>,
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let token = auth.token();
+    let claims = verify_jwt(token, &state.jwt_secret)?;
+    // claims.sub → user_id として使用
+    Ok(next.run(request).await)
+}
+```
+
+---
+
+### 3.27 GUI 契約層の実装順序
+
+| Step | 内容 | 状態 |
+|------|------|------|
+| **3.5-A** | `MatchResponse` DTO 定義 + 既存ロジックからの変換 | 🔴 着手予定 |
+| **3.5-B** | `FeedbackRequest` / `feedback_events` DDL | ⏳ 待機 |
+| **3.5-C** | `QueueDashboard` DTO + 集計クエリ | ⏳ 待機 |
+| **3.5-D** | HTTP API エンドポイント（Axum） | ⏳ 待機 |
+| **3.5-E** | GUI フロントエンド（Next.js） | ⏳ 待機 |
+
+#### 3.5-A Done 条件
+
+- [ ] `MatchResponse` がコンパイル通る
+- [ ] 既存の `MatchResult` → `MatchResponse` 変換が動作する
+- [ ] `score_breakdown` / `ko_decisions` / `details` が全て埋まる
+
+#### 3.5-B Done 条件
+
+- [ ] `feedback_events` DDL が本番DBに適用されている
+- [ ] `FeedbackRequest` がコンパイル通る
+- [ ] `insert_feedback()` が動作する
+
+#### 3.5-C Done 条件
+
+- [ ] `QueueDashboard` がコンパイル通る
+- [ ] ダッシュボード集計クエリが動作する
+- [ ] `QueueJobSummary` 一覧取得が動作する
+
+#### 3.5-D Done 条件
+
+- [ ] `GET /health` が動作する
+- [ ] `GET /api/queue/dashboard` が動作する
+- [ ] `GET /api/queue/jobs` が動作する（status/limit パラメータ対応）
+- [ ] `GET /api/projects/:id/candidates` が動作する
+- [ ] `GET /api/matches/:id` が動作する
+- [ ] `POST /api/feedback` が動作する
+- [ ] JWT認証ミドルウェアが動作する
+
+#### 3.5-E Done 条件
+
+- [ ] Next.js プロジェクトが `sr-gui/` に作成されている
+- [ ] Queue Dashboard 画面が表示できる
+- [ ] 案件詳細 → 候補一覧 画面が表示できる
+- [ ] 候補詳細（Explain）+ フィードバック 画面が表示できる
+- [ ] フィードバック送信が動作する
+- [ ] 認証（Google OAuth or メール）が動作する
+
+---
+
+### 3.28 全体実装順序（修正版）
+
+Two-Tower → GUI契約層 → GUI の流れ：
+
+| Phase | Step | 内容 | 状態 |
+|-------|------|------|------|
+| 3 | 1 | match_results DDL + 保存 | ✅ 完了 |
+| 3 | 2 | LLM shadow 10% | ⏳ 待機 |
+| 3 | 3 | systemd 本番ループ | ⏳ 待機 |
+| 3 | 3-A | TwoTowerEmbedder + HashTwoTower | 🔴 着手予定 |
+| 3 | 3-B | interaction_logs DDL | ⏳ 待機 |
+| 3.5 | A | MatchResponse DTO + MatchConfig | ⏳ 待機 |
+| 3.5 | B | feedback_events DDL（統一版） | ⏳ 待機 |
+| 3.5 | C | QueueDashboard DTO | ⏳ 待機 |
+| 3.5 | D | HTTP API (Axum) | ⏳ 待機 |
+| 3.5 | E | GUI フロントエンド (Next.js) | 🔜 将来 |
+| 4 | - | Two-Tower 学習 | 🔜 将来 |
+
+---
+
+## Phase 4: Two-Tower モデル学習（Preview）
+
+Phase 3 で骨格と**ログ収集**が完了したら、Phase 4 へ移行。
+
+### 4.1 学習開始の前提条件
+
+| 要件 | 目安 |
+|------|------|
+| `interaction_logs` 件数 | 1,000+ ペア |
+| accepted : rejected 比率 | ≒ 1:3〜1:5 |
+| アクティブ日数 | 30日+ |
+| HashTwoTower との相関 | ベースライン確認済み |
+
+### 4.2 学習パイプライン
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  1. データ抽出                                           │
+│     training_pairs → Parquet エクスポート                │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│  2. 学習 (Python / PyTorch)                              │
+│     - Two-Tower 構造: Talent Encoder + Project Encoder   │
+│     - Loss: Contrastive / Triplet / InfoNCE              │
+│     - 出力: ONNX モデル                                   │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│  3. 推論 (Rust / ONNX Runtime)                           │
+│     - OnnxTwoTower でモデル読み込み                       │
+│     - HashTwoTower → OnnxTwoTower に切り替え             │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│  4. 評価・ABテスト                                        │
+│     - Hash vs ONNX の比較                                │
+│     - 重み調整: two_tower_weight を 0.0 → 0.2 → ...      │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 4.3 モデルアーキテクチャ（予定）
+
+```
+┌─────────────────────┐    ┌─────────────────────┐
+│  Talent Tower       │    │  Project Tower      │
+│  ┌───────────────┐  │    │  ┌───────────────┐  │
+│  │ Token Embed   │  │    │  │ Token Embed   │  │
+│  │ (shared)      │  │    │  │ (shared)      │  │
+│  └───────┬───────┘  │    │  └───────┬───────┘  │
+│          │          │    │          │          │
+│  ┌───────▼───────┐  │    │  ┌───────▼───────┐  │
+│  │ MLP (256)     │  │    │  │ MLP (256)     │  │
+│  └───────┬───────┘  │    │  └───────┬───────┘  │
+│          │          │    │          │          │
+│  ┌───────▼───────┐  │    │  ┌───────▼───────┐  │
+│  │ L2 Normalize  │  │    │  │ L2 Normalize  │  │
+│  └───────┬───────┘  │    │  └───────┬───────┘  │
+└──────────┼──────────┘    └──────────┼──────────┘
+           │                          │
+           └──────────┬───────────────┘
+                      │
+                ┌─────▼─────┐
+                │  Cosine   │
+                │ Similarity│
+                └─────┬─────┘
+                      │
+                      ▼
+                Match Score
+```
+
+### 4.4 環境変数（Phase 4）
+
+```bash
+# Two-Tower 設定
+TWO_TOWER_ENABLED=true
+TWO_TOWER_EMBEDDER=onnx          # hash / onnx / candle
+TWO_TOWER_ONNX_PATH=models/two_tower_v1.onnx
+TWO_TOWER_DIMENSION=256
+TWO_TOWER_WEIGHT=0.2             # 0.0〜1.0
+
+# 学習パイプライン
+TRAINING_DATA_PATH=/data/training_pairs.parquet
+TRAINING_OUTPUT_PATH=/models/
+```
+
+---
+
 **END OF DOCUMENT**
