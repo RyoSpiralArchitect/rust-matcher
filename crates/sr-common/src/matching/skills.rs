@@ -84,6 +84,15 @@ fn check_required_skills_with_threshold(
     }
 
     let talent_skill_set = normalize_skill_set(talent_skills);
+    if talent_skill_set.is_empty() {
+        return SkillMatchResult {
+            is_knockout: true,
+            match_percentage: 0.0,
+            matched_skills: vec![],
+            reason: "人材スキル情報が不足しているため必須スキルを確認できません".to_string(),
+            requires_manual_review: true,
+        };
+    }
     let matched: HashSet<_> = req_skill_set
         .intersection(&talent_skill_set)
         .cloned()
@@ -94,23 +103,44 @@ fn check_required_skills_with_threshold(
     let is_knockout = match_percentage < threshold;
 
     let matched_len = matched.len();
+    let mut matched_skills: Vec<_> = matched.into_iter().collect();
+    matched_skills.sort();
+    let matched_for_reason = matched_skills.clone();
+
+    let mut missing_skills: Vec<_> = req_skill_set
+        .difference(&talent_skill_set)
+        .cloned()
+        .collect();
+    missing_skills.sort();
+    let missing_for_reason = missing_skills.clone();
 
     SkillMatchResult {
         is_knockout,
         match_percentage,
-        matched_skills: matched.into_iter().collect(),
+        matched_skills,
         reason: if is_knockout {
             format!(
-                "必須スキルとのマッチ率が{:.0}%であり、基準の{:.0}%に達していません",
+                "必須スキルとのマッチ率が{:.0}%であり、基準の{:.0}%に達していません (不足: {})",
                 match_percentage * 100.0,
-                threshold * 100.0
+                threshold * 100.0,
+                missing_skills.join(", ")
             )
         } else {
             format!(
-                "必須スキル{}件中{}件({:.0}%)に合致",
+                "必須スキル{}件中{}件({:.0}%)に合致 (一致: {} / 不足: {})",
                 req_skill_set.len(),
                 matched_len,
-                match_percentage * 100.0
+                match_percentage * 100.0,
+                if matched_len == 0 {
+                    "なし".to_string()
+                } else {
+                    matched_for_reason.join(", ")
+                },
+                if missing_for_reason.is_empty() {
+                    "なし".to_string()
+                } else {
+                    missing_for_reason.join(", ")
+                }
             )
         },
         requires_manual_review: false,
@@ -140,6 +170,7 @@ mod tests {
         assert!((result.match_percentage - 0.5).abs() < f64::EPSILON);
         assert!(result.is_knockout);
         assert!(result.reason.contains("60%"));
+        assert!(result.reason.contains("不足"));
         assert!(!result.requires_manual_review);
     }
 
@@ -154,5 +185,28 @@ mod tests {
         assert!(!result.is_knockout);
         assert!((result.match_percentage - 1.0).abs() < f64::EPSILON);
         assert!(!result.requires_manual_review);
+    }
+
+    #[test]
+    fn empty_talent_skills_require_manual_review() {
+        let result = check_required_skills(&["rust".to_string()], &[]);
+
+        assert!(result.is_knockout);
+        assert!(result.requires_manual_review);
+        assert_eq!(result.match_percentage, 0.0);
+        assert!(result.reason.contains("不足"));
+    }
+
+    #[test]
+    fn reason_lists_missing_and_matched_skills() {
+        let result = check_required_skills_with_threshold(
+            &["rust".to_string(), "k8s".to_string(), "react".to_string()],
+            &["Rust".to_string(), "react".to_string()],
+            Some(0.3),
+        );
+
+        assert!(!result.is_knockout);
+        assert!(result.reason.contains("一致: react, rust") || result.reason.contains("一致: rust, react"));
+        assert!(result.reason.contains("不足: kubernetes"));
     }
 }

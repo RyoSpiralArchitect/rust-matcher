@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
+use strsim::damerau_levenshtein;
+use unicode_normalization::UnicodeNormalization;
 
 /// スキルエイリアス → 正規形のマッピング（O(1) ルックアップ）
 ///
@@ -236,13 +238,102 @@ static ALIAS_TO_CANONICAL: LazyLock<HashMap<&'static str, &'static str>> = LazyL
     map
 });
 
+fn nfkc_lower_trim(input: &str) -> String {
+    input
+        .nfkc()
+        .collect::<String>()
+        .trim()
+        .to_lowercase()
+}
+
+fn compact_key(input: &str) -> String {
+    input
+        .nfkc()
+        .collect::<String>()
+        .to_lowercase()
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '　' | '.' | '-' | '_' | '/' | '・' | ','))
+        .collect()
+}
+
+fn match_canonical_token(token: &str) -> Option<String> {
+    if token.is_empty() {
+        return None;
+    }
+
+    if let Some(canonical) = ALIAS_TO_CANONICAL.get(token) {
+        return Some(canonical.to_string());
+    }
+
+    let compact = compact_key(token);
+    if let Some(canonical) = COMPACT_ALIAS_TO_CANONICAL.get(&compact) {
+        return Some((*canonical).to_string());
+    }
+
+    fuzzy_match_canonical(&compact)
+}
+
+fn split_segments(input: &str) -> impl Iterator<Item = String> + '_ {
+    input
+        .split(|c: char| matches!(c, ' ' | '　' | '/' | '／' | '・' | ',' | ';' | '|' | '+' ))
+        .map(nfkc_lower_trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn fuzzy_match_canonical(compact: &str) -> Option<String> {
+    if compact.len() < 4 {
+        return None;
+    }
+
+    let mut best: Option<(&str, usize)> = None;
+    for (alias, canonical) in COMPACT_ALIAS_TO_CANONICAL.iter() {
+        let distance = damerau_levenshtein(compact, alias);
+        if distance == 0 {
+            return Some((*canonical).to_string());
+        }
+
+        let len = compact.len().max(alias.len());
+        let acceptable = distance == 1 || (len >= 8 && distance == 2);
+        if !acceptable {
+            continue;
+        }
+
+        match best {
+            None => best = Some((*canonical, distance)),
+            Some((_, best_dist)) if distance < best_dist => best = Some((*canonical, distance)),
+            _ => {},
+        }
+    }
+
+    best.map(|(canonical, _)| canonical.to_string())
+}
+
+/// 許容しうる軽微な表記揺れに備え、区切り文字除去・NFKC正規化後のキーを持つマップ
+static COMPACT_ALIAS_TO_CANONICAL: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
+    let mut map = HashMap::new();
+
+    for (alias, canonical) in ALIAS_TO_CANONICAL.iter() {
+        let compact = compact_key(alias);
+        map.entry(compact).or_insert(*canonical);
+    }
+
+    map
+});
+
 /// スキル文字列を正規形に変換（O(1)）
 pub fn normalize_skill(skill: &str) -> String {
-    let s = skill.trim().to_lowercase();
-    ALIAS_TO_CANONICAL
-        .get(s.as_str())
-        .map(|c| c.to_string())
-        .unwrap_or(s)
+    let normalized = nfkc_lower_trim(skill);
+    if let Some(canonical) = match_canonical_token(&normalized) {
+        return canonical;
+    }
+
+    for segment in split_segments(skill) {
+        if let Some(canonical) = match_canonical_token(&segment) {
+            return canonical;
+        }
+    }
+
+    normalized
 }
 
 /// スキル配列を正規化した HashSet に変換
@@ -276,6 +367,27 @@ mod tests {
         assert_eq!(normalize_skill("js"), "javascript");
         assert_eq!(normalize_skill("K8s"), "kubernetes");
         assert_eq!(normalize_skill("C#"), "csharp");
+    }
+
+    #[test]
+    fn normalizes_fullwidth_and_separators() {
+        assert_eq!(normalize_skill("ＡＷＳ"), "aws");
+        assert_eq!(normalize_skill("ＧＣＰ"), "gcp");
+        assert_eq!(normalize_skill("React　JS"), "react");
+        assert_eq!(normalize_skill("Python／Django"), "python");
+    }
+
+    #[test]
+    fn tolerates_small_typos_for_known_aliases() {
+        assert_eq!(normalize_skill("javascirpt"), "javascript");
+        assert_eq!(normalize_skill("pytroch"), "pytorch");
+        assert_eq!(normalize_skill("kuberntes"), "kubernetes");
+    }
+
+    #[test]
+    fn does_not_overmatch_short_tokens() {
+        assert_eq!(normalize_skill("ab"), "ab");
+        assert_eq!(normalize_skill("x"), "x");
     }
 
     #[test]

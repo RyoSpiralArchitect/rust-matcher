@@ -18,3 +18,5 @@ sha2.workspace = true
 tokio-postgres.workspace = true
 deadpool-postgres.workspace = true
 tracing.workspace = true
+unicode-normalization = "0.1"
+strsim = "0.10"
