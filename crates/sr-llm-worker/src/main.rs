@@ -3,10 +3,7 @@ use clap::Parser;
 use dotenvy::dotenv;
 use rand::Rng;
 use serde_json::json;
-use sr_common::db::{
-    MatchResultInsert, create_pool_from_url, insert_match_result, lock_next_pending_job,
-    upsert_extraction_job,
-};
+use sr_common::db::{create_pool_from_url, lock_next_pending_job, upsert_extraction_job};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
     RecommendedMethod,
@@ -367,6 +364,12 @@ fn apply_outcome(
             job.next_retry_at =
                 Some(finished_at + retry_after.unwrap_or_else(|| chrono::Duration::minutes(5)));
             job.last_error = Some(message);
+            job.final_method = None;
+            job.partial_fields = None;
+            job.decision_reason = None;
+            job.manual_review_reason = None;
+            job.llm_latency_ms = None;
+            job.completed_at = None;
             job.updated_at = finished_at;
             job.locked_by = None;
         }
@@ -386,35 +389,16 @@ async fn process_locked_job(
     let shadow_selected = mark_shadow_canary(&mut locked, shadow_config);
     let (processed, _status) = apply_outcome(locked.clone(), handle_llm_job(&locked, llm_config));
     let rows = upsert_extraction_job(pool, &processed).await?;
-    info!(rows, message_id = %processed.message_id, "persisted processed job");
+    info!(
+        rows,
+        worker_id = %worker_id,
+        message_id = %processed.message_id,
+        "persisted processed job"
+    );
 
     if shadow_selected {
         spawn_shadow_log(&processed, shadow_config);
     }
-
-    // Stubbed persistence of a match result snapshot for the processed job.
-    let result = MatchResultInsert {
-        talent_id: 1,
-        project_id: 1,
-        is_knockout: false,
-        needs_manual_review: processed.requires_manual_review,
-        score_total: Some(0.75),
-        score_breakdown: Some(json!({
-            "tanka": 0.8,
-            "skills": 0.7,
-        })),
-        engine_version: processed.extractor_version.clone(),
-        rule_version: processed.rule_version.clone(),
-        ..Default::default()
-    };
-
-    let inserted = insert_match_result(pool, &result).await?;
-    info!(
-        rows = inserted,
-        worker_id = %worker_id,
-        message_id = %processed.message_id,
-        "stub: inserted match_results snapshot"
-    );
 
     Ok(())
 }
@@ -540,6 +524,45 @@ mod tests {
         assert!(job.requires_manual_review);
         assert!(job.manual_review_reason.is_some());
         assert!(job.locked_by.is_none());
+    }
+
+    #[test]
+    fn retryable_errors_reset_completion_fields_and_requeue() {
+        let mut job = ExtractionJob::new("retry-1", "subject", Utc::now(), "hash");
+        job.status = QueueStatus::Processing;
+        job.final_method = Some(FinalMethod::LlmCompleted);
+        job.partial_fields = Some(json!({"k": "v"}));
+        job.decision_reason = Some("done".into());
+        job.manual_review_reason = Some("review".into());
+        job.llm_latency_ms = Some(1200);
+        job.completed_at = Some(Utc::now());
+        job.locked_by = Some("worker-1".into());
+
+        let retry_after = chrono::Duration::minutes(10);
+        let (updated, status) = apply_outcome(
+            job,
+            Err(JobError::Retryable {
+                message: "temporary".into(),
+                retry_after: Some(retry_after),
+            }),
+        );
+
+        assert_eq!(status, QueueStatus::Pending);
+        assert_eq!(updated.status, QueueStatus::Pending);
+        assert!(updated.final_method.is_none());
+        assert!(updated.partial_fields.is_none());
+        assert!(updated.decision_reason.is_none());
+        assert!(updated.manual_review_reason.is_none());
+        assert!(updated.llm_latency_ms.is_none());
+        assert!(updated.completed_at.is_none());
+        assert!(updated.locked_by.is_none());
+        assert!(updated.retry_count > 0);
+        assert!(updated.next_retry_at.is_some());
+        assert!(updated
+            .last_error
+            .as_ref()
+            .map(|e| e.contains("temporary"))
+            .unwrap_or(false));
     }
 
     #[test]
