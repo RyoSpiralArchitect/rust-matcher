@@ -627,5 +627,3 @@ CREATE TABLE ses.extraction_queue (
 | 2025-12-20 | Claude | SKILL_ALIASES同期、DBスキーマ関連、BP人材参考情報、ENUM値一覧を追加 |
 | 2025-12-20 | Claude | sponto-platform凍結に伴い、逆同期項目（SYNC-1: tech_kubun）を削除。rust-matcherを正とする方針に更新 |
 | 2025-12-20 | Claude | 勤務地判定で最寄駅一致/不一致を考慮し、駅レベルでのPass/SoftKo分岐を追加 |
-| 2025-12-21 | Claude | リモート希望と案件リモート形態の整合チェックを追加し、未設定時はSoftKo、フルリモート希望×フル出社案件はHardKoに降格するよう調整 |
-| 2025-12-21 | Claude | 案件リモート未設定時の挙動を精緻化し、フル出社希望は減点なし、リモート併用希望は軽微なSoftKo、フルリモート希望は従来通りのSoftKoに分岐 |
