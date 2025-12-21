@@ -207,17 +207,20 @@ impl BusinessRulesEngine {
                 score: 0.5,
                 max_score: 1.0,
                 status: "UNKNOWN",
-                details: "案件単価が不明のため中立スコア".into(),
+                details: format!(
+                    "案件単価が不明のため中立スコア (talent_min={:.1}万, project_max=None)",
+                    talent_tanka
+                ),
             };
         };
 
-        if bound_label == "下限" && talent_tanka > project_tanka {
+        if bound_label == "下限" {
             return ScoringResult {
                 score: 0.5,
                 max_score: 1.0,
                 status: "UNKNOWN",
                 details: format!(
-                    "案件下限{:.1}万のみ取得 (人材下限{:.1}万) のため要確認",
+                    "案件下限{:.1}万のみ取得 (人材下限{:.1}万, project_max=None) のため要確認",
                     project_tanka, talent_tanka
                 ),
             };
@@ -690,6 +693,19 @@ mod tests {
         let tanka = engine.score_tanka(&project, &talent);
         assert_eq!(tanka.status, "MISS");
         assert_eq!(tanka.score, 0.0);
+    }
+
+    #[test]
+    fn tanka_scoring_is_unknown_without_project_max() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.monthly_tanka_max = None;
+        project.monthly_tanka_min = Some(90);
+
+        let tanka = engine.score_tanka(&project, &full_talent());
+        assert_eq!(tanka.status, "UNKNOWN");
+        assert!(tanka.details.contains("project_max=None"));
+        assert!(tanka.score <= 0.5);
     }
 
     #[test]

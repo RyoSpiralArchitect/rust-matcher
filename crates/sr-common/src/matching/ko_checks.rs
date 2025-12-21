@@ -70,21 +70,10 @@ fn check_tanka_ko(project: &Project, talent: &Talent) -> KoDecision {
         return KoDecision::Pass;
     }
 
-    if let Some(min) = project.monthly_tanka_min {
-        if talent_min <= min {
-            KoDecision::Pass
-        } else {
-            KoDecision::SoftKo {
-                reason: format!(
-                    "tanka_unknown: 案件下限{}万に対し人材下限{}万、上限情報不足のため要確認",
-                    min, talent_min
-                ),
-            }
-        }
-    } else {
-        KoDecision::SoftKo {
-            reason: "tanka_unknown: 単価情報不足".into(),
-        }
+    KoDecision::SoftKo {
+        reason: format!(
+            "tanka_unknown: talent_min={}万, project_max=None", talent_min
+        ),
     }
 }
 
@@ -441,6 +430,22 @@ mod tests {
             .decisions
             .iter()
             .any(|(_, d)| matches!(d, KoDecision::SoftKo { reason } if reason.contains("contract_unknown"))));
+    }
+
+    #[test]
+    fn missing_project_tanka_max_requires_review() {
+        let mut project = base_project();
+        project.monthly_tanka_max = None;
+        project.monthly_tanka_min = Some(65);
+
+        let talent = base_talent();
+        let decision = check_tanka_ko(&project, &talent);
+
+        assert!(matches!(
+            decision,
+            KoDecision::SoftKo { reason }
+                if reason.contains("project_max=None") && reason.contains("talent_min=")
+        ));
     }
 
     #[test]

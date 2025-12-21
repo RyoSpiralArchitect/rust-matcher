@@ -125,19 +125,35 @@ pub fn normalize_for_matching(project: &Project, talent: &Talent) -> NormalizedL
 /// 【唯一の勤務地判定関数】
 /// KO判定・prefilter・スコアリング全てがこの関数を呼ぶこと。
 pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluation {
+    let project_remote_missing = project
+        .remote_onsite
+        .as_deref()
+        .map(str::trim)
+        .map(|s| s.is_empty())
+        .unwrap_or(true);
+    let talent_remote_pref = talent
+        .desired_remote_onsite
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
     let normalized = normalize_for_matching(project, talent);
     let remote_mode = normalized.project.remote_onsite.as_deref();
 
     // 1. フルリモート → 勤務地KOなし、スコア1.0
     if remote_mode == Some("フルリモート") {
-        return apply_remote_preference(
-            LocationEvaluation {
-                ko_decision: KoDecision::Pass,
-                score: 1.0,
-                details: "フルリモート案件 - 勤務地制約なし".into(),
-            },
-            remote_mode,
-            normalized.talent.desired_remote_onsite.as_deref(),
+        return apply_remote_unknown(
+            apply_remote_preference(
+                LocationEvaluation {
+                    ko_decision: KoDecision::Pass,
+                    score: 1.0,
+                    details: "フルリモート案件 - 勤務地制約なし".into(),
+                },
+                remote_mode,
+                normalized.talent.desired_remote_onsite.as_deref(),
+            ),
+            project_remote_missing,
+            talent_remote_pref,
         );
     }
 
@@ -147,46 +163,54 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         normalized.talent.nearest_station.as_deref(),
     ) {
         if p_station == t_station {
-            return apply_remote_preference(
+            return apply_remote_unknown(
+                apply_remote_preference(
+                    apply_conflict_notes(
+                        LocationEvaluation {
+                            ko_decision: KoDecision::Pass,
+                            score: if remote_mode == Some("リモート併用") {
+                                0.97
+                            } else {
+                                1.0
+                            },
+                            details: format!(
+                                "最寄駅一致: {} (remote_onsite={:?})",
+                                p_station, remote_mode
+                            ),
+                        },
+                        &normalized.conflicts,
+                    ),
+                    remote_mode,
+                    normalized.talent.desired_remote_onsite.as_deref(),
+                ),
+                project_remote_missing,
+                talent_remote_pref,
+            );
+        }
+
+        return apply_remote_unknown(
+            apply_remote_preference(
                 apply_conflict_notes(
                     LocationEvaluation {
-                        ko_decision: KoDecision::Pass,
-                        score: if remote_mode == Some("リモート併用") {
-                            0.97
-                        } else {
-                            1.0
+                        ko_decision: KoDecision::SoftKo {
+                            reason: format!(
+                                "station_mismatch: project={} vs talent={}",
+                                p_station, t_station
+                            ),
                         },
+                        score: 0.6,
                         details: format!(
-                            "最寄駅一致: {} (remote_onsite={:?})",
-                            p_station, remote_mode
+                            "最寄駅不一致: project={} vs talent={} (remote_onsite={:?})",
+                            p_station, t_station, remote_mode
                         ),
                     },
                     &normalized.conflicts,
                 ),
                 remote_mode,
                 normalized.talent.desired_remote_onsite.as_deref(),
-            );
-        }
-
-        return apply_remote_preference(
-            apply_conflict_notes(
-                LocationEvaluation {
-                    ko_decision: KoDecision::SoftKo {
-                        reason: format!(
-                            "station_mismatch: project={} vs talent={}",
-                            p_station, t_station
-                        ),
-                    },
-                    score: 0.6,
-                    details: format!(
-                        "最寄駅不一致: project={} vs talent={} (remote_onsite={:?})",
-                        p_station, t_station, remote_mode
-                    ),
-                },
-                &normalized.conflicts,
             ),
-            remote_mode,
-            normalized.talent.desired_remote_onsite.as_deref(),
+            project_remote_missing,
+            talent_remote_pref,
         );
     }
 
@@ -195,13 +219,17 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         normalized.project.work_todofuken.as_deref(),
         normalized.talent.residential_todofuken.as_deref(),
     ) {
-        return apply_remote_preference(
-            apply_conflict_notes(
-                evaluate_by_todofuken(p_pref, t_pref, remote_mode),
-                &normalized.conflicts,
+        return apply_remote_unknown(
+            apply_remote_preference(
+                apply_conflict_notes(
+                    evaluate_by_todofuken(p_pref, t_pref, remote_mode),
+                    &normalized.conflicts,
+                ),
+                remote_mode,
+                normalized.talent.desired_remote_onsite.as_deref(),
             ),
-            remote_mode,
-            normalized.talent.desired_remote_onsite.as_deref(),
+            project_remote_missing,
+            talent_remote_pref,
         );
     }
 
@@ -210,30 +238,38 @@ pub fn evaluate_location(project: &Project, talent: &Talent) -> LocationEvaluati
         normalized.project.work_area.as_deref(),
         normalized.talent.residential_area.as_deref(),
     ) {
-        return apply_remote_preference(
-            apply_conflict_notes(
-                evaluate_by_area(p_area, t_area, remote_mode),
-                &normalized.conflicts,
+        return apply_remote_unknown(
+            apply_remote_preference(
+                apply_conflict_notes(
+                    evaluate_by_area(p_area, t_area, remote_mode),
+                    &normalized.conflicts,
+                ),
+                remote_mode,
+                normalized.talent.desired_remote_onsite.as_deref(),
             ),
-            remote_mode,
-            normalized.talent.desired_remote_onsite.as_deref(),
+            project_remote_missing,
+            talent_remote_pref,
         );
     }
 
     // 5. どっちも取れない → SoftKo（手動レビューへ）
-    apply_remote_preference(
-        apply_conflict_notes(
-            LocationEvaluation {
-                ko_decision: KoDecision::SoftKo {
-                    reason: "location_unknown: 勤務地情報不足のため要手動確認".into(),
+    apply_remote_unknown(
+        apply_remote_preference(
+            apply_conflict_notes(
+                LocationEvaluation {
+                    ko_decision: KoDecision::SoftKo {
+                        reason: "location_unknown: 勤務地情報不足のため要手動確認".into(),
+                    },
+                    score: 0.5,
+                    details: "勤務地情報なし - 要手動確認".into(),
                 },
-                score: 0.5,
-                details: "勤務地情報なし - 要手動確認".into(),
-            },
-            &normalized.conflicts,
+                &normalized.conflicts,
+            ),
+            remote_mode,
+            normalized.talent.desired_remote_onsite.as_deref(),
         ),
-        remote_mode,
-        normalized.talent.desired_remote_onsite.as_deref(),
+        project_remote_missing,
+        talent_remote_pref,
     )
 }
 
@@ -361,6 +397,46 @@ fn apply_remote_preference(
 
     if let Some(cap) = score_cap {
         evaluation.score = evaluation.score.min(cap);
+    }
+
+    evaluation
+}
+
+fn apply_remote_unknown(
+    mut evaluation: LocationEvaluation,
+    project_remote_missing: bool,
+    talent_remote_pref: Option<&str>,
+) -> LocationEvaluation {
+    if !project_remote_missing {
+        return evaluation;
+    }
+
+    let Some(pref) = talent_remote_pref else {
+        return evaluation;
+    };
+
+    if matches!(evaluation.ko_decision, KoDecision::HardKo { .. }) {
+        return evaluation;
+    }
+
+    let reason_suffix = format!("remote_unknown: 案件リモート形態未設定 (talent_pref={})", pref);
+
+    evaluation.ko_decision = match evaluation.ko_decision {
+        KoDecision::Pass => KoDecision::SoftKo {
+            reason: reason_suffix.clone(),
+        },
+        KoDecision::SoftKo { reason } => KoDecision::SoftKo {
+            reason: format!("{reason} / {reason_suffix}"),
+        },
+        hard => hard,
+    };
+
+    evaluation.score = evaluation.score.min(0.75);
+
+    if evaluation.details.is_empty() {
+        evaluation.details = reason_suffix;
+    } else if !evaluation.details.contains("remote_unknown") {
+        evaluation.details = format!("{} / {}", evaluation.details, reason_suffix);
     }
 
     evaluation
@@ -699,10 +775,9 @@ mod tests {
 
         let result = evaluate_location(&project, &talent);
 
-        // remote_onsite=None は "リモート併用" にフォールバック、フルリモート希望との競合でSoftKo
         assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
         assert!(result.score <= 0.75);
-        assert!(result.details.contains("remote_conflict"));
+        assert!(result.details.contains("remote_unknown"));
     }
 
     #[test]
@@ -716,11 +791,9 @@ mod tests {
 
         let result = evaluate_location(&project, &talent);
 
-        // remote_onsite=None → "リモート併用" にフォールバック
-        // フル出社希望 vs リモート併用案件 → SoftKo（軽微な競合）
         assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
-        assert!(result.score >= 0.75);
-        assert!(result.details.contains("remote_conflict"));
+        assert!(result.score <= 0.8);
+        assert!(result.details.contains("remote_unknown"));
     }
 
     #[test]
@@ -734,9 +807,8 @@ mod tests {
 
         let result = evaluate_location(&project, &talent);
 
-        // remote_onsite=None → "リモート併用" にフォールバック
-        // リモート併用希望 vs リモート併用案件 → 一致、Pass
-        assert!(matches!(result.ko_decision, KoDecision::Pass));
-        assert!(result.score >= 0.95);
+        assert!(matches!(result.ko_decision, KoDecision::SoftKo { .. }));
+        assert!(result.score <= 0.75);
+        assert!(result.details.contains("remote_unknown"));
     }
 }
