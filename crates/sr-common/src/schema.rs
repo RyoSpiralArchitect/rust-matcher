@@ -106,6 +106,9 @@ CREATE TABLE ses.feedback_events (
     -- 紐付け（interaction_logs への FK を推奨）
     interaction_id BIGINT REFERENCES ses.interaction_logs(id),
     match_result_id INTEGER REFERENCES ses.match_results(id),
+    match_run_id VARCHAR(64),
+    engine_version VARCHAR(20),
+    config_version VARCHAR(20),
     project_id BIGINT NOT NULL,
     talent_id BIGINT NOT NULL,
 
@@ -114,9 +117,18 @@ CREATE TABLE ses.feedback_events (
     -- 許容値:
     --   GUI評価: thumbs_up, thumbs_down, review_ok, review_ng, review_pending
     --   営業プロセス: accepted, rejected, interview_scheduled, no_response
+    CONSTRAINT chk_feedback_type CHECK (feedback_type IN (
+        'thumbs_up', 'thumbs_down', 'review_ok', 'review_ng', 'review_pending',
+        'accepted', 'rejected', 'interview_scheduled', 'no_response'
+    )),
 
     -- NG理由（review_ng / thumbs_down / rejected 時のみ）
     ng_reason_category TEXT,  -- tanka / skill / availability / location / flow / other
+    CONSTRAINT chk_ng_reason_category CHECK (
+        ng_reason_category IS NULL OR ng_reason_category IN (
+            'tanka', 'skill', 'availability', 'location', 'flow', 'other'
+        )
+    ),
 
     -- 自由記述・タグ
     comment TEXT,
@@ -136,6 +148,7 @@ CREATE TABLE ses.feedback_events (
 -- インデックス
 CREATE INDEX idx_feedback_interaction ON ses.feedback_events(interaction_id);
 CREATE INDEX idx_feedback_match ON ses.feedback_events(match_result_id);
+CREATE INDEX idx_feedback_match_run ON ses.feedback_events(match_run_id);
 CREATE INDEX idx_feedback_project_talent ON ses.feedback_events(project_id, talent_id);
 CREATE INDEX idx_feedback_type ON ses.feedback_events(feedback_type, created_at DESC);
 CREATE INDEX idx_feedback_actor ON ses.feedback_events(actor, created_at DESC);
@@ -154,6 +167,9 @@ CREATE TABLE ses.interaction_logs (
     match_result_id INTEGER REFERENCES ses.match_results(id),
     talent_id INTEGER NOT NULL,
     project_id INTEGER NOT NULL,
+    match_run_id VARCHAR(64),       -- engine_version + config_version を含む実行単位
+    engine_version VARCHAR(20),
+    config_version VARCHAR(20),
 
     -- Two-Tower 予測
     two_tower_score FLOAT,          -- 予測スコア
@@ -173,6 +189,10 @@ CREATE TABLE ses.interaction_logs (
     -- インデックス
     CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, created_at::date)
 );
+
+CREATE INDEX idx_interaction_logs_match_run ON ses.interaction_logs(match_run_id, created_at DESC);
+CREATE INDEX idx_interaction_logs_outcome ON ses.interaction_logs(outcome, created_at DESC)
+    WHERE outcome IS NOT NULL;
 
 CREATE OR REPLACE VIEW ses.training_pairs AS
 SELECT
@@ -240,9 +260,15 @@ mod tests {
         for required in [
             "interaction_id",
             "feedback_type",
+            "match_run_id",
+            "engine_version",
+            "config_version",
             "is_revoked",
             "idx_feedback_project_talent",
+            "idx_feedback_match_run",
             "idx_feedback_not_revoked",
+            "chk_feedback_type",
+            "chk_ng_reason_category",
             "COMMENT ON TABLE ses.feedback_events",
         ] {
             assert!(FEEDBACK_EVENTS_DDL.contains(required));
@@ -254,7 +280,12 @@ mod tests {
         for required in [
             "two_tower_score",
             "business_score",
+            "match_run_id",
+            "engine_version",
+            "config_version",
             "interaction_logs_unique",
+            "idx_interaction_logs_match_run",
+            "idx_interaction_logs_outcome",
             "CREATE OR REPLACE VIEW ses.training_pairs",
             "CREATE OR REPLACE VIEW ses.training_stats",
         ] {
