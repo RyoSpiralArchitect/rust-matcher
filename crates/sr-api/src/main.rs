@@ -133,6 +133,9 @@ fn create_router(state: SharedState) -> Router {
 
     let api_routes = Router::new()
         .route("/queue/dashboard", get(queue::dashboard))
+        .route("/queue/jobs", get(queue::list_jobs))
+        .route("/queue/jobs/:id", get(queue::get_job))
+        .route("/queue/retry/:id", post(queue::retry_job))
         .route(
             "/projects/:project_id/candidates",
             get(candidates::list_candidates),

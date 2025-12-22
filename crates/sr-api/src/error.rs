@@ -2,7 +2,9 @@ use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use thiserror::Error;
 
-use sr_common::db::{CandidateFetchError, FeedbackStorageError, QueueDashboardError};
+use sr_common::db::{
+    CandidateFetchError, FeedbackStorageError, QueueDashboardError, QueueStorageError,
+};
 
 #[derive(Debug, Error)]
 pub enum ApiError {
@@ -14,6 +16,8 @@ pub enum ApiError {
     Unauthorized(String),
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
     #[error("internal server error: {0}")]
     Internal(String),
 }
@@ -29,6 +33,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Database(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
@@ -58,6 +63,16 @@ impl From<FeedbackStorageError> for ApiError {
             FeedbackStorageError::InteractionNotFound(id) => {
                 ApiError::NotFound(format!("interaction not found: {id}"))
             }
+            other => ApiError::Database(other.to_string()),
+        }
+    }
+}
+
+impl From<QueueStorageError> for ApiError {
+    fn from(value: QueueStorageError) -> Self {
+        match value {
+            QueueStorageError::NotFound(msg) => ApiError::NotFound(msg),
+            QueueStorageError::Conflict(msg) => ApiError::Conflict(msg),
             other => ApiError::Database(other.to_string()),
         }
     }
