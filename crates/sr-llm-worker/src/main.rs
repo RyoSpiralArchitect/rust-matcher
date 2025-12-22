@@ -2,12 +2,18 @@ use chrono::Utc;
 use clap::Parser;
 use dotenvy::dotenv;
 use rand::Rng;
+use reqwest::{blocking::Client, StatusCode};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sr_common::db::{create_pool_from_url, lock_next_pending_job, upsert_extraction_job};
+use sr_common::db::{
+    create_pool_from_url, fetch_email_body, lock_next_pending_job, upsert_extraction_job,
+};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
     RecommendedMethod,
 };
+use std::thread::sleep as std_sleep;
+use std::time::Duration as StdDuration;
 use tokio::time::{sleep, Duration};
 use tracing::info;
 
@@ -15,6 +21,40 @@ use tracing::info;
 enum CompareMode {
     None,
     Shadow,
+}
+
+fn provider_defaults(provider: &str) -> (String, String) {
+    match provider.to_ascii_lowercase().as_str() {
+        "openai" => (
+            "gpt-4o-mini".into(),
+            "https://api.openai.com/v1/chat/completions".into(),
+        ),
+        "anthropic" => (
+            "claude-3-5-sonnet-20240620".into(),
+            "https://api.anthropic.com/v1/messages".into(),
+        ),
+        "google" | "google-genai" => (
+            "gemini-1.5-flash".into(),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+                .into(),
+        ),
+        "mistral" => (
+            "mistral-large-latest".into(),
+            "https://api.mistral.ai/v1/chat/completions".into(),
+        ),
+        "xai" => (
+            "grok-2-latest".into(),
+            "https://api.x.ai/v1/chat/completions".into(),
+        ),
+        "huggingface" | "hf" => (
+            "meta-llama/Meta-Llama-3-70B-Instruct".into(),
+            "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-70B-Instruct".into(),
+        ),
+        _ => (
+            "deepseek-chat".into(),
+            "http://localhost:8000/api/v1/extract".into(),
+        ),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +72,8 @@ struct LlmRuntimeConfig {
     shadow_provider: String,
     shadow_sample_percent: u8,
     shadow_api_key: String,
+    shadow_endpoint: Option<String>,
+    shadow_model: Option<String>,
 }
 
 impl Default for LlmRuntimeConfig {
@@ -50,46 +92,14 @@ impl Default for LlmRuntimeConfig {
             shadow_provider: "openai".into(),
             shadow_sample_percent: 10,
             shadow_api_key: String::new(),
+            shadow_endpoint: None,
+            shadow_model: None,
         }
     }
 }
 
 impl LlmRuntimeConfig {
     fn from_env() -> Self {
-        fn provider_defaults(provider: &str) -> (String, String) {
-            match provider.to_ascii_lowercase().as_str() {
-                "openai" => (
-                    "gpt-4o-mini".into(),
-                    "https://api.openai.com/v1/chat/completions".into(),
-                ),
-                "anthropic" => (
-                    "claude-3-5-sonnet-20240620".into(),
-                    "https://api.anthropic.com/v1/messages".into(),
-                ),
-                "google" | "google-genai" => (
-                    "gemini-1.5-flash".into(),
-                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-                        .into(),
-                ),
-                "mistral" => (
-                    "mistral-large-latest".into(),
-                    "https://api.mistral.ai/v1/chat/completions".into(),
-                ),
-                "xai" => (
-                    "grok-2-latest".into(),
-                    "https://api.x.ai/v1/chat/completions".into(),
-                ),
-                "huggingface" | "hf" => (
-                    "meta-llama/Meta-Llama-3-70B-Instruct".into(),
-                    "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-70B-Instruct".into(),
-                ),
-                _ => (
-                    "deepseek-chat".into(),
-                    "http://localhost:8000/api/v1/extract".into(),
-                ),
-            }
-        }
-
         fn provider_api_key(provider: &str) -> Option<String> {
             let lower = provider.to_ascii_lowercase();
             match lower.as_str() {
@@ -178,6 +188,8 @@ impl LlmRuntimeConfig {
             shadow_provider,
             shadow_sample_percent: parse_sample_percent(),
             shadow_api_key,
+            shadow_endpoint: std::env::var("LLM_SHADOW_ENDPOINT").ok(),
+            shadow_model: std::env::var("LLM_SHADOW_MODEL").ok(),
         }
     }
 }
@@ -188,6 +200,35 @@ struct ShadowCompareConfig {
     sample_percent: u8,
     shadow_provider: String,
     primary_provider: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LlmRequest {
+    message_id: String,
+    source_text: String,
+    extractor_hints: serde_json::Value,
+    model: String,
+    timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct LlmResponse {
+    #[serde(default)]
+    message_id: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    extracted: serde_json::Value,
+    #[serde(default)]
+    missing_fields: Vec<String>,
+    #[serde(default)]
+    requires_manual_review: bool,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    latency_ms: Option<i32>,
+    #[serde(default)]
+    model_used: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -219,7 +260,7 @@ struct Cli {
 
 pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
     let mut queue = ExtractionQueue::default();
-    let llm_config = LlmRuntimeConfig::default();
+    let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
 
     let mut job = ExtractionJob::new(
@@ -232,11 +273,19 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
 
     queue.enqueue(job);
 
-    queue.process_next_with_worker(worker_id, |job| handle_llm_job(job, &llm_config));
+    let sample_body = "sample body";
+    queue.process_next_with_worker(worker_id, |job| {
+        handle_llm_job(job, sample_body, &llm_config)
+    });
 
     if let Some(processed) = queue.jobs.first() {
         if processed.canary_target {
-            spawn_shadow_log(processed, &shadow_config);
+            let _ = spawn_shadow_compare(
+                processed.clone(),
+                sample_body.to_string(),
+                &llm_config,
+                &shadow_config,
+            );
         }
     }
 
@@ -264,64 +313,256 @@ fn should_sample_shadow(sample_percent: u8) -> bool {
     rand::thread_rng().gen_ratio(u32::from(sample_percent), 100)
 }
 
+fn build_extractor_hints(partial_fields: &Option<serde_json::Value>) -> serde_json::Value {
+    let mut hints = serde_json::Map::new();
+    let Some(obj) = partial_fields.as_ref().and_then(|v| v.as_object()) else {
+        return serde_json::Value::Object(hints);
+    };
+
+    if let Some(name) = obj.get("project_name").and_then(|v| v.as_str()) {
+        hints.insert("project_name".to_string(), json!(name));
+    }
+    if let Some(min) = obj.get("monthly_tanka_min").and_then(|v| v.as_i64()) {
+        hints.insert("monthly_tanka_min".to_string(), json!(min));
+    }
+    if let Some(max) = obj.get("monthly_tanka_max").and_then(|v| v.as_i64()) {
+        hints.insert("monthly_tanka_max".to_string(), json!(max));
+    }
+    if let Some(skills) = obj.get("required_skills_keywords").and_then(|v| v.as_array()) {
+        hints.insert("required_skills_keywords".to_string(), json!(skills));
+    }
+    if let Some(remote) = obj.get("remote_onsite").and_then(|v| v.as_str()) {
+        hints.insert("remote_onsite".to_string(), json!(remote));
+    }
+    if let Some(todofuken) = obj.get("work_todofuken").and_then(|v| v.as_str()) {
+        hints.insert("work_todofuken".to_string(), json!(todofuken));
+    }
+    if let Some(years) = obj.get("min_experience_years").and_then(|v| v.as_f64()) {
+        hints.insert("min_experience_years".to_string(), json!(years));
+    }
+    if let Some(reason) = obj.get("decision_reason").and_then(|v| v.as_str()) {
+        hints.insert("_rust_decision_reason".to_string(), json!(reason));
+    }
+    if let Some(hash) = obj.get("subject_hash").and_then(|v| v.as_str()) {
+        hints.insert("_subject_hash".to_string(), json!(hash));
+    }
+
+    serde_json::Value::Object(hints)
+}
+
+fn build_llm_request(job: &ExtractionJob, body_text: &str, config: &LlmRuntimeConfig) -> LlmRequest {
+    LlmRequest {
+        message_id: job.message_id.clone(),
+        source_text: body_text.to_string(),
+        extractor_hints: build_extractor_hints(&job.partial_fields),
+        model: config.model.clone(),
+        timeout_seconds: config.timeout_secs,
+    }
+}
+
+fn is_retryable_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+            | StatusCode::INTERNAL_SERVER_ERROR
+    )
+}
+
+fn perform_llm_request(
+    config: &LlmRuntimeConfig,
+    endpoint: &str,
+    api_key: &str,
+    request: &LlmRequest,
+) -> Result<LlmResponse, JobError> {
+    let client = Client::builder()
+        .timeout(StdDuration::from_secs(config.timeout_secs))
+        .build()
+        .map_err(|err| JobError::Retryable {
+            message: format!("failed to build http client: {err}"),
+            retry_after: None,
+        })?;
+
+    for attempt in 0..=config.max_retries {
+        let response = client
+            .post(endpoint)
+            .bearer_auth(api_key)
+            .json(request)
+            .send();
+
+        match response {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return resp.json::<LlmResponse>().map_err(|err| JobError::Permanent {
+                        message: format!("invalid llm response body: {err}"),
+                    });
+                }
+
+                if is_retryable_status(status) && attempt < config.max_retries {
+                    std_sleep(StdDuration::from_secs(config.retry_backoff_secs));
+                    continue;
+                }
+
+                let body = resp.text().unwrap_or_default();
+                let message = format!("llm call failed with status {status}: {body}");
+                if is_retryable_status(status) {
+                    return Err(JobError::Retryable {
+                        message,
+                        retry_after: Some(chrono::Duration::seconds(
+                            config.retry_backoff_secs as i64,
+                        )),
+                    });
+                }
+
+                return Err(JobError::Permanent { message });
+            }
+            Err(err) => {
+                if attempt < config.max_retries {
+                    std_sleep(StdDuration::from_secs(config.retry_backoff_secs));
+                    continue;
+                }
+
+                return Err(JobError::Retryable {
+                    message: format!("llm request error: {err}"),
+                    retry_after: Some(chrono::Duration::seconds(
+                        config.retry_backoff_secs as i64,
+                    )),
+                });
+            }
+        }
+    }
+
+    Err(JobError::Retryable {
+        message: "llm retries exhausted".into(),
+        retry_after: Some(chrono::Duration::seconds(
+            config.retry_backoff_secs as i64,
+        )),
+    })
+}
+
 fn mark_shadow_canary(job: &mut ExtractionJob, config: &ShadowCompareConfig) -> bool {
     if config.mode == CompareMode::Shadow && should_sample_shadow(config.sample_percent) {
         job.canary_target = true;
         return true;
     }
 
+    job.canary_target = false;
     false
 }
 
-fn spawn_shadow_log(job: &ExtractionJob, config: &ShadowCompareConfig) {
-    if config.mode != CompareMode::Shadow || !job.canary_target {
-        return;
+fn shadow_endpoint_and_model(config: &LlmRuntimeConfig) -> (String, String) {
+    if let (Some(endpoint), Some(model)) = (&config.shadow_endpoint, &config.shadow_model) {
+        return (endpoint.clone(), model.clone());
     }
 
-    let message_id = job.message_id.clone();
-    let shadow_provider = config.shadow_provider.clone();
-    let primary_provider = config.primary_provider.clone();
-
-    tokio::spawn(async move {
-        info!(
-            %message_id,
-            shadow_provider,
-            primary_provider,
-            "shadow comparison sampled; logging for offline diff"
-        );
-    });
+    let (default_model, default_endpoint) = provider_defaults(&config.shadow_provider);
+    (
+        config
+            .shadow_endpoint
+            .clone()
+            .unwrap_or(default_endpoint),
+        config.shadow_model.clone().unwrap_or(default_model),
+    )
 }
 
-fn handle_llm_job(job: &ExtractionJob, config: &LlmRuntimeConfig) -> Result<JobOutcome, JobError> {
-    if job.recommended_method == Some(RecommendedMethod::LlmRecommended) {
-        if !config.enabled {
-            return Err(JobError::Permanent {
-                message: "LLM_DISABLED: LLM_ENABLED=0".into(),
-            });
-        }
-
-        let partial = json!({
-            "message_id": job.message_id,
-            "llm_provider": config.provider,
-            "llm_model": config.model,
-            "llm_endpoint": config.endpoint,
-        });
-        Ok(JobOutcome {
-            final_method: FinalMethod::LlmCompleted,
-            partial_fields: Some(partial),
-            decision_reason: Some(format!(
-                "processed by sr-llm-worker via {}",
-                config.provider
-            )),
-            llm_latency_ms: Some(1500),
-            requires_manual_review: false,
-            manual_review_reason: None,
-        })
-    } else {
-        Err(JobError::Permanent {
-            message: "non-llm job routed to sr-llm-worker".into(),
-        })
+fn spawn_shadow_compare(
+    job: ExtractionJob,
+    body_text: String,
+    config: &LlmRuntimeConfig,
+    shadow: &ShadowCompareConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if shadow.mode != CompareMode::Shadow || !job.canary_target {
+        return None;
     }
+
+    let (shadow_endpoint, shadow_model) = shadow_endpoint_and_model(config);
+    let shadow_api_key = if config.shadow_api_key.is_empty() {
+        config.api_key.clone()
+    } else {
+        config.shadow_api_key.clone()
+    };
+    let shadow_provider = shadow.shadow_provider.clone();
+    let primary_provider = shadow.primary_provider.clone();
+    let mut shadow_config = config.clone();
+    shadow_config.model = shadow_model;
+
+    Some(tokio::task::spawn_blocking(move || {
+        let request = build_llm_request(&job, &body_text, &shadow_config);
+        match perform_llm_request(&shadow_config, &shadow_endpoint, &shadow_api_key, &request) {
+            Ok(shadow_resp) => {
+                let diff = if shadow_resp.extracted
+                    == job.partial_fields.clone().unwrap_or_default()
+                {
+                    "match"
+                } else {
+                    "diff"
+                };
+                info!(
+                    message_id = %job.message_id,
+                    %shadow_provider,
+                    %primary_provider,
+                    diff,
+                    shadow_model_used = shadow_resp.model_used,
+                    shadow_latency_ms = shadow_resp.latency_ms,
+                    "shadow comparison completed",
+                );
+            }
+            Err(err) => {
+                let err_message = match err {
+                    JobError::Retryable { ref message, .. } => message.clone(),
+                    JobError::Permanent { ref message } => message.clone(),
+                };
+                info!(
+                    message_id = %job.message_id,
+                    %shadow_provider,
+                    %primary_provider,
+                    error = %err_message,
+                    "shadow comparison failed",
+                );
+            }
+        }
+    }))
+}
+
+fn handle_llm_job(
+    job: &ExtractionJob,
+    body_text: &str,
+    config: &LlmRuntimeConfig,
+) -> Result<JobOutcome, JobError> {
+    if job.recommended_method != Some(RecommendedMethod::LlmRecommended) {
+        return Err(JobError::Permanent {
+            message: "non-llm job routed to sr-llm-worker".into(),
+        });
+    }
+
+    if !config.enabled {
+        return Err(JobError::Permanent {
+            message: "LLM_DISABLED: LLM_ENABLED=0".into(),
+        });
+    }
+
+    let request = build_llm_request(job, body_text, config);
+    let started = Utc::now();
+    let response = perform_llm_request(config, &config.endpoint, &config.api_key, &request)?;
+    let latency = response
+        .latency_ms
+        .or_else(|| (Utc::now() - started).num_milliseconds().try_into().ok());
+    let decision_reason = response
+        .reason
+        .clone()
+        .or_else(|| Some(format!("processed by {}", config.provider)));
+
+    Ok(JobOutcome {
+        final_method: FinalMethod::LlmCompleted,
+        partial_fields: Some(response.extracted.clone()),
+        decision_reason,
+        llm_latency_ms: latency,
+        requires_manual_review: response.requires_manual_review,
+        manual_review_reason: response.reason,
+    })
 }
 
 fn apply_outcome(
@@ -387,17 +628,43 @@ async fn process_locked_job(
     shadow_config: &ShadowCompareConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let shadow_selected = mark_shadow_canary(&mut locked, shadow_config);
-    let (processed, _status) = apply_outcome(locked.clone(), handle_llm_job(&locked, llm_config));
+    let body_text = match fetch_email_body(pool, &locked.message_id).await {
+        Ok(Some(body)) => body,
+        Ok(None) => {
+            let (processed, _) = apply_outcome(
+                locked.clone(),
+                Err(JobError::Permanent {
+                    message: "missing source_text in anken_emails".into(),
+                }),
+            );
+            upsert_extraction_job(pool, &processed).await?;
+            return Ok(());
+        }
+        Err(err) => {
+            let (processed, _) = apply_outcome(
+                locked.clone(),
+                Err(JobError::Retryable {
+                    message: format!("failed to fetch email body: {err}"),
+                    retry_after: Some(chrono::Duration::minutes(5)),
+                }),
+            );
+            upsert_extraction_job(pool, &processed).await?;
+            return Ok(());
+        }
+    };
+
+    let (processed, _status) =
+        apply_outcome(locked.clone(), handle_llm_job(&locked, &body_text, llm_config));
     let rows = upsert_extraction_job(pool, &processed).await?;
     info!(
         rows,
         worker_id = %worker_id,
         message_id = %processed.message_id,
-        "persisted processed job"
+        "persisted processed job",
     );
 
     if shadow_selected {
-        spawn_shadow_log(&processed, shadow_config);
+        let _ = spawn_shadow_compare(processed.clone(), body_text, llm_config, shadow_config);
     }
 
     Ok(())
@@ -461,6 +728,35 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::prelude::*;
+
+    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        use std::sync::Mutex;
+        static ENV_GUARD: Mutex<()> = Mutex::new(());
+        let _guard = ENV_GUARD.lock().unwrap();
+
+        let prev: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(key, value)| {
+                let previous = std::env::var(key).ok();
+                match value {
+                    Some(v) => unsafe { std::env::set_var(key, v) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+                (key.to_string(), previous)
+            })
+            .collect();
+
+        f();
+
+        for (key, previous) in prev {
+            if let Some(v) = previous {
+                unsafe { std::env::set_var(&key, v) };
+            } else {
+                unsafe { std::env::remove_var(&key) };
+            }
+        }
+    }
 
     fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
         use std::sync::Mutex;
@@ -492,18 +788,34 @@ mod tests {
 
     #[test]
     fn llm_job_is_marked_completed() {
-        let queue = run_sample_flow();
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(POST).path("/api/v1/extract");
+            then.status(200).json_body(json!({
+                "extracted": {"project_name": "from-llm"},
+                "latency_ms": 222,
+                "reason": "llm ok",
+            }));
+        });
 
-        assert_eq!(queue.jobs.len(), 1);
-        let job = &queue.jobs[0];
-        assert_eq!(job.final_method, Some(FinalMethod::LlmCompleted));
-        assert_eq!(job.status.as_str(), "completed");
-        assert!(!job.requires_manual_review);
-        assert!(
-            job.decision_reason
-                .as_ref()
-                .map(|r| r.contains("sr-llm-worker"))
-                .unwrap_or(false)
+        with_env(
+            &[("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))), ("LLM_API_KEY", Some("token"))],
+            || {
+                let queue = run_sample_flow();
+
+                assert_eq!(queue.jobs.len(), 1);
+                let job = &queue.jobs[0];
+                assert_eq!(job.final_method, Some(FinalMethod::LlmCompleted));
+                assert_eq!(job.status.as_str(), "completed");
+                assert!(!job.requires_manual_review);
+                assert_eq!(job.partial_fields.as_ref().unwrap()["project_name"], json!("from-llm"));
+                assert_eq!(job.llm_latency_ms, Some(222));
+                assert!(job
+                    .decision_reason
+                    .as_ref()
+                    .map(|r| r.contains("llm ok"))
+                    .unwrap_or(false));
+            },
         );
     }
 
@@ -516,7 +828,9 @@ mod tests {
 
         queue.enqueue(job);
 
-        queue.process_next_with_worker("sr-llm-worker", |j| handle_llm_job(j, &llm_config));
+        queue.process_next_with_worker("sr-llm-worker", |j| {
+            handle_llm_job(j, "body", &llm_config)
+        });
 
         let job = &queue.jobs[0];
         assert_eq!(job.status, QueueStatus::Completed);
@@ -745,7 +1059,9 @@ mod tests {
             job.recommended_method = Some(RecommendedMethod::LlmRecommended);
 
             queue.enqueue(job);
-            queue.process_next_with_worker("sr-llm-worker", |j| handle_llm_job(j, &llm_config));
+            queue.process_next_with_worker("sr-llm-worker", |j| {
+                handle_llm_job(j, "body", &llm_config)
+            });
 
             let job = &queue.jobs[0];
             assert_eq!(job.status, QueueStatus::Completed);
@@ -757,5 +1073,42 @@ mod tests {
                 .map(|r| r.contains("LLM_DISABLED"))
                 .unwrap_or(false));
         });
+    }
+
+    #[tokio::test]
+    async fn shadow_compare_executes_request() {
+        let server = MockServer::start_async().await;
+        let shadow_hit = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/shadow");
+                then.status(200).json_body(json!({
+                    "extracted": {"project_name": "shadow"},
+                    "latency_ms": 50,
+                    "model_used": "shadow-model",
+                }));
+            })
+            .await;
+
+        let mut job = ExtractionJob::new("shadow", "subject", Utc::now(), "hash");
+        job.recommended_method = Some(RecommendedMethod::LlmRecommended);
+        job.canary_target = true;
+
+        let mut config = LlmRuntimeConfig::from_env();
+        config.shadow_endpoint = Some(server.url("/shadow"));
+        config.shadow_model = Some("shadow-model".into());
+        config.shadow_api_key = "shadow-key".into();
+
+        let shadow_cfg = ShadowCompareConfig {
+            mode: CompareMode::Shadow,
+            sample_percent: 100,
+            shadow_provider: "shadow-provider".into(),
+            primary_provider: "primary-provider".into(),
+        };
+
+        let handle = spawn_shadow_compare(job, "body".into(), &config, &shadow_cfg)
+            .expect("shadow compare spawned");
+        handle.await.expect("shadow join ok");
+
+        shadow_hit.assert_async().await;
     }
 }
