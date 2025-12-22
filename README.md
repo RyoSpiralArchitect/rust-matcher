@@ -104,15 +104,14 @@ Phase 2 完了 ─────────────────────�
 - **営業/運用担当**: feedback 入力の運用ルール（誰がいつ thumbs_up / thumbs_down を押すか、コメント必須か）を定義し、運用手順書を整備。CORS 設定や API キー/JWT 配布の窓口を決める。
 - **LLM/ML 担当**: training_pairs ビューを元にした学習・影比較のサンプルノートブックを用意し、Phase 4 に備えて「精度がどこで効いてくるか」を測定できるようにする。
 
-#### すぐ試せるデモ手順（非エンジニアでも追える最短ルート）
-
+#### すぐ試せるデモ手順
 1. `.env.example` をコピーして `SR_API_KEY` と `DATABASE_URL` だけを埋め、`cargo run -p sr-api` を実行（PORT=3001 で起動）。
 2. 別ターミナルで `/health` を叩く: `curl http://localhost:3001/health` → `{ "status": "ok" }` が返ればサーバー起動 OK。
 3. API キー付きで dashboard を叩く: `curl -H "X-API-Key: $SR_API_KEY" http://localhost:3001/api/queue/dashboard` → JSON が返るか確認。
 4. GUI 側は `.env.local` に `NEXT_PUBLIC_API_ORIGIN=http://localhost:3001` と API キー or JWT 設定を入れ、候補一覧表示 → フィードバック送信までひととおりクリックしてみる。
 5. ログを追う: サーバー側ログに X-Request-Id が出るので、障害調査や遅延時にその ID を伝えるとバックエンド側で追跡できる。
 
-#### よくある質問（ステークホルダー用の即答集）
+#### FAQ
 
 - **Q. API キーと JWT、どちらを本番で使う？** → MVP では API キー。GUI と結線するタイミングで JWT へ切り替え。AUTH_MODE で即トグルできる。
 - **Q. LLM は止めても大丈夫？** → `LLM_ENABLED=0` にすれば KO/スコア算出のみで動き、既存ロジックだけで運用可。影比較も ENV だけで ON/OFF 切り替え。
