@@ -20,6 +20,32 @@ pub struct ListJobsParams {
     pub pagination: Pagination,
 }
 
+fn validate_filter(filter: &QueueJobFilter) -> Result<(), ApiError> {
+    if let Some(status) = &filter.status {
+        match status.as_str() {
+            "pending" | "processing" | "completed" => {}
+            other => {
+                return Err(ApiError::BadRequest(format!(
+                    "unsupported status filter: {other}"
+                )))
+            }
+        }
+    }
+
+    if let Some(final_method) = &filter.final_method {
+        match final_method.as_str() {
+            "rust_completed" | "llm_completed" | "manual_review" => {}
+            other => {
+                return Err(ApiError::BadRequest(format!(
+                    "unsupported final_method filter: {other}"
+                )))
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn dashboard(
     State(state): State<SharedState>,
     _auth: AuthUser,
@@ -34,6 +60,8 @@ pub async fn list_jobs(
     Query(params): Query<ListJobsParams>,
     _auth: AuthUser,
 ) -> Result<Json<QueueJobListResponse>, ApiError> {
+    validate_filter(&params.filter)?;
+
     let pagination = params.pagination;
     if pagination.limit <= 0 || pagination.limit > 200 {
         return Err(ApiError::BadRequest(
@@ -75,4 +103,42 @@ pub async fn retry_job(
 fn assert_query_bounds() {
     fn assert_send_sync<T: Send + Sync + serde::de::DeserializeOwned>() {}
     assert_send_sync::<ListJobsParams>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_filter_rejects_invalid_status() {
+        let filter = QueueJobFilter {
+            status: Some("unknown".into()),
+            ..Default::default()
+        };
+
+        let err = validate_filter(&filter).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn validate_filter_rejects_invalid_final_method() {
+        let filter = QueueJobFilter {
+            final_method: Some("other".into()),
+            ..Default::default()
+        };
+
+        let err = validate_filter(&filter).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn validate_filter_allows_supported_values() {
+        let filter = QueueJobFilter {
+            status: Some("pending".into()),
+            final_method: Some("rust_completed".into()),
+            ..Default::default()
+        };
+
+        assert!(validate_filter(&filter).is_ok());
+    }
 }
