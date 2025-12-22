@@ -326,7 +326,8 @@ export LLM_API_KEY=$GOOGLE_API_KEY
 - 現状は「DB に既にメールが入っている前提」のまま進め、n8n 等のワークフローから `anken_emails` を投入する運用がデフォルト。
 - **Google Cloud 直結ルート（DWD + Gmail API）が追加済み**: `sr-gmail-ingestor` がサービスアカウント経由で Gmail をポーリングし、`ses.anken_emails` / `ses.jinzai_emails` に直接投入する。Pub/Sub Watch は後続拡張予定だが、まずは認証がシンプルなポーリングのみで運用開始できる。
   - 必須 env: `DATABASE_URL`、`GWS_SERVICE_ACCOUNT_KEY`（サービスアカウント JSON）、`GWS_IMPERSONATE_USER`（DWD の対象ユーザー）
-  - 任意 env: `GWS_POLL_INTERVAL_SECONDS`（デフォルト 60 秒）、`GWS_ANKEN_QUERY` / `GWS_JINZAI_QUERY`（Gmail の検索クエリ、ラベルや添付有無で切り分け）
+  - 想定トラフィック: 1 日 1000 通を超えるスパイクにも耐える前提。`max_results=500` で 1 ページ 500 通まで取得し、`GWS_MAX_PAGES_PER_POLL`（デフォルト 20 ページ = 最大 ~10,000 通）で 1 回のポーリング上限を緩めた。負荷を抑えたい環境では env で下げられる。
+  - 任意 env: `GWS_POLL_INTERVAL_SECONDS`（デフォルト 60 秒）、`GWS_MAX_PAGES_PER_POLL`（デフォルト 20）、`GWS_ANKEN_QUERY` / `GWS_JINZAI_QUERY`（Gmail の検索クエリ、ラベルや添付有無で切り分け）
   - 起動例: `cargo run -p sr-gmail-ingestor -- --db-url $DATABASE_URL --sa-key-path /etc/sr/gcp-sa.json --impersonate-user ingest@example.com`
 - 将来は `sr-extractor` から Gmail API を直接叩いて `anken_emails` を埋める構成にも切り替え可能にする方針。環境変数で n8n ルート／Gmail 直結のどちらも選べる形を維持する。
 

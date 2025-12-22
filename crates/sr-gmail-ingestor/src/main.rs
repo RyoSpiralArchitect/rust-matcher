@@ -38,6 +38,14 @@ struct Cli {
     #[arg(long, env = "GWS_POLL_INTERVAL_SECONDS", default_value_t = 60)]
     poll_interval: u64,
 
+    /// Maximum Gmail pages to fetch per poll (max_results per page is 500)
+    ///
+    /// Default is generous (20 pages = up to ~10k messages) so bursts above
+    /// 1000/day are still processed without manual tuning. Lower via env if a
+    /// smaller batch window is desired.
+    #[arg(long, env = "GWS_MAX_PAGES_PER_POLL", default_value_t = 20)]
+    max_pages_per_poll: u32,
+
     /// Gmail search query for project/案件 emails (no attachments expected)
     #[arg(
         long,
@@ -101,6 +109,7 @@ struct GmailIngestor {
     pool: PgPool,
     anken_query: String,
     jinzai_query: String,
+    max_pages_per_poll: u32,
 }
 
 impl GmailIngestor {
@@ -128,6 +137,7 @@ impl GmailIngestor {
             pool,
             anken_query: cli.anken_query.clone(),
             jinzai_query: cli.jinzai_query.clone(),
+            max_pages_per_poll: cli.max_pages_per_poll,
         })
     }
 
@@ -156,6 +166,7 @@ impl GmailIngestor {
         let user_id = "me";
 
         let mut page_token: Option<String> = None;
+        let mut page_count: u32 = 0;
 
         loop {
             let mut list_call = self
@@ -163,7 +174,7 @@ impl GmailIngestor {
                 .users()
                 .messages_list(user_id)
                 .q(query)
-                .max_results(100)
+                .max_results(500)
                 .add_scope(Scope::Readonly);
 
             if let Some(token) = page_token.as_deref() {
@@ -171,12 +182,11 @@ impl GmailIngestor {
             }
 
             let (_, list_response) = list_call.doit().await?;
+            page_count += 1;
 
             let messages = list_response.messages.unwrap_or_default();
-            let message_ids: Vec<String> = messages
-                .iter()
-                .filter_map(|msg| msg.id.clone())
-                .collect();
+            let message_ids: Vec<String> =
+                messages.iter().filter_map(|msg| msg.id.clone()).collect();
 
             let already_seen = self.fetch_existing_ids(&message_ids).await?;
 
@@ -212,6 +222,16 @@ impl GmailIngestor {
             }
 
             page_token = list_response.next_page_token;
+
+            if page_count >= self.max_pages_per_poll {
+                info!(
+                    page_count,
+                    max_pages = self.max_pages_per_poll,
+                    email_type = ?email_type,
+                    "reached per-poll page limit; will continue next cycle"
+                );
+                break;
+            }
 
             if page_token.is_none() {
                 break;
