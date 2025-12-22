@@ -4,7 +4,7 @@ use clap::Parser;
 use dotenvy::dotenv;
 use google_gmail1::{
     Gmail,
-    api::MessagePart,
+    api::{MessagePart, Scope},
     hyper,
     hyper::client::HttpConnector,
     hyper_rustls,
@@ -154,45 +154,61 @@ impl GmailIngestor {
         let mut processed = 0u32;
         let user_id = "me";
 
-        let (_, list_response) = self
-            .gmail
-            .users()
-            .messages_list(user_id)
-            .q(query)
-            .max_results(100)
-            .doit()
-            .await?;
+        let mut page_token: Option<String> = None;
 
-        let messages = list_response.messages.unwrap_or_default();
-
-        for msg_ref in messages {
-            let msg_id = match msg_ref.id.clone() {
-                Some(id) => id,
-                None => continue,
-            };
-
-            if self.is_already_processed(&msg_id).await? {
-                debug!(message_id = %msg_id, "already ingested, skipping");
-                continue;
-            }
-
-            let (_, message) = self
+        loop {
+            let mut list_call = self
                 .gmail
                 .users()
-                .messages_get(user_id, &msg_id)
-                .format("full")
-                .doit()
-                .await?;
+                .messages_list(user_id)
+                .q(query)
+                .max_results(100)
+                .add_scope(Scope::Readonly);
 
-            let mut email = self.parse_message(message)?;
-            email.message_id = msg_id.clone();
-
-            match email_type {
-                EmailType::Anken => self.store_anken_email(&email).await?,
-                EmailType::Jinzai => self.store_jinzai_email(&email).await?,
+            if let Some(token) = page_token.as_deref() {
+                list_call = list_call.page_token(token);
             }
 
-            processed += 1;
+            let (_, list_response) = list_call.doit().await?;
+
+            let messages = list_response.messages.unwrap_or_default();
+
+            for msg_ref in messages {
+                let msg_id = match msg_ref.id.clone() {
+                    Some(id) => id,
+                    None => continue,
+                };
+
+                if self.is_already_processed(&msg_id).await? {
+                    debug!(message_id = %msg_id, "already ingested, skipping");
+                    continue;
+                }
+
+                let (_, message) = self
+                    .gmail
+                    .users()
+                    .messages_get(user_id, &msg_id)
+                    .format("full")
+                    .add_scope(Scope::Readonly)
+                    .doit()
+                    .await?;
+
+                let mut email = self.parse_message(message)?;
+                email.message_id = msg_id.clone();
+
+                match email_type {
+                    EmailType::Anken => self.store_anken_email(&email).await?,
+                    EmailType::Jinzai => self.store_jinzai_email(&email).await?,
+                }
+
+                processed += 1;
+            }
+
+            page_token = list_response.next_page_token;
+
+            if page_token.is_none() {
+                break;
+            }
         }
 
         Ok(processed)
