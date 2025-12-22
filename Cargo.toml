@@ -4,6 +4,7 @@ members = [
     "crates/sr-extractor",
     "crates/sr-llm-worker",
     "crates/sr-queue-recovery",
+    "crates/sr-api",
 ]
 resolver = "2"
 
@@ -31,3 +32,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 rand = "0.8"
 reqwest = { version = "0.11", features = ["blocking", "json", "rustls-tls"] }
+axum = "0.7"
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+jsonwebtoken = "9"

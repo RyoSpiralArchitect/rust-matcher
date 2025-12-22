@@ -142,6 +142,8 @@ CREATE TABLE ses.feedback_events (
     actor TEXT NOT NULL,   -- user_id / "sales" / "ops" / "system"
     source TEXT NOT NULL,  -- "gui" / "crm" / "api" / "import"
 
+    UNIQUE(interaction_id, feedback_type, actor),
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -269,6 +271,7 @@ mod tests {
             "idx_feedback_not_revoked",
             "chk_feedback_type",
             "chk_ng_reason_category",
+            "UNIQUE(interaction_id, feedback_type, actor)",
             "COMMENT ON TABLE ses.feedback_events",
         ] {
             assert!(FEEDBACK_EVENTS_DDL.contains(required));
