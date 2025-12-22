@@ -37,18 +37,39 @@ fn parse_ko_reasons(value: Option<Value>) -> Vec<String> {
     }
 }
 
-fn parse_ko_decisions(value: Option<Value>) -> HashMap<String, KoDecisionDto> {
-    match value {
-        Some(Value::Object(map)) => map
-            .into_iter()
-            .filter_map(|(name, details)| {
-                serde_json::from_value::<KoDecisionDto>(details)
-                    .ok()
-                    .map(|dto| (name, dto))
-            })
-            .collect(),
-        _ => HashMap::new(),
+fn derive_ko_decisions(is_knockout: bool, ko_reasons: &[String]) -> HashMap<String, KoDecisionDto> {
+    let mut map = HashMap::new();
+
+    if is_knockout {
+        let reason = ko_reasons
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "knockout".to_string());
+
+        map.insert(
+            "knockout".to_string(),
+            KoDecisionDto {
+                ko_type: "hard_ko".into(),
+                reason: Some(reason),
+                details: None,
+            },
+        );
+
+        return map;
     }
+
+    for (idx, reason) in ko_reasons.iter().enumerate() {
+        map.insert(
+            format!("soft_ko_{idx}"),
+            KoDecisionDto {
+                ko_type: "soft_ko".into(),
+                reason: Some(reason.clone()),
+                details: None,
+            },
+        );
+    }
+
+    map
 }
 
 #[instrument(skip(pool, config))]
@@ -92,6 +113,9 @@ pub async fn fetch_candidates_for_project(
     let responses = rows
         .into_iter()
         .map(|row| {
+            let ko_reasons = parse_ko_reasons(row.get("ko_reasons"));
+            let is_knockout: bool = row.get("is_knockout");
+
             let mut response = MatchResponse {
                 interaction_id: row.get("interaction_id"),
                 talent_id: row.get::<_, i32>("talent_id") as i64,
@@ -103,8 +127,8 @@ pub async fn fetch_candidates_for_project(
                 two_tower_score: row
                     .get::<_, Option<f64>>("two_tower_score")
                     .map(|v| v as f32),
-                ko_decisions: parse_ko_decisions(row.get("ko_reasons")),
-                ko_reasons: parse_ko_reasons(row.get("ko_reasons")),
+                ko_decisions: derive_ko_decisions(is_knockout, &ko_reasons),
+                ko_reasons,
                 details: MatchDetails::default(),
                 engine_version: row
                     .get::<_, Option<String>>("engine_version")
@@ -121,11 +145,16 @@ pub async fn fetch_candidates_for_project(
                 response.score_breakdown.business_total = response.score;
             }
 
+            if is_knockout || !response.ko_reasons.is_empty() {
+                response.manual_review_required = true;
+            }
+
             if response.is_near_threshold(config) {
                 response.manual_review_required = true;
             }
 
-            response.auto_match_eligible = response.is_auto_match_eligible(config);
+            response.auto_match_eligible =
+                !is_knockout && response.is_auto_match_eligible(config);
             Ok(response)
         })
         .collect::<Result<Vec<_>, CandidateFetchError>>()?;

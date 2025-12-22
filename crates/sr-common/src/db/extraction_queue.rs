@@ -312,6 +312,18 @@ fn row_to_job_detail_response(row: &Row) -> QueueJobDetailResponse {
     }
 }
 
+const SOURCE_PREVIEW_LIMIT: usize = 4000;
+
+fn truncate_source_preview(text: &str) -> String {
+    if text.chars().count() <= SOURCE_PREVIEW_LIMIT {
+        return text.to_string();
+    }
+
+    text.chars()
+        .take(SOURCE_PREVIEW_LIMIT)
+        .collect::<String>()
+}
+
 /// Lock and return the next pending job ordered by priority and created_at.
 #[instrument(skip(pool))]
 pub async fn lock_next_pending_job(
@@ -585,7 +597,7 @@ async fn fetch_match_results(
 
 async fn fetch_interactions(
     client: &tokio_postgres::Client,
-    match_result_ids: &[i64],
+    match_result_ids: &[i32],
 ) -> Result<Vec<InteractionLogRow>, QueueStorageError> {
     if match_result_ids.is_empty() {
         return Ok(Vec::new());
@@ -625,7 +637,7 @@ async fn fetch_interactions(
 async fn fetch_feedback_events(
     client: &tokio_postgres::Client,
     interaction_ids: &[i64],
-    match_result_ids: &[i64],
+    match_result_ids: &[i32],
 ) -> Result<Vec<FeedbackEventRow>, QueueStorageError> {
     if interaction_ids.is_empty() && match_result_ids.is_empty() {
         return Ok(Vec::new());
@@ -767,7 +779,8 @@ pub async fn get_job_detail_with_includes(
                 project_snapshot
                     .as_ref()
                     .and_then(|p| p.source_text.clone())
-            });
+            })
+            .map(|text| truncate_source_preview(&text));
     }
 
     if includes.include_matches {
@@ -781,10 +794,11 @@ pub async fn get_job_detail_with_includes(
         .await?;
 
         let match_ids: Vec<i64> = matches.iter().map(|m| m.id).collect();
+        let match_ids_i32: Vec<i32> = match_ids.iter().map(|id| *id as i32).collect();
         let mut pairs = Vec::new();
 
         let interaction_map = if includes.include_interactions || includes.include_feedback {
-            let interactions = fetch_interactions(&client, &match_ids).await?;
+            let interactions = fetch_interactions(&client, &match_ids_i32).await?;
             latest_interactions_by_match(interactions)
         } else {
             HashMap::new()
@@ -792,7 +806,7 @@ pub async fn get_job_detail_with_includes(
 
         let feedback_maps = if includes.include_feedback {
             let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
-            let events = fetch_feedback_events(&client, &interaction_ids, &match_ids).await?;
+            let events = fetch_feedback_events(&client, &interaction_ids, &match_ids_i32).await?;
             group_feedback_events(events)
         } else {
             (HashMap::new(), HashMap::new())
