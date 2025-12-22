@@ -278,6 +278,7 @@ WHERE id = (
     FROM ses.extraction_queue
     WHERE status = 'pending'
       AND (next_retry_at IS NULL OR next_retry_at <= $2)
+      AND (reprocess_after IS NULL OR reprocess_after <= $2)
     ORDER BY priority DESC, created_at
     LIMIT 1
     FOR UPDATE SKIP LOCKED
