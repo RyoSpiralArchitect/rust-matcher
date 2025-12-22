@@ -59,8 +59,8 @@ pub struct AppConfig {
     auth: AuthConfig,
 }
 
-impl From<Cli> for AppConfig {
-    fn from(cli: Cli) -> Self {
+impl AppConfig {
+    fn from_cli(cli: Cli) -> Result<Self, ApiError> {
         let cors_origins = cli
             .cors_origins
             .split(',')
@@ -74,12 +74,26 @@ impl From<Cli> for AppConfig {
             jwt_secret: cli.jwt_secret,
         };
 
-        Self {
+        match auth.mode {
+            AuthMode::ApiKey if auth.api_key.is_none() => {
+                return Err(ApiError::BadRequest(
+                    "SR_API_KEY is required when AUTH_MODE=api_key".into(),
+                ));
+            }
+            AuthMode::Jwt if auth.jwt_secret.is_none() => {
+                return Err(ApiError::BadRequest(
+                    "JWT_SECRET is required when AUTH_MODE=jwt".into(),
+                ));
+            }
+            _ => {}
+        }
+
+        Ok(Self {
             database_url: cli.database_url,
             port: cli.port,
             cors_origins,
             auth,
-        }
+        })
     }
 }
 
@@ -138,7 +152,7 @@ async fn run() -> Result<(), ApiError> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
-    let config = AppConfig::from(cli);
+    let config = AppConfig::from_cli(cli)?;
     let pool = create_pool_from_url(&config.database_url)
         .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
 

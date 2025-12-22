@@ -25,12 +25,14 @@ pub struct AuthConfig {
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
+    #[allow(dead_code)]
     pub subject: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
+    #[allow(dead_code)]
     exp: Option<usize>,
 }
 
