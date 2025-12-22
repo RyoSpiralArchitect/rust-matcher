@@ -319,9 +319,7 @@ fn truncate_source_preview(text: &str) -> String {
         return text.to_string();
     }
 
-    text.chars()
-        .take(SOURCE_PREVIEW_LIMIT)
-        .collect::<String>()
+    text.chars().take(SOURCE_PREVIEW_LIMIT).collect::<String>()
 }
 
 /// Lock and return the next pending job ordered by priority and created_at.
@@ -615,9 +613,7 @@ async fn fetch_interactions(
         .into_iter()
         .map(|row| InteractionLogRow {
             id: row.get::<_, i64>("id"),
-            match_result_id: row
-                .get::<_, Option<i32>>("match_result_id")
-                .map(|v| v as i64),
+            match_result_id: row.get::<_, Option<i32>>("match_result_id"),
             talent_id: row.get::<_, i32>("talent_id") as i64,
             project_id: row.get::<_, i32>("project_id") as i64,
             match_run_id: row.get("match_run_id"),
@@ -643,46 +639,61 @@ async fn fetch_feedback_events(
         return Ok(Vec::new());
     }
 
-    let stmt = client
-        .prepare(
-            "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE (interaction_id IS NOT NULL AND interaction_id = ANY($1::bigint[])) OR (match_result_id IS NOT NULL AND match_result_id = ANY($2::int[])) ORDER BY created_at DESC",
-        )
-        .await?;
+    let mut events: Vec<FeedbackEventRow> = Vec::new();
 
-    let rows = client
-        .query(&stmt, &[&interaction_ids, &match_result_ids])
-        .await?;
+    if !interaction_ids.is_empty() {
+        let stmt = client
+            .prepare(
+                "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE interaction_id IS NOT NULL AND interaction_id = ANY($1::bigint[]) ORDER BY created_at DESC",
+            )
+            .await?;
 
-    let events = rows
-        .into_iter()
-        .map(|row| FeedbackEventRow {
-            id: row.get::<_, i64>("id"),
-            interaction_id: row.get::<_, Option<i64>>("interaction_id"),
-            match_result_id: row
-                .get::<_, Option<i32>>("match_result_id")
-                .map(|v| v as i64),
-            match_run_id: row.get("match_run_id"),
-            engine_version: row.get("engine_version"),
-            config_version: row.get("config_version"),
-            project_id: row.get::<_, i64>("project_id"),
-            talent_id: row.get::<_, i64>("talent_id"),
-            feedback_type: row.get("feedback_type"),
-            ng_reason_category: row.get("ng_reason_category"),
-            comment: row.get("comment"),
-            actor: row.get("actor"),
-            source: row.get("source"),
-            is_revoked: row.get("is_revoked"),
-            created_at: row.get("created_at"),
-        })
-        .collect();
+        let rows = client.query(&stmt, &[&interaction_ids]).await?;
+        events.extend(rows.into_iter().map(map_feedback_row));
+    }
+
+    if !match_result_ids.is_empty() {
+        let stmt = client
+            .prepare(
+                "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE match_result_id IS NOT NULL AND match_result_id = ANY($1::int[]) ORDER BY created_at DESC",
+            )
+            .await?;
+
+        let rows = client.query(&stmt, &[&match_result_ids]).await?;
+        events.extend(rows.into_iter().map(map_feedback_row));
+    }
+
+    let mut seen_ids = HashSet::new();
+    events.retain(|event| seen_ids.insert(event.id));
+    events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     Ok(events)
 }
 
+fn map_feedback_row(row: tokio_postgres::Row) -> FeedbackEventRow {
+    FeedbackEventRow {
+        id: row.get::<_, i64>("id"),
+        interaction_id: row.get::<_, Option<i64>>("interaction_id"),
+        match_result_id: row.get::<_, Option<i32>>("match_result_id"),
+        match_run_id: row.get("match_run_id"),
+        engine_version: row.get("engine_version"),
+        config_version: row.get("config_version"),
+        project_id: row.get::<_, i64>("project_id"),
+        talent_id: row.get::<_, i64>("talent_id"),
+        feedback_type: row.get("feedback_type"),
+        ng_reason_category: row.get("ng_reason_category"),
+        comment: row.get("comment"),
+        actor: row.get("actor"),
+        source: row.get("source"),
+        is_revoked: row.get("is_revoked"),
+        created_at: row.get("created_at"),
+    }
+}
+
 fn latest_interactions_by_match(
     interactions: Vec<InteractionLogRow>,
-) -> HashMap<i64, InteractionLogRow> {
-    let mut map: HashMap<i64, InteractionLogRow> = HashMap::new();
+) -> HashMap<i32, InteractionLogRow> {
+    let mut map: HashMap<i32, InteractionLogRow> = HashMap::new();
     for interaction in interactions {
         if let Some(match_id) = interaction.match_result_id {
             let should_replace = match map.get(&match_id) {
@@ -701,10 +712,10 @@ fn group_feedback_events(
     events: Vec<FeedbackEventRow>,
 ) -> (
     HashMap<i64, Vec<FeedbackEventRow>>,
-    HashMap<i64, Vec<FeedbackEventRow>>,
+    HashMap<i32, Vec<FeedbackEventRow>>,
 ) {
     let mut by_interaction: HashMap<i64, Vec<FeedbackEventRow>> = HashMap::new();
-    let mut by_match: HashMap<i64, Vec<FeedbackEventRow>> = HashMap::new();
+    let mut by_match: HashMap<i32, Vec<FeedbackEventRow>> = HashMap::new();
 
     for event in events {
         if let Some(interaction_id) = event.interaction_id {
@@ -793,18 +804,21 @@ pub async fn get_job_detail_with_includes(
         )
         .await?;
 
-        let match_ids: Vec<i64> = matches.iter().map(|m| m.id).collect();
-        let match_ids_i32: Vec<i32> = match_ids.iter().map(|id| *id as i32).collect();
+        let match_ids_i32: Vec<i32> = matches.iter().map(|m| m.id as i32).collect();
         let mut pairs = Vec::new();
 
-        let interaction_map = if includes.include_interactions || includes.include_feedback {
-            let interactions = fetch_interactions(&client, &match_ids_i32).await?;
-            latest_interactions_by_match(interactions)
-        } else {
-            HashMap::new()
-        };
+        let interaction_map: HashMap<i32, InteractionLogRow> =
+            if includes.include_interactions || includes.include_feedback {
+                let interactions = fetch_interactions(&client, &match_ids_i32).await?;
+                latest_interactions_by_match(interactions)
+            } else {
+                HashMap::new()
+            };
 
-        let feedback_maps = if includes.include_feedback {
+        let feedback_maps: (
+            HashMap<i64, Vec<FeedbackEventRow>>,
+            HashMap<i32, Vec<FeedbackEventRow>>,
+        ) = if includes.include_feedback {
             let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
             let events = fetch_feedback_events(&client, &interaction_ids, &match_ids_i32).await?;
             group_feedback_events(events)
@@ -813,7 +827,8 @@ pub async fn get_job_detail_with_includes(
         };
 
         for match_result in matches {
-            let latest_interaction = interaction_map.get(&match_result.id).cloned();
+            let match_id_i32 = match_result.id as i32;
+            let latest_interaction = interaction_map.get(&match_id_i32).cloned();
             let mut feedback_events = Vec::new();
 
             if let Some(interaction) = &latest_interaction {
@@ -823,7 +838,7 @@ pub async fn get_job_detail_with_includes(
             }
 
             if feedback_events.is_empty() {
-                if let Some(events) = feedback_maps.1.get(&match_result.id) {
+                if let Some(events) = feedback_maps.1.get(&match_id_i32) {
                     feedback_events.extend(events.clone());
                 }
             }

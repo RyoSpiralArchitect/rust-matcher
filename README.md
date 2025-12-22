@@ -66,6 +66,8 @@ Phase 2 完了 ─────────────────────�
 
 - **運用時の安全ネット**
   - 認証は `AUTH_MODE=api_key`（既定）と `AUTH_MODE=jwt` のトグル設計で、GUI リリースタイミングに合わせてヘッダーを切り替えるだけ。
+  - JWT はデフォルト `JWT_ALGORITHM=hs512`（NextAuth 既定に合わせた対称鍵）で動作し、RSA/EC/EdDSA の公開鍵検証も `JWT_PUBLIC_KEY` を渡せば切り替え可能。対称鍵の場合は `JWT_SECRET`、非対称鍵の場合は公開鍵 PEM だけあれば起動できる。
+  - NextAuth 側の JWT は設定次第で JWE（暗号化）や鍵種が変わるため、GUI 連携フェーズでは「NextAuth が出すトークン形式に API 側を合わせる」か「API 側で署名した JWT を Next 側がそのまま送る」方針を事前に決めておくと安全。
   - feedback の INSERT は (interaction_id, feedback_type, actor) の組み合わせで一意。重複は自動でスキップするため、誤って何度送っても DB が壊れない。
   - すべてのリクエストに `TraceLayer` を適用済み。X-Request-Id でログを追えるので、障害調査や遅延調査の初動が簡単。
 

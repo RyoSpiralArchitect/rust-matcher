@@ -6,6 +6,7 @@ pub mod match_results;
 pub mod pool;
 pub mod queue_dashboard;
 
+// Keep re-exports unique so downstream crates see a single symbol per helper.
 pub use anken_emails::{PendingEmail, PendingEmailError, fetch_email_body, fetch_pending_emails};
 pub use candidates::{CandidateFetchError, fetch_candidates_for_project};
 pub use extraction_queue::{

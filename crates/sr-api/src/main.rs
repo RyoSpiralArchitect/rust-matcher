@@ -19,7 +19,7 @@ mod auth;
 mod error;
 mod handlers;
 
-use auth::{AuthConfig, AuthMode};
+use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
 use handlers::{candidates, feedback, health, queue};
 
@@ -45,6 +45,14 @@ struct Cli {
     /// JWT secret for AUTH_MODE=jwt
     #[arg(long, env = "JWT_SECRET")]
     jwt_secret: Option<String>,
+
+    /// Public key for AUTH_MODE=jwt when using an asymmetric algorithm
+    #[arg(long, env = "JWT_PUBLIC_KEY")]
+    jwt_public_key: Option<String>,
+
+    /// JWT algorithm (default aligns with NextAuth default HS512)
+    #[arg(long, env = "JWT_ALGORITHM", default_value = "hs512", value_enum)]
+    jwt_algorithm: JwtAlgorithm,
 
     /// Comma separated list of allowed CORS origins
     #[arg(long, env = "SR_CORS_ORIGINS", default_value = "http://localhost:3000")]
@@ -77,6 +85,8 @@ impl AppConfig {
             mode: cli.auth_mode,
             api_key: cli.api_key,
             jwt_secret: cli.jwt_secret,
+            jwt_public_key: cli.jwt_public_key,
+            jwt_algorithm: cli.jwt_algorithm,
         };
 
         match auth.mode {
@@ -85,10 +95,21 @@ impl AppConfig {
                     "SR_API_KEY is required when AUTH_MODE=api_key".into(),
                 ));
             }
-            AuthMode::Jwt if auth.jwt_secret.is_none() => {
-                return Err(ApiError::BadRequest(
-                    "JWT_SECRET is required when AUTH_MODE=jwt".into(),
-                ));
+            AuthMode::Jwt => match auth.jwt_algorithm.key_kind() {
+                auth::JwtKeyKind::Secret if auth.jwt_secret.is_none() => {
+                    return Err(ApiError::BadRequest(
+                        "JWT_SECRET is required when AUTH_MODE=jwt with symmetric algorithms"
+                            .into(),
+                    ));
+                }
+                auth::JwtKeyKind::Secret => {}
+                _ if auth.jwt_public_key.is_none() => {
+                    return Err(ApiError::BadRequest(
+                        "JWT_PUBLIC_KEY is required when AUTH_MODE=jwt with asymmetric algorithms"
+                            .into(),
+                    ));
+                }
+                _ => {}
             }
             _ => {}
         }
