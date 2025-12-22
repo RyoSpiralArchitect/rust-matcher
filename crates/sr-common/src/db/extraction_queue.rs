@@ -590,6 +590,16 @@ async fn fetch_match_results(
         }
     }
 
+    results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    let limit_usize = usize::try_from(limit).map_err(|e| {
+        QueueStorageError::Mapping(format!("invalid limit {limit}: {e}"))
+    })?;
+
+    if results.len() > limit_usize {
+        results.truncate(limit_usize);
+    }
+
     Ok(results)
 }
 
@@ -809,7 +819,17 @@ pub async fn get_job_detail_with_includes(
         )
         .await?;
 
-        let match_ids_i32: Vec<i32> = matches.iter().map(|m| m.id as i32).collect();
+        let match_ids_i32: Vec<i32> = matches
+            .iter()
+            .map(|m| {
+                i32::try_from(m.id).map_err(|e| {
+                    QueueStorageError::Mapping(format!(
+                        "match_result id {} exceeds i32 range: {e}",
+                        m.id
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
         let mut pairs = Vec::new();
 
         let interaction_map: HashMap<i32, InteractionLogRow> =
@@ -825,20 +845,30 @@ pub async fn get_job_detail_with_includes(
             HashMap<i32, Vec<FeedbackEventRow>>,
         ) = if includes.include_feedback {
             let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
-            let events = fetch_feedback_events(
-                &client,
-                &interaction_ids,
-                &match_ids_i32,
-                includes.limit as usize,
-            )
-            .await?;
+            let base_limit = includes.limit.max(1);
+            let feedback_limit = usize::try_from(base_limit)
+                .map(|limit| std::cmp::min(limit.saturating_mul(5), 200))
+                .map_err(|e| {
+                    QueueStorageError::Mapping(format!(
+                        "invalid feedback limit from includes.limit={}: {e}",
+                        includes.limit
+                    ))
+                })?;
+
+            let events = fetch_feedback_events(&client, &interaction_ids, &match_ids_i32, feedback_limit)
+                .await?;
             group_feedback_events(events)
         } else {
             (HashMap::new(), HashMap::new())
         };
 
         for match_result in matches {
-            let match_id_i32 = match_result.id as i32;
+            let match_id_i32 = i32::try_from(match_result.id).map_err(|e| {
+                QueueStorageError::Mapping(format!(
+                    "match_result id {} exceeds i32 range: {e}",
+                    match_result.id
+                ))
+            })?;
             let latest_interaction = interaction_map.get(&match_id_i32).cloned();
             let mut feedback_events = Vec::new();
 
