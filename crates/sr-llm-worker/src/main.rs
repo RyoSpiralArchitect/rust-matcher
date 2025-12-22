@@ -572,18 +572,59 @@ fn handle_llm_job(
     let latency = response
         .latency_ms
         .or_else(|| (Utc::now() - started).num_milliseconds().try_into().ok());
-    let decision_reason = response
+
+    let mut requires_manual_review = response.requires_manual_review;
+    let mut decorations: Vec<String> = Vec::new();
+
+    if !response.status.is_empty() {
+        decorations.push(format!("status={}", response.status));
+        if !matches!(response.status.to_ascii_lowercase().as_str(), "ok" | "success") {
+            requires_manual_review = true;
+        }
+    }
+
+    if !response.message_id.is_empty() && response.message_id != job.message_id {
+        decorations.push(format!(
+            "message_id mismatch (expected {}, got {})",
+            job.message_id, response.message_id
+        ));
+        requires_manual_review = true;
+    }
+
+    if !response.missing_fields.is_empty() {
+        decorations.push(format!(
+            "missing fields: {}",
+            response.missing_fields.join(", ")
+        ));
+        requires_manual_review = true;
+    }
+
+    let mut decision_reason = response
         .reason
         .clone()
         .or_else(|| Some(format!("processed by {}", config.provider)));
+
+    if !decorations.is_empty() {
+        let suffix = decorations.join("; ");
+        decision_reason = Some(match decision_reason {
+            Some(existing) if !existing.is_empty() => format!("{existing}; {suffix}"),
+            _ => suffix,
+        });
+    }
+
+    let manual_review_reason = if requires_manual_review {
+        decision_reason.clone()
+    } else {
+        None
+    };
 
     Ok(JobOutcome {
         final_method: FinalMethod::LlmCompleted,
         partial_fields: Some(response.extracted.clone()),
         decision_reason,
         llm_latency_ms: latency,
-        requires_manual_review: response.requires_manual_review,
-        manual_review_reason: response.reason,
+        requires_manual_review,
+        manual_review_reason,
     })
 }
 
@@ -809,6 +850,68 @@ mod tests {
                     .as_ref()
                     .map(|r| r.contains("llm ok"))
                     .unwrap_or(false));
+            },
+        );
+    }
+
+    #[test]
+    fn llm_missing_fields_trigger_manual_review() {
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(POST).path("/api/v1/extract");
+            then.status(200).json_body(json!({
+                "message_id": "llm-message-1",
+                "extracted": {"project_name": "from-llm"},
+                "latency_ms": 120,
+                "reason": "partial extraction",
+                "missing_fields": ["skills", "years_of_experience"],
+                "status": "partial",
+            }));
+        });
+
+        with_env(
+            &[("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))), ("LLM_API_KEY", Some("token"))],
+            || {
+                let queue = run_sample_flow();
+
+                assert_eq!(queue.jobs.len(), 1);
+                let job = &queue.jobs[0];
+                assert_eq!(job.final_method, Some(FinalMethod::LlmCompleted));
+                assert!(job.requires_manual_review);
+                let reason = job.manual_review_reason.as_ref().unwrap();
+                assert!(reason.contains("missing fields"));
+                assert!(reason.contains("skills"));
+                assert!(reason.contains("years_of_experience"));
+                assert!(reason.contains("status=partial"));
+            },
+        );
+    }
+
+    #[test]
+    fn llm_message_id_mismatch_forces_manual_review() {
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(POST).path("/api/v1/extract");
+            then.status(200).json_body(json!({
+                "message_id": "unexpected", 
+                "extracted": {"project_name": "from-llm"},
+                "latency_ms": 80,
+                "status": "ok",
+            }));
+        });
+
+        with_env(
+            &[("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))), ("LLM_API_KEY", Some("token"))],
+            || {
+                let queue = run_sample_flow();
+
+                assert_eq!(queue.jobs.len(), 1);
+                let job = &queue.jobs[0];
+                assert_eq!(job.final_method, Some(FinalMethod::LlmCompleted));
+                assert!(job.requires_manual_review);
+                let reason = job.manual_review_reason.as_ref().unwrap();
+                assert!(reason.contains("message_id mismatch"));
+                assert!(reason.contains("unexpected"));
             },
         );
     }
