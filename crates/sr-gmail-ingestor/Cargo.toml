@@ -1,0 +1,23 @@
+[package]
+name = "sr-gmail-ingestor"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sr-common = { path = "../sr-common" }
+chrono.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+deadpool-postgres.workspace = true
+tokio-postgres.workspace = true
+base64 = "0.22"
+html2text = "0.15"
+mailparse = "0.14"
+google-gmail1 = "5"
