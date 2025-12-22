@@ -484,6 +484,16 @@ fn spawn_shadow_compare(
     } else {
         config.shadow_api_key.clone()
     };
+
+    if shadow_api_key.is_empty() {
+        info!(
+            message_id = %job.message_id,
+            %shadow_endpoint,
+            %shadow_model,
+            "skipping shadow comparison because no API key is configured",
+        );
+        return None;
+    }
     let shadow_provider = shadow.shadow_provider.clone();
     let primary_provider = shadow.primary_provider.clone();
     let mut shadow_config = config.clone();
@@ -541,6 +551,15 @@ fn handle_llm_job(
     if !config.enabled {
         return Err(JobError::Permanent {
             message: "LLM_DISABLED: LLM_ENABLED=0".into(),
+        });
+    }
+
+    if config.api_key.is_empty() {
+        return Err(JobError::Permanent {
+            message: format!(
+                "missing LLM_API_KEY (or vendor key) for provider {}",
+                config.provider
+            ),
         });
     }
 
@@ -729,34 +748,6 @@ async fn main() {
 mod tests {
     use super::*;
     use httpmock::prelude::*;
-
-    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
-        use std::sync::Mutex;
-        static ENV_GUARD: Mutex<()> = Mutex::new(());
-        let _guard = ENV_GUARD.lock().unwrap();
-
-        let prev: Vec<(String, Option<String>)> = vars
-            .iter()
-            .map(|(key, value)| {
-                let previous = std::env::var(key).ok();
-                match value {
-                    Some(v) => unsafe { std::env::set_var(key, v) },
-                    None => unsafe { std::env::remove_var(key) },
-                }
-                (key.to_string(), previous)
-            })
-            .collect();
-
-        f();
-
-        for (key, previous) in prev {
-            if let Some(v) = previous {
-                unsafe { std::env::set_var(&key, v) };
-            } else {
-                unsafe { std::env::remove_var(&key) };
-            }
-        }
-    }
 
     fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
         use std::sync::Mutex;
@@ -1075,6 +1066,28 @@ mod tests {
         });
     }
 
+    #[test]
+    fn missing_api_key_is_manual_review() {
+        with_env(&[("LLM_API_KEY", None), ("OPENAI_API_KEY", None)], || {
+            let llm_config = LlmRuntimeConfig::from_env();
+            let mut queue = ExtractionQueue::default();
+            let mut job = ExtractionJob::new("no-key", "subject", Utc::now(), "hash");
+            job.recommended_method = Some(RecommendedMethod::LlmRecommended);
+
+            queue.enqueue(job);
+            queue.process_next_with_worker("sr-llm-worker", |j| {
+                handle_llm_job(j, "body", &llm_config)
+            });
+
+            let job = &queue.jobs[0];
+            assert_eq!(job.status, QueueStatus::Completed);
+            assert_eq!(job.final_method, Some(FinalMethod::ManualReview));
+            assert!(job.requires_manual_review);
+            let reason = job.decision_reason.as_ref().unwrap();
+            assert!(reason.contains("missing LLM_API_KEY"));
+        });
+    }
+
     #[tokio::test]
     async fn shadow_compare_executes_request() {
         let server = MockServer::start_async().await;
@@ -1110,5 +1123,26 @@ mod tests {
         handle.await.expect("shadow join ok");
 
         shadow_hit.assert_async().await;
+    }
+
+    #[test]
+    fn shadow_compare_skips_without_key() {
+        let mut job = ExtractionJob::new("shadow-skip", "subject", Utc::now(), "hash");
+        job.recommended_method = Some(RecommendedMethod::LlmRecommended);
+        job.canary_target = true;
+
+        let mut config = LlmRuntimeConfig::from_env();
+        config.api_key.clear();
+        config.shadow_api_key.clear();
+
+        let shadow_cfg = ShadowCompareConfig {
+            mode: CompareMode::Shadow,
+            sample_percent: 100,
+            shadow_provider: "shadow-provider".into(),
+            primary_provider: "primary-provider".into(),
+        };
+
+        let handle = spawn_shadow_compare(job, "body".into(), &config, &shadow_cfg);
+        assert!(handle.is_none());
     }
 }
