@@ -57,6 +57,7 @@ pub struct JobDetailParams {
 }
 
 fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, ApiError> {
+    const MAX_LOOKBACK_DAYS: i64 = 365;
     let mut includes = JobDetailIncludes {
         limit: params.limit.unwrap_or(20),
         days: params.days.unwrap_or(30),
@@ -71,6 +72,12 @@ fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, 
 
     if includes.days <= 0 {
         return Err(ApiError::BadRequest("days must be positive".into()));
+    }
+
+    if includes.days > MAX_LOOKBACK_DAYS {
+        return Err(ApiError::BadRequest(format!(
+            "days must not exceed {MAX_LOOKBACK_DAYS}",
+        )));
     }
 
     if let Some(include) = &params.include {
@@ -198,5 +205,29 @@ mod tests {
         };
 
         assert!(validate_filter(&filter).is_ok());
+    }
+
+    #[test]
+    fn build_detail_includes_rejects_oversized_days() {
+        let params = JobDetailParams {
+            include: None,
+            limit: None,
+            days: Some(366),
+        };
+
+        let err = build_detail_includes(&params).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn build_detail_includes_accepts_max_days_boundary() {
+        let params = JobDetailParams {
+            include: None,
+            limit: None,
+            days: Some(365),
+        };
+
+        let includes = build_detail_includes(&params).expect("should accept max boundary");
+        assert_eq!(includes.days, 365);
     }
 }

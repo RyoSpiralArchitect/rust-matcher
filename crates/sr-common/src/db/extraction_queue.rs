@@ -758,6 +758,9 @@ pub async fn get_job_detail_with_includes(
         includes.include_matches = true;
     }
 
+    let safe_limit = includes.limit.clamp(1, 200);
+    let safe_days = includes.days.clamp(1, 365);
+
     let client = pool.get().await?;
 
     let row = client
@@ -814,8 +817,8 @@ pub async fn get_job_detail_with_includes(
             &client,
             talent_snapshot.as_ref().map(|t| t.id),
             project_snapshot.as_ref().map(|p| p.project_code),
-            includes.days,
-            includes.limit,
+            safe_days,
+            safe_limit,
         )
         .await?;
 
@@ -845,7 +848,7 @@ pub async fn get_job_detail_with_includes(
             HashMap<i32, Vec<FeedbackEventRow>>,
         ) = if includes.include_feedback {
             let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
-            let base_limit = includes.limit.max(1);
+            let base_limit = safe_limit.max(1);
             let feedback_limit = usize::try_from(base_limit)
                 .map(|limit| std::cmp::min(limit.saturating_mul(5), 200))
                 .map_err(|e| {
