@@ -20,6 +20,20 @@ pub enum PendingEmailError {
     Postgres(#[from] PgError),
 }
 
+/// Fetch the raw body text for a specific message_id from `ses.anken_emails`.
+pub async fn fetch_email_body(
+    pool: &PgPool,
+    message_id: &str,
+) -> Result<Option<String>, PendingEmailError> {
+    let client = pool.get().await?;
+    let stmt = client
+        .prepare("SELECT body_text FROM ses.anken_emails WHERE message_id = $1")
+        .await?;
+
+    let row = client.query_opt(&stmt, &[&message_id]).await?;
+    Ok(row.and_then(|r| r.get::<_, Option<String>>("body_text")))
+}
+
 /// Fetch pending emails that have not been enqueued into the extraction queue yet.
 ///
 /// This mirrors the reference query in MVP_PLAN.md: select up to `limit` rows from
