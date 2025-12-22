@@ -1,4 +1,6 @@
 use super::{
+    ko_checks::{check_availability_ko, check_flow_limit_ko},
+    ko_unified::KoDecision,
     location::evaluate_location,
     skills::{check_preferred_skills, check_required_skills},
     weights::Weights,
@@ -205,17 +207,20 @@ impl BusinessRulesEngine {
                 score: 0.5,
                 max_score: 1.0,
                 status: "UNKNOWN",
-                details: "案件単価が不明のため中立スコア".into(),
+                details: format!(
+                    "案件単価が不明のため中立スコア (talent_min={:.1}万, project_max=None)",
+                    talent_tanka
+                ),
             };
         };
 
-        if bound_label == "下限" && talent_tanka > project_tanka {
+        if bound_label == "下限" {
             return ScoringResult {
                 score: 0.5,
                 max_score: 1.0,
                 status: "UNKNOWN",
                 details: format!(
-                    "案件下限{:.1}万のみ取得 (人材下限{:.1}万) のため要確認",
+                    "案件下限{:.1}万のみ取得 (人材下限{:.1}万, project_max=None) のため要確認",
                     project_tanka, talent_tanka
                 ),
             };
@@ -297,7 +302,7 @@ impl BusinessRulesEngine {
                 score: 0.5,
                 max_score: 1.0,
                 status: "UNKNOWN",
-                details: "必須スキル要件が未設定のため中立スコア".into(),
+                details: required.reason,
             };
         }
 
@@ -542,6 +547,38 @@ impl BusinessRulesEngine {
             }
         }
 
+        match check_availability_ko(project, talent) {
+            KoDecision::HardKo { reason } => {
+                score = 0.0;
+                status = "MISS";
+                details.push(reason);
+            }
+            KoDecision::SoftKo { reason } => {
+                score = score.min(0.6);
+                if status != "MISS" {
+                    status = "UNKNOWN";
+                }
+                details.push(reason);
+            }
+            KoDecision::Pass => {}
+        }
+
+        match check_flow_limit_ko(project, talent) {
+            KoDecision::HardKo { reason } => {
+                score = 0.0;
+                status = "MISS";
+                details.push(reason);
+            }
+            KoDecision::SoftKo { reason } => {
+                score = score.min(0.6);
+                if status != "MISS" {
+                    status = "UNKNOWN";
+                }
+                details.push(reason);
+            }
+            KoDecision::Pass => {}
+        }
+
         if details.is_empty() {
             details.push("追加要素なし".into());
         }
@@ -579,6 +616,8 @@ fn status_from_score(score: f64, unknown: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::date::{NormalizedStartDate, StartDatePrecision};
+    use chrono::NaiveDate;
 
     fn full_project() -> Project {
         Project {
@@ -590,6 +629,12 @@ mod tests {
             min_experience_years: Some(5),
             contract_type: Some("業務委託".into()),
             age_limit_upper: Some(60),
+            jinzai_flow_limit: Some("商流制限なし".into()),
+            start_date: Some(NormalizedStartDate {
+                date: NaiveDate::from_ymd_opt(2025, 1, 1),
+                precision: StartDatePrecision::ExactDay,
+                interpretation_note: None,
+            }),
             ..Project::default()
         }
     }
@@ -603,6 +648,12 @@ mod tests {
             min_experience_years: Some(6),
             primary_contract_type: Some("業務委託".into()),
             birth_year: Some(Utc::now().year() - 35),
+            flow_depth: Some("1社先".into()),
+            availability_date: Some(NormalizedStartDate {
+                date: NaiveDate::from_ymd_opt(2025, 1, 1),
+                precision: StartDatePrecision::ExactDay,
+                interpretation_note: None,
+            }),
             ..Talent::default()
         }
     }
@@ -645,6 +696,19 @@ mod tests {
     }
 
     #[test]
+    fn tanka_scoring_is_unknown_without_project_max() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.monthly_tanka_max = None;
+        project.monthly_tanka_min = Some(90);
+
+        let tanka = engine.score_tanka(&project, &full_talent());
+        assert_eq!(tanka.status, "UNKNOWN");
+        assert!(tanka.details.contains("project_max=None"));
+        assert!(tanka.score <= 0.5);
+    }
+
+    #[test]
     fn unknown_experience_scores_neutrally() {
         let engine = BusinessRulesEngine::new(MatchingConfig::default());
         let mut talent = full_talent();
@@ -668,6 +732,20 @@ mod tests {
         assert_eq!(skills.status, "PERFECT_MATCH");
         assert!(skills.score > 0.9);
         assert!(skills.details.contains("歓迎"));
+    }
+
+    #[test]
+    fn missing_talent_skills_propagate_manual_review_reason() {
+        let engine = BusinessRulesEngine::new(MatchingConfig::default());
+        let mut project = full_project();
+        project.required_skills_keywords = vec!["Rust".into()];
+        let mut talent = full_talent();
+        talent.possessed_skills_keywords.clear();
+
+        let skills = engine.score_skills(&project, &talent);
+
+        assert_eq!(skills.status, "UNKNOWN");
+        assert!(skills.details.contains("スキル情報が不足"));
     }
 
     #[test]
@@ -876,6 +954,42 @@ mod tests {
         let score = engine.calculate_match_score(&full_project(), &full_talent());
 
         assert_eq!(score.total, score.business_rules_score);
+    }
+
+    #[test]
+    fn other_score_reflects_availability_conflicts() {
+        let mut project = full_project();
+        project.start_date = Some(NormalizedStartDate {
+            date: NaiveDate::from_ymd_opt(2025, 1, 1),
+            precision: StartDatePrecision::ExactDay,
+            interpretation_note: None,
+        });
+
+        let mut talent = full_talent();
+        talent.availability_date = Some(NormalizedStartDate {
+            date: NaiveDate::from_ymd_opt(2025, 2, 1),
+            precision: StartDatePrecision::ExactDay,
+            interpretation_note: None,
+        });
+
+        let score = calculate_detailed_score(&project, &talent);
+
+        assert_eq!(score.other.status, "MISS");
+        assert!(score.other.details.contains("availability_conflict"));
+    }
+
+    #[test]
+    fn other_score_includes_flow_limit_conflicts() {
+        let mut project = full_project();
+        project.jinzai_flow_limit = Some("SPONTO一社先まで".into());
+
+        let mut talent = full_talent();
+        talent.flow_depth = Some("2社先".into());
+
+        let score = calculate_detailed_score(&project, &talent);
+
+        assert_eq!(score.other.status, "MISS");
+        assert!(score.other.details.contains("flow_exceeded"));
     }
 
     #[test]
