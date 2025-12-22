@@ -16,4 +16,4 @@ pub use extraction_queue::{
 pub use feedback::{FeedbackStorageError, insert_feedback_event};
 pub use match_results::{MatchResultInsert, MatchResultStorageError, insert_match_result};
 pub use pool::{DbPoolError, PgPool, create_pool_from_url};
-pub use queue_dashboard::{QueueDashboardError, fetch_dashboard, fetch_job_detail, fetch_jobs};
+pub use queue_dashboard::{QueueDashboardError, fetch_dashboard};

@@ -9,10 +9,10 @@ use tokio_postgres::types::Json;
 use tokio_postgres::types::ToSql;
 use tracing::instrument;
 
-use crate::api::queue_job::{
+use crate::api::models::queue::{
     FeedbackEventRow, InteractionLogRow, JobDetailIncludes, JobEntity, MatchResultRow, Pagination,
     PairDetail, ProjectSnapshot, QueueJobDetail, QueueJobDetailResponse, QueueJobFilter,
-    QueueJobListResponse, QueueJobSummary, TalentSnapshot,
+    QueueJobListItem, QueueJobListResponse, TalentSnapshot,
 };
 use crate::db::PgPool;
 use crate::queue::{ExtractionJob, QueueStatus};
@@ -271,8 +271,8 @@ fn row_to_job(row: &Row) -> Result<ExtractionJob, QueueStorageError> {
     })
 }
 
-fn row_to_job_summary(row: &Row) -> QueueJobSummary {
-    QueueJobSummary {
+fn row_to_list_item(row: &Row) -> QueueJobListItem {
+    QueueJobListItem {
         id: row.get("id"),
         message_id: row.get("message_id"),
         status: row.get("status"),
@@ -290,7 +290,7 @@ fn row_to_job_summary(row: &Row) -> QueueJobSummary {
 
 fn row_to_job_detail(row: &Row) -> QueueJobDetail {
     QueueJobDetail {
-        job: row_to_job_summary(row),
+        job: row_to_list_item(row),
         partial_fields: row.get("partial_fields"),
         last_error: row.get("last_error"),
         llm_latency_ms: row.get("llm_latency_ms"),
@@ -429,7 +429,7 @@ pub async fn list_jobs(
         .collect();
     let rows = client.query(&query, &params).await?;
 
-    let mut items: Vec<QueueJobSummary> = rows.iter().map(row_to_job_summary).collect();
+    let mut items: Vec<QueueJobListItem> = rows.iter().map(row_to_list_item).collect();
     let has_more = (items.len() as i64) > pagination.limit;
     if has_more {
         items.pop();
@@ -460,17 +460,17 @@ pub async fn get_job_by_id(
         false,
         DEFAULT_DETAIL_STATEMENT_TIMEOUT_MS,
     )
-        .await
-        .map(|opt| {
-            opt.map(|detail| QueueJobDetail {
-                job: detail.job,
-                partial_fields: detail.partial_fields,
-                last_error: detail.last_error,
-                llm_latency_ms: detail.llm_latency_ms,
-                processing_started_at: detail.processing_started_at,
-                completed_at: detail.completed_at,
-            })
+    .await
+    .map(|opt| {
+        opt.map(|detail| QueueJobDetail {
+            job: detail.job,
+            partial_fields: detail.partial_fields,
+            last_error: detail.last_error,
+            llm_latency_ms: detail.llm_latency_ms,
+            processing_started_at: detail.processing_started_at,
+            completed_at: detail.completed_at,
         })
+    })
 }
 
 async fn fetch_talent_snapshot(
@@ -546,8 +546,8 @@ fn map_match_result(row: &Row) -> MatchResultRow {
 
     MatchResultRow {
         id: row.get::<_, i32>("id") as i64,
-        talent_id: row.get::<_, i32>("talent_id") as i64,
-        project_id: row.get::<_, i32>("project_id") as i64,
+        talent_id: row.get::<_, i64>("talent_id"),
+        project_id: row.get::<_, i64>("project_id"),
         is_knockout: row.get("is_knockout"),
         ko_reasons,
         needs_manual_review: row.get("needs_manual_review"),
@@ -631,8 +631,8 @@ async fn fetch_interactions(
         .map(|row| InteractionLogRow {
             id: row.get::<_, i64>("id"),
             match_result_id: row.get::<_, Option<i32>>("match_result_id"),
-            talent_id: row.get::<_, i32>("talent_id") as i64,
-            project_id: row.get::<_, i32>("project_id") as i64,
+            talent_id: row.get::<_, i64>("talent_id"),
+            project_id: row.get::<_, i64>("project_id"),
             match_run_id: row.get("match_run_id"),
             engine_version: row.get("engine_version"),
             config_version: row.get("config_version"),
