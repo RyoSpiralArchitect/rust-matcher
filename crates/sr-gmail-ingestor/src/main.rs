@@ -39,7 +39,11 @@ struct Cli {
     poll_interval: u64,
 
     /// Maximum Gmail pages to fetch per poll (max_results per page is 500)
-    #[arg(long, env = "GWS_MAX_PAGES_PER_POLL", default_value_t = 4)]
+    ///
+    /// Default is generous (20 pages = up to ~10k messages) so bursts above
+    /// 1000/day are still processed without manual tuning. Lower via env if a
+    /// smaller batch window is desired.
+    #[arg(long, env = "GWS_MAX_PAGES_PER_POLL", default_value_t = 20)]
     max_pages_per_poll: u32,
 
     /// Gmail search query for project/案件 emails (no attachments expected)
