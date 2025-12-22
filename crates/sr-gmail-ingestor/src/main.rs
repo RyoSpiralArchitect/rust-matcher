@@ -12,6 +12,7 @@ use google_gmail1::{
 };
 use html2text::from_read;
 use sr_common::db::{DbPoolError, PgPool, create_pool_from_url};
+use std::collections::HashSet;
 use tokio::time::{Duration, interval};
 use tracing::{debug, info, warn};
 
@@ -172,6 +173,12 @@ impl GmailIngestor {
             let (_, list_response) = list_call.doit().await?;
 
             let messages = list_response.messages.unwrap_or_default();
+            let message_ids: Vec<String> = messages
+                .iter()
+                .filter_map(|msg| msg.id.clone())
+                .collect();
+
+            let already_seen = self.fetch_existing_ids(&message_ids).await?;
 
             for msg_ref in messages {
                 let msg_id = match msg_ref.id.clone() {
@@ -179,7 +186,7 @@ impl GmailIngestor {
                     None => continue,
                 };
 
-                if self.is_already_processed(&msg_id).await? {
+                if already_seen.contains(&msg_id) {
                     debug!(message_id = %msg_id, "already ingested, skipping");
                     continue;
                 }
@@ -320,15 +327,28 @@ impl GmailIngestor {
         None
     }
 
-    async fn is_already_processed(&self, message_id: &str) -> Result<bool, IngestError> {
+    async fn fetch_existing_ids(
+        &self,
+        message_ids: &[String],
+    ) -> Result<HashSet<String>, IngestError> {
+        if message_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
         let client = self.pool.get().await?;
-        let row = client
-            .query_opt(
-                "SELECT 1 FROM ses.anken_emails WHERE message_id = $1\n                 UNION SELECT 1 FROM ses.jinzai_emails WHERE message_id = $1",
-                &[&message_id],
+        let rows = client
+            .query(
+                "SELECT message_id FROM ses.anken_emails WHERE message_id = ANY($1)\n                 UNION\n                 SELECT message_id FROM ses.jinzai_emails WHERE message_id = ANY($1)",
+                &[&message_ids],
             )
             .await?;
-        Ok(row.is_some())
+
+        let existing = rows
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect();
+
+        Ok(existing)
     }
 
     async fn store_anken_email(&self, email: &EmailData) -> Result<(), IngestError> {
