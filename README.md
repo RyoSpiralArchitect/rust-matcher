@@ -44,6 +44,35 @@ Phase 2 完了 ─────────────────────�
 - **LLM ワーカーの環境変数ドリブン動作**: `LLM_ENABLED` で完全 OFF、`LLM_PROVIDER`/`LLM_MODEL`/`LLM_ENDPOINT`/`LLM_API_KEY` で実プロバイダを差し替え、`LLM_COMPARE_MODE=shadow` + `LLM_SHADOW_*` で 10% サンプリングの影比較ログを出力できる。`LLM_TIMEOUT_SECONDS` などリトライ・タイムアウトも環境変数で制御。
 - **systemd 運用準備**: 常駐ループ（アイドルポーリング）とキューのカナリア記録を追加済み。`--exit-on-empty` で単発実行も可能。
 
+## ここまでの達成とこれからやること（非実装者向けのやさしいまとめ）
+
+### これまでにやったこと
+
+- **バックエンドの下地を固めた**: sr-common の DTO（`MatchResponse`/`MatchConfig`/`QueueDashboard`）や DB テーブル群（`interaction_logs`・`feedback_events`・`match_results` など）が揃い、Axum ベースの sr-api を新設済み。API キー or JWT の二段構えで認証できる足場を作ってある。
+- **ワーカーと運用の準備が整った**: LLM ワーカーは環境変数だけで ON/OFF やプロバイダ切替、影比較（shadow）まで制御でき、systemd 常駐や単発実行フラグで本番運用を想定した動作が確認済み。
+- **フロントと話せる契約を明文化**: GUI 側が依存するレスポンス形式（候補一覧の `interaction_id` を含むなど）と、フィードバックの冪等性ルール（同じ interaction に対する重複 POST は無視）を設計・実装しているので、Next.js 側はこの契約を前提に作り込みできる。
+- **CORS やトレース設定も用意済み**: 環境変数で CORS 許可オリジンを切り替え、`TraceLayer` でリクエストログも出るため、デプロイ直後から最低限の運用監視が効く。
+
+### これから着手すること（順番の目安つき）
+
+1. **API エンドポイントの Phase 1 を仕上げる（優先）**
+   - `/health` は素通し、`/api/queue/dashboard`・`/api/projects/{id}/candidates`・`/api/feedback` を API キー認証付きで仕上げる。
+   - DB 層は sr-common の `db/queue_dashboard.rs` / `db/candidates.rs` / `db/feedback.rs` を経由し、HTTP 変換は sr-api 側で行う方針を維持。
+2. **GUI 連携のための JWT モードを確認（Phase 2 入口）**
+   - `AUTH_MODE=jwt` 時の設定・起動確認を行い、NextAuth 連携の導線を用意する。X-API-Key とのトグル挙動を README に追記予定。
+3. **Queue ジョブの詳細系 API を拡張**
+   - `/api/queue/jobs` と `/api/queue/jobs/:id`、`/api/queue/retry/:id` を追加し、運用ダッシュボードから再実行できるようにする（Phase 2 以降）。
+4. **GUI との結線と動作確認**
+   - Next.js 側で Queue Dashboard と候補一覧の画面を立て、`interaction_id` をそのまま feedback POST に渡す流れを end-to-end で確認。CORS/認証設定のデフォルトを README に反映。
+5. **Two-Tower 学習の準備と計測**
+   - `training_pairs` ビューを元に学習ジョブを試し、影比較ログを活用してモデル差分を計測。フィードバック蓄積量に応じて本番反映タイミングを判断する。
+
+### 非エンジニア向けのポイント
+
+- **「今もう動く？」に対する答え**: バックエンドの基盤はほぼ揃っており、API キー認証での MVP 動作は実装着手済み。GUI がそろえば内部利用を開始できる段階。
+- **「何を待っている？」の整理**: フロントの画面実装と、API 側の Phase 1 エンドポイントを詰める作業がメイン。運用目線では CORS 設定と環境変数の詰めが残タスク。
+- **「安全側の配慮は？」**: 認証トグル（API キー/JWT）、feedback の冪等性（重複は INSERT しない）、X-Request-Id を用いたトレースで、最初のデプロイから最低限の安全性と追跡性を担保。
+
 ---
 
 ## アーキテクチャ
