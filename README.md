@@ -107,11 +107,14 @@ Phase 2 完了 ─────────────────────�
 - **LLM/ML 担当**: training_pairs ビューを元にした学習・影比較のサンプルノートブックを用意し、Phase 4 に備えて「精度がどこで効いてくるか」を測定できるようにする。
 
 #### すぐ試せるデモ手順
+
 1. `.env.example` をコピーして `SR_API_KEY` と `DATABASE_URL` だけを埋め、`cargo run -p sr-api` を実行（PORT=3001 で起動）。
 2. 別ターミナルで `/health` を叩く: `curl http://localhost:3001/health` → `{ "status": "ok" }` が返ればサーバー起動 OK。
 3. API キー付きで dashboard を叩く: `curl -H "X-API-Key: $SR_API_KEY" http://localhost:3001/api/queue/dashboard` → JSON が返るか確認。
 4. GUI 側は `.env.local` に `NEXT_PUBLIC_API_ORIGIN=http://localhost:3001` と API キー or JWT 設定を入れ、候補一覧表示 → フィードバック送信までひととおりクリックしてみる。
 5. ログを追う: サーバー側ログに X-Request-Id が出るので、障害調査や遅延時にその ID を伝えるとバックエンド側で追跡できる。
+6. （運用向け）重いクエリを守る環境変数: queue job detail 取得時の DB `statement_timeout` は `SR_API_JOB_DETAIL_STATEMENT_TIMEOUT_MS`
+   で上書きできる（既定 5000ms）。source_text を返すかどうかは `SR_API_ALLOW_SOURCE_TEXT` で制御する。
 
 #### FAQ
 

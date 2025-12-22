@@ -31,6 +31,8 @@ pub enum QueueStorageError {
     Conflict(String),
 }
 
+const DEFAULT_DETAIL_STATEMENT_TIMEOUT_MS: i32 = 5000;
+
 fn normalize_json(value: &Option<Value>) -> Option<Json<&Value>> {
     value.as_ref().map(Json)
 }
@@ -451,7 +453,13 @@ pub async fn get_job_by_id(
         ..Default::default()
     };
 
-    get_job_detail_with_includes(pool, id, includes, false)
+    get_job_detail_with_includes(
+        pool,
+        id,
+        includes,
+        false,
+        DEFAULT_DETAIL_STATEMENT_TIMEOUT_MS,
+    )
         .await
         .map(|opt| {
             opt.map(|detail| QueueJobDetail {
@@ -752,9 +760,8 @@ pub async fn get_job_detail_with_includes(
     id: i64,
     mut includes: JobDetailIncludes,
     allow_source_text: bool,
+    statement_timeout_ms: i32,
 ) -> Result<Option<QueueJobDetailResponse>, QueueStorageError> {
-    const STATEMENT_TIMEOUT_MS: i32 = 5000;
-
     if includes.include_interactions || includes.include_feedback {
         includes.include_matches = true;
     }
@@ -763,12 +770,15 @@ pub async fn get_job_detail_with_includes(
     let safe_days = includes.days.clamp(1, 365);
 
     let client = pool.get().await?;
-    client
-        .batch_execute(&format!(
-            "SET statement_timeout = '{}ms'",
-            STATEMENT_TIMEOUT_MS
-        ))
-        .await?;
+    let set_statement_timeout = statement_timeout_ms > 0;
+    if set_statement_timeout {
+        client
+            .batch_execute(&format!(
+                "SET statement_timeout = '{}ms'",
+                statement_timeout_ms
+            ))
+            .await?;
+    }
 
     let result: Result<Option<QueueJobDetailResponse>, QueueStorageError> = async {
         let row = client
@@ -913,12 +923,16 @@ pub async fn get_job_detail_with_includes(
     }
     .await;
 
-    let reset_result = client.batch_execute("RESET statement_timeout").await;
+    if set_statement_timeout {
+        let reset_result = client.batch_execute("RESET statement_timeout").await;
 
-    match (result, reset_result) {
-        (Ok(value), Ok(_)) => Ok(value),
-        (Ok(_), Err(err)) => Err(QueueStorageError::Postgres(err)),
-        (Err(err), _) => Err(err),
+        match (result, reset_result) {
+            (Ok(value), Ok(_)) => Ok(value),
+            (Ok(_), Err(err)) => Err(QueueStorageError::Postgres(err)),
+            (Err(err), _) => Err(err),
+        }
+    } else {
+        result
     }
 }
 

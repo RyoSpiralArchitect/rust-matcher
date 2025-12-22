@@ -145,10 +145,15 @@ pub async fn get_job(
 ) -> Result<Json<QueueJobDetailResponse>, ApiError> {
     let includes = build_detail_includes(&params)?;
 
-    let job =
-        get_job_detail_with_includes(&state.pool, id, includes, state.config.allow_source_text)
-            .await?
-            .ok_or_else(|| ApiError::NotFound(format!("job {id} not found")))?;
+    let job = get_job_detail_with_includes(
+        &state.pool,
+        id,
+        includes,
+        state.config.allow_source_text,
+        state.config.job_detail_statement_timeout_ms,
+    )
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("job {id} not found")))?;
 
     Ok(Json(job))
 }

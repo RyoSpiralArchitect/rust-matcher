@@ -61,6 +61,14 @@ struct Cli {
     /// Allow returning source_text previews on job detail
     #[arg(long, env = "SR_API_ALLOW_SOURCE_TEXT", default_value = "false")]
     allow_source_text: bool,
+
+    /// Statement timeout (ms) applied while fetching job detail includes
+    #[arg(
+        long,
+        env = "SR_API_JOB_DETAIL_STATEMENT_TIMEOUT_MS",
+        default_value_t = 5000
+    )]
+    job_detail_statement_timeout_ms: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +78,7 @@ pub struct AppConfig {
     cors_origins: Vec<String>,
     auth: AuthConfig,
     pub allow_source_text: bool,
+    pub job_detail_statement_timeout_ms: i32,
 }
 
 impl AppConfig {
@@ -114,12 +123,19 @@ impl AppConfig {
             _ => {}
         }
 
+        if cli.job_detail_statement_timeout_ms <= 0 {
+            return Err(ApiError::BadRequest(
+                "SR_API_JOB_DETAIL_STATEMENT_TIMEOUT_MS must be positive".into(),
+            ));
+        }
+
         Ok(Self {
             database_url: cli.database_url,
             port: cli.port,
             cors_origins,
             auth,
             allow_source_text: cli.allow_source_text,
+            job_detail_statement_timeout_ms: cli.job_detail_statement_timeout_ms,
         })
     }
 }
