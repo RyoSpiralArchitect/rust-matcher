@@ -97,6 +97,28 @@ Phase 2 完了 ─────────────────────�
 - **「何を待っている？」の整理**: フロントの画面実装と、API 側の Phase 1 エンドポイントを詰める作業がメイン。運用目線では CORS 設定と環境変数の詰めが残タスク。
 - **「安全側の配慮は？」**: 認証トグル（API キー/JWT）、feedback の冪等性（重複は INSERT しない）、X-Request-Id を用いたトレースで、最初のデプロイから最低限の安全性と追跡性を担保。
 
+#### 役割と合流ポイント（誰がいつ関与するか）
+
+- **バックエンド担当**: `/api/*` の 3 本（dashboard / candidates / feedback）を Phase 1 の完了ラインまで実装し、curl サンプルを README に残す。JWT モードの起動確認も担当。
+- **フロントエンド担当**: Next.js で Queue Dashboard + 候補一覧 + Feedback 入力画面を組み、`interaction_id` をそのまま送る形で API と結線。API キー/JWT どちらでも動くよう .env.example を準備。
+- **営業/運用担当**: feedback 入力の運用ルール（誰がいつ thumbs_up / thumbs_down を押すか、コメント必須か）を定義し、運用手順書を整備。CORS 設定や API キー/JWT 配布の窓口を決める。
+- **LLM/ML 担当**: training_pairs ビューを元にした学習・影比較のサンプルノートブックを用意し、Phase 4 に備えて「精度がどこで効いてくるか」を測定できるようにする。
+
+#### すぐ試せるデモ手順
+1. `.env.example` をコピーして `SR_API_KEY` と `DATABASE_URL` だけを埋め、`cargo run -p sr-api` を実行（PORT=3001 で起動）。
+2. 別ターミナルで `/health` を叩く: `curl http://localhost:3001/health` → `{ "status": "ok" }` が返ればサーバー起動 OK。
+3. API キー付きで dashboard を叩く: `curl -H "X-API-Key: $SR_API_KEY" http://localhost:3001/api/queue/dashboard` → JSON が返るか確認。
+4. GUI 側は `.env.local` に `NEXT_PUBLIC_API_ORIGIN=http://localhost:3001` と API キー or JWT 設定を入れ、候補一覧表示 → フィードバック送信までひととおりクリックしてみる。
+5. ログを追う: サーバー側ログに X-Request-Id が出るので、障害調査や遅延時にその ID を伝えるとバックエンド側で追跡できる。
+
+#### FAQ
+
+- **Q. API キーと JWT、どちらを本番で使う？** → MVP では API キー。GUI と結線するタイミングで JWT へ切り替え。AUTH_MODE で即トグルできる。
+- **Q. LLM は止めても大丈夫？** → `LLM_ENABLED=0` にすれば KO/スコア算出のみで動き、既存ロジックだけで運用可。影比較も ENV だけで ON/OFF 切り替え。
+- **Q. 重複送信や誤送信のリスクは？** → feedback は (interaction_id, feedback_type, actor) の組み合わせで一意に管理。重複は無視され、DB が汚れない設計。
+- **Q. 依存する外部サービスは？** → PostgreSQL と LLM プロバイダ（deepseek 既定）。LLM なし運用も可能なので、データベースさえあれば最低限の機能は動く。
+- **Q. ロールアウト手順は？** → ローカルで API + GUI を繋いでデモ → ステージングで CORS/認証設定を確認 → 本番で API キー配布 or JWT 切替を実施、の 3 ステップ。
+
 ---
 
 ## アーキテクチャ
