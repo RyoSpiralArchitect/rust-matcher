@@ -4,8 +4,12 @@ use serde_json::Value;
 use tokio_postgres::Error as PgError;
 use tokio_postgres::Row;
 use tokio_postgres::types::Json;
+use tokio_postgres::types::ToSql;
 use tracing::instrument;
 
+use crate::api::queue_job::{
+    Pagination, QueueJobDetail, QueueJobFilter, QueueJobListResponse, QueueJobSummary,
+};
 use crate::db::PgPool;
 use crate::queue::{ExtractionJob, QueueStatus};
 
@@ -17,6 +21,10 @@ pub enum QueueStorageError {
     Postgres(#[from] PgError),
     #[error("failed to map queue row: {0}")]
     Mapping(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 fn normalize_json(value: &Option<Value>) -> Option<Json<&Value>> {
@@ -257,6 +265,34 @@ fn row_to_job(row: &Row) -> Result<ExtractionJob, QueueStorageError> {
     })
 }
 
+fn row_to_job_summary(row: &Row) -> QueueJobSummary {
+    QueueJobSummary {
+        id: row.get("id"),
+        message_id: row.get("message_id"),
+        status: row.get("status"),
+        priority: row.get("priority"),
+        retry_count: row.get("retry_count"),
+        next_retry_at: row.get("next_retry_at"),
+        final_method: row.get("final_method"),
+        requires_manual_review: row.get("requires_manual_review"),
+        manual_review_reason: row.get("manual_review_reason"),
+        decision_reason: row.get("decision_reason"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn row_to_job_detail(row: &Row) -> QueueJobDetail {
+    QueueJobDetail {
+        job: row_to_job_summary(row),
+        partial_fields: row.get("partial_fields"),
+        last_error: row.get("last_error"),
+        llm_latency_ms: row.get("llm_latency_ms"),
+        processing_started_at: row.get("processing_started_at"),
+        completed_at: row.get("completed_at"),
+    }
+}
+
 /// Lock and return the next pending job ordered by priority and created_at.
 #[instrument(skip(pool))]
 pub async fn lock_next_pending_job(
@@ -289,6 +325,141 @@ RETURNING *;",
 
     let row = client.query_opt(&stmt, &[&worker_id, &now]).await?;
     row.map(|r| row_to_job(&r)).transpose()
+}
+
+#[instrument(skip(pool))]
+pub async fn list_jobs(
+    pool: &PgPool,
+    filter: &QueueJobFilter,
+    pagination: &Pagination,
+) -> Result<QueueJobListResponse, QueueStorageError> {
+    let client = pool.get().await?;
+
+    let fetch_limit = pagination.limit + 1;
+
+    let mut values: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
+    let mut query = String::from(
+        "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at FROM ses.extraction_queue WHERE 1=1",
+    );
+
+    if let Some(status) = &filter.status {
+        query.push_str(&format!(" AND status = ${}", values.len() + 1));
+        values.push(Box::new(status.clone()));
+    }
+
+    if let Some(requires_manual_review) = filter.requires_manual_review {
+        query.push_str(&format!(
+            " AND requires_manual_review = ${}",
+            values.len() + 1
+        ));
+        values.push(Box::new(requires_manual_review));
+    }
+
+    if let Some(canary_target) = filter.canary_target {
+        query.push_str(&format!(" AND canary_target = ${}", values.len() + 1));
+        values.push(Box::new(canary_target));
+    }
+
+    if let Some(final_method) = &filter.final_method {
+        query.push_str(&format!(" AND final_method = ${}", values.len() + 1));
+        values.push(Box::new(final_method.clone()));
+    }
+
+    if let Some(manual_review_reason) = &filter.manual_review_reason {
+        query.push_str(&format!(
+            " AND manual_review_reason = ${}",
+            values.len() + 1
+        ));
+        values.push(Box::new(manual_review_reason.clone()));
+    }
+
+    if let Some(created_after) = filter.created_after {
+        query.push_str(&format!(" AND created_at >= ${}", values.len() + 1));
+        values.push(Box::new(created_after));
+    }
+
+    if let Some(created_before) = filter.created_before {
+        query.push_str(&format!(" AND created_at <= ${}", values.len() + 1));
+        values.push(Box::new(created_before));
+    }
+
+    query.push_str(&format!(
+        " ORDER BY created_at DESC, id DESC LIMIT ${} OFFSET ${}",
+        values.len() + 1,
+        values.len() + 2
+    ));
+
+    values.push(Box::new(fetch_limit));
+    values.push(Box::new(pagination.offset));
+
+    let params: Vec<&(dyn ToSql + Sync)> = values
+        .iter()
+        .map(|v| v.as_ref() as &(dyn ToSql + Sync))
+        .collect();
+    let rows = client.query(&query, &params).await?;
+
+    let mut items: Vec<QueueJobSummary> = rows.iter().map(row_to_job_summary).collect();
+    let has_more = (items.len() as i64) > pagination.limit;
+    if has_more {
+        items.pop();
+    }
+
+    Ok(QueueJobListResponse {
+        items,
+        limit: pagination.limit,
+        offset: pagination.offset,
+        has_more,
+    })
+}
+
+#[instrument(skip(pool))]
+pub async fn get_job_by_id(
+    pool: &PgPool,
+    id: i64,
+) -> Result<Option<QueueJobDetail>, QueueStorageError> {
+    let client = pool.get().await?;
+
+    let row = client
+        .query_opt(
+            "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at, partial_fields, last_error, llm_latency_ms, processing_started_at, completed_at FROM ses.extraction_queue WHERE id = $1",
+            &[&id],
+        )
+        .await?;
+
+    Ok(row.map(|r| row_to_job_detail(&r)))
+}
+
+#[instrument(skip(pool))]
+pub async fn retry_job(pool: &PgPool, id: i64) -> Result<(), QueueStorageError> {
+    let client = pool.get().await?;
+
+    let updated = client
+        .execute(
+            "UPDATE ses.extraction_queue SET status = 'pending', locked_by = NULL, processing_started_at = NULL, completed_at = NULL, next_retry_at = NULL, retry_count = 0, requires_manual_review = false, manual_review_reason = NULL, updated_at = NOW() WHERE id = $1 AND status = 'completed'",
+            &[&id],
+        )
+        .await?;
+
+    if updated == 1 {
+        return Ok(());
+    }
+
+    let status_row = client
+        .query_opt(
+            "SELECT status FROM ses.extraction_queue WHERE id = $1",
+            &[&id],
+        )
+        .await?;
+
+    match status_row {
+        None => Err(QueueStorageError::NotFound(format!("job {id} not found"))),
+        Some(row) => {
+            let status: String = row.get("status");
+            Err(QueueStorageError::Conflict(format!(
+                "job {id} is {status} and cannot be retried"
+            )))
+        }
+    }
 }
 
 #[cfg(test)]
