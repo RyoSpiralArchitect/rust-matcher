@@ -376,3 +376,7 @@ docs/
 - GUI 契約層（MatchResponse, FeedbackRequest, QueueDashboard）
 - HTTP API エンドポイント一覧
 - Done 条件チェックリスト
+
+### セットアップガイド
+
+- [Gmail Ingestor セットアップ](docs/gmail-setup.md) - Google Workspace 連携の設定手順
