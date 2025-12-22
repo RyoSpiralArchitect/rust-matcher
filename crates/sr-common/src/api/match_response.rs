@@ -12,6 +12,8 @@ pub struct MatchResponse {
     pub talent_id: i64,
     /// 案件ID
     pub project_id: i64,
+    /// インタラクションID（feedback紐付け用）
+    pub interaction_id: i64,
 
     // === 判定結果 ===
     /// 自動マッチ推奨（HardKoなし & score > threshold）
@@ -60,6 +62,7 @@ impl MatchResponse {
 
     /// 既存の`MatchResult`からGUI用レスポンスを構築する
     pub fn from_match_result(
+        interaction_id: i64,
         talent_id: i64,
         project_id: i64,
         result: &MatchResult,
@@ -69,6 +72,7 @@ impl MatchResponse {
         let mut response = Self {
             talent_id,
             project_id,
+            interaction_id,
             auto_match_eligible: result.auto_match_eligible,
             manual_review_required: result.manual_review_required,
             score: result.score as f32,
@@ -253,10 +257,11 @@ mod tests {
 
         let matched_at = Utc::now();
         let config = MatchConfig::default();
-        let response = MatchResponse::from_match_result(10, 20, &result, matched_at, &config);
+        let response = MatchResponse::from_match_result(100, 10, 20, &result, matched_at, &config);
 
         assert_eq!(response.talent_id, 10);
         assert_eq!(response.project_id, 20);
+        assert_eq!(response.interaction_id, 100);
         assert!(response.manual_review_required);
         assert_eq!(response.score, 0.82);
         assert_eq!(response.two_tower_score, None);
@@ -268,6 +273,7 @@ mod tests {
     #[test]
     fn auto_match_helpers_respect_config() {
         let mut response = MatchResponse {
+            interaction_id: 1,
             talent_id: 1,
             project_id: 2,
             auto_match_eligible: true,
@@ -305,7 +311,7 @@ mod tests {
         );
 
         let config = MatchConfig::default();
-        let response = MatchResponse::from_match_result(1, 2, &result, Utc::now(), &config);
+        let response = MatchResponse::from_match_result(10, 1, 2, &result, Utc::now(), &config);
 
         assert!(response.manual_review_required);
         assert!(!response.auto_match_eligible);
