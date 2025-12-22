@@ -377,7 +377,10 @@ fn perform_llm_request(
     api_key: &str,
     request: &LlmRequest,
 ) -> Result<LlmResponse, JobError> {
+    // Disable environment proxies so local mock servers (used in tests) are hit directly
+    // instead of being tunneled through corporate MITM proxies that would block the request.
     let client = Client::builder()
+        .no_proxy()
         .timeout(StdDuration::from_secs(config.timeout_secs))
         .build()
         .map_err(|err| JobError::Retryable {
