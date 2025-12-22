@@ -603,7 +603,7 @@ async fn fetch_interactions(
 
     let stmt = client
         .prepare(
-            "SELECT id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::int[]) ORDER BY created_at DESC",
+            "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::int[]) ORDER BY match_result_id, created_at DESC",
         )
         .await?;
 
@@ -634,6 +634,7 @@ async fn fetch_feedback_events(
     client: &tokio_postgres::Client,
     interaction_ids: &[i64],
     match_result_ids: &[i32],
+    limit: usize,
 ) -> Result<Vec<FeedbackEventRow>, QueueStorageError> {
     if interaction_ids.is_empty() && match_result_ids.is_empty() {
         return Ok(Vec::new());
@@ -666,6 +667,10 @@ async fn fetch_feedback_events(
     let mut seen_ids = HashSet::new();
     events.retain(|event| seen_ids.insert(event.id));
     events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    if events.len() > limit {
+        events.truncate(limit);
+    }
 
     Ok(events)
 }
@@ -820,7 +825,13 @@ pub async fn get_job_detail_with_includes(
             HashMap<i32, Vec<FeedbackEventRow>>,
         ) = if includes.include_feedback {
             let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
-            let events = fetch_feedback_events(&client, &interaction_ids, &match_ids_i32).await?;
+            let events = fetch_feedback_events(
+                &client,
+                &interaction_ids,
+                &match_ids_i32,
+                includes.limit as usize,
+            )
+            .await?;
             group_feedback_events(events)
         } else {
             (HashMap::new(), HashMap::new())
