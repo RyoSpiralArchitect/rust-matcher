@@ -49,6 +49,10 @@ struct Cli {
     /// Comma separated list of allowed CORS origins
     #[arg(long, env = "SR_CORS_ORIGINS", default_value = "http://localhost:3000")]
     cors_origins: String,
+
+    /// Allow returning source_text previews on job detail
+    #[arg(long, env = "SR_API_ALLOW_SOURCE_TEXT", default_value = "false")]
+    allow_source_text: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +61,7 @@ pub struct AppConfig {
     port: u16,
     cors_origins: Vec<String>,
     auth: AuthConfig,
+    pub allow_source_text: bool,
 }
 
 impl AppConfig {
@@ -93,6 +98,7 @@ impl AppConfig {
             port: cli.port,
             cors_origins,
             auth,
+            allow_source_text: cli.allow_source_text,
         })
     }
 }

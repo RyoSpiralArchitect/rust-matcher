@@ -3,9 +3,12 @@ use axum::{
     extract::{Path, Query, State},
 };
 use sr_common::api::queue_dashboard::QueueDashboard;
-use sr_common::api::queue_job::{Pagination, QueueJobDetail, QueueJobFilter, QueueJobListResponse};
+use sr_common::api::queue_job::{
+    JobDetailIncludes, Pagination, QueueJobDetailResponse, QueueJobFilter, QueueJobListResponse,
+};
 use sr_common::db::{
-    fetch_dashboard, get_job_by_id, list_jobs as fetch_listed_jobs, retry_job as retry_queue_job,
+    fetch_dashboard, get_job_detail_with_includes, list_jobs as fetch_listed_jobs,
+    retry_job as retry_queue_job,
 };
 
 use crate::SharedState;
@@ -27,7 +30,7 @@ fn validate_filter(filter: &QueueJobFilter) -> Result<(), ApiError> {
             other => {
                 return Err(ApiError::BadRequest(format!(
                     "unsupported status filter: {other}"
-                )))
+                )));
             }
         }
     }
@@ -38,12 +41,62 @@ fn validate_filter(filter: &QueueJobFilter) -> Result<(), ApiError> {
             other => {
                 return Err(ApiError::BadRequest(format!(
                     "unsupported final_method filter: {other}"
-                )))
+                )));
             }
         }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct JobDetailParams {
+    pub include: Option<String>,
+    pub limit: Option<i64>,
+    pub days: Option<i64>,
+}
+
+fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, ApiError> {
+    let mut includes = JobDetailIncludes {
+        limit: params.limit.unwrap_or(20),
+        days: params.days.unwrap_or(30),
+        ..Default::default()
+    };
+
+    if includes.limit <= 0 || includes.limit > 200 {
+        return Err(ApiError::BadRequest(
+            "limit must be between 1 and 200".into(),
+        ));
+    }
+
+    if includes.days <= 0 {
+        return Err(ApiError::BadRequest("days must be positive".into()));
+    }
+
+    if let Some(include) = &params.include {
+        for part in include.split(',') {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match trimmed {
+                "record" => {}
+                "entity" => includes.include_entity = true,
+                "matches" => includes.include_matches = true,
+                "interactions" => includes.include_interactions = true,
+                "feedback" => includes.include_feedback = true,
+                "source_text" => includes.include_source_text = true,
+                other => {
+                    return Err(ApiError::BadRequest(format!(
+                        "unsupported include flag: {other}"
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(includes)
 }
 
 pub async fn dashboard(
@@ -80,10 +133,15 @@ pub async fn get_job(
     State(state): State<SharedState>,
     _auth: AuthUser,
     Path(id): Path<i64>,
-) -> Result<Json<QueueJobDetail>, ApiError> {
-    let job = get_job_by_id(&state.pool, id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("job {id} not found")))?;
+
+    Query(params): Query<JobDetailParams>,
+) -> Result<Json<QueueJobDetailResponse>, ApiError> {
+    let includes = build_detail_includes(&params)?;
+
+    let job =
+        get_job_detail_with_includes(&state.pool, id, includes, state.config.allow_source_text)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("job {id} not found")))?;
 
     Ok(Json(job))
 }

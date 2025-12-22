@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use chrono::{DateTime, Duration, Utc};
 use deadpool_postgres::PoolError;
 use serde_json::Value;
@@ -8,7 +10,9 @@ use tokio_postgres::types::ToSql;
 use tracing::instrument;
 
 use crate::api::queue_job::{
-    Pagination, QueueJobDetail, QueueJobFilter, QueueJobListResponse, QueueJobSummary,
+    FeedbackEventRow, InteractionLogRow, JobDetailIncludes, JobEntity, MatchResultRow, Pagination,
+    PairDetail, ProjectSnapshot, QueueJobDetail, QueueJobDetailResponse, QueueJobFilter,
+    QueueJobListResponse, QueueJobSummary, TalentSnapshot,
 };
 use crate::db::PgPool;
 use crate::queue::{ExtractionJob, QueueStatus};
@@ -293,6 +297,21 @@ fn row_to_job_detail(row: &Row) -> QueueJobDetail {
     }
 }
 
+fn row_to_job_detail_response(row: &Row) -> QueueJobDetailResponse {
+    let base = row_to_job_detail(row);
+    QueueJobDetailResponse {
+        job: base.job,
+        partial_fields: base.partial_fields,
+        last_error: base.last_error,
+        llm_latency_ms: base.llm_latency_ms,
+        processing_started_at: base.processing_started_at,
+        completed_at: base.completed_at,
+        entity: None,
+        pairs: None,
+        source_preview: None,
+    }
+}
+
 /// Lock and return the next pending job ordered by priority and created_at.
 #[instrument(skip(pool))]
 pub async fn lock_next_pending_job(
@@ -417,6 +436,290 @@ pub async fn get_job_by_id(
     pool: &PgPool,
     id: i64,
 ) -> Result<Option<QueueJobDetail>, QueueStorageError> {
+    let includes = JobDetailIncludes {
+        limit: 1,
+        ..Default::default()
+    };
+
+    get_job_detail_with_includes(pool, id, includes, false)
+        .await
+        .map(|opt| {
+            opt.map(|detail| QueueJobDetail {
+                job: detail.job,
+                partial_fields: detail.partial_fields,
+                last_error: detail.last_error,
+                llm_latency_ms: detail.llm_latency_ms,
+                processing_started_at: detail.processing_started_at,
+                completed_at: detail.completed_at,
+            })
+        })
+}
+
+async fn fetch_talent_snapshot(
+    client: &tokio_postgres::Client,
+    message_id: &str,
+    include_source: bool,
+) -> Result<Option<TalentSnapshot>, QueueStorageError> {
+    let stmt = client
+        .prepare(
+            "SELECT id, message_id, talent_name, summary_text, desired_price_min, available_date, received_at, source_text FROM ses.talents_enum WHERE message_id = $1 LIMIT 1",
+        )
+        .await?;
+
+    let row = client.query_opt(&stmt, &[&message_id]).await?;
+    let snapshot = row.map(|r| TalentSnapshot {
+        id: r.get::<_, i64>("id"),
+        message_id: r.get("message_id"),
+        talent_name: r.get("talent_name"),
+        summary_text: r.get("summary_text"),
+        desired_price_min: r.get("desired_price_min"),
+        available_date: r.get("available_date"),
+        received_at: r.get("received_at"),
+        source_text: if include_source {
+            r.get("source_text")
+        } else {
+            None
+        },
+    });
+
+    Ok(snapshot)
+}
+
+async fn fetch_project_snapshot(
+    client: &tokio_postgres::Client,
+    message_id: &str,
+    include_source: bool,
+) -> Result<Option<ProjectSnapshot>, QueueStorageError> {
+    let stmt = client
+        .prepare(
+            "SELECT project_code, message_id, project_name, monthly_tanka_min, monthly_tanka_max, start_date, source_text, requires_manual_review, manual_review_reason FROM ses.projects_enum WHERE message_id = $1 LIMIT 1",
+        )
+        .await?;
+
+    let row = client.query_opt(&stmt, &[&message_id]).await?;
+    let snapshot = row.map(|r| ProjectSnapshot {
+        project_code: r.get::<_, i32>("project_code") as i64,
+        message_id: r.get("message_id"),
+        project_name: r.get("project_name"),
+        monthly_tanka_min: r.get("monthly_tanka_min"),
+        monthly_tanka_max: r.get("monthly_tanka_max"),
+        start_date: r.get("start_date"),
+        source_text: if include_source {
+            r.get("source_text")
+        } else {
+            None
+        },
+        requires_manual_review: r.get("requires_manual_review"),
+        manual_review_reason: r.get("manual_review_reason"),
+    });
+
+    Ok(snapshot)
+}
+
+fn map_match_result(row: &Row) -> MatchResultRow {
+    let ko_reasons_value: Option<Value> = row.get("ko_reasons");
+    let ko_reasons = match ko_reasons_value {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        _ => vec![],
+    };
+
+    MatchResultRow {
+        id: row.get::<_, i32>("id") as i64,
+        talent_id: row.get::<_, i32>("talent_id") as i64,
+        project_id: row.get::<_, i32>("project_id") as i64,
+        is_knockout: row.get("is_knockout"),
+        ko_reasons,
+        needs_manual_review: row.get("needs_manual_review"),
+        score_total: row.get::<_, Option<f64>>("score_total").map(|v| v as f32),
+        score_breakdown: row.get("score_breakdown"),
+        engine_version: row.get("engine_version"),
+        rule_version: row.get("rule_version"),
+        created_at: row.get("created_at"),
+    }
+}
+
+async fn fetch_match_results(
+    client: &tokio_postgres::Client,
+    talent_id: Option<i64>,
+    project_id: Option<i64>,
+    days: i64,
+    limit: i64,
+) -> Result<Vec<MatchResultRow>, QueueStorageError> {
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(talent_id) = talent_id {
+        let stmt = client
+            .prepare(
+                "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE talent_id = $1 AND created_at >= NOW() - ($2::int * INTERVAL '1 day') ORDER BY created_at DESC LIMIT $3",
+            )
+            .await?;
+        let rows = client.query(&stmt, &[&talent_id, &days, &limit]).await?;
+        for row in rows {
+            let mapped = map_match_result(&row);
+            seen.insert(mapped.id);
+            results.push(mapped);
+        }
+    }
+
+    if let Some(project_id) = project_id {
+        let stmt = client
+            .prepare(
+                "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE project_id = $1 AND created_at >= NOW() - ($2::int * INTERVAL '1 day') ORDER BY created_at DESC LIMIT $3",
+            )
+            .await?;
+        let rows = client.query(&stmt, &[&project_id, &days, &limit]).await?;
+        for row in rows {
+            let mapped = map_match_result(&row);
+            if seen.insert(mapped.id) {
+                results.push(mapped);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+async fn fetch_interactions(
+    client: &tokio_postgres::Client,
+    match_result_ids: &[i64],
+) -> Result<Vec<InteractionLogRow>, QueueStorageError> {
+    if match_result_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let stmt = client
+        .prepare(
+            "SELECT id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::int[]) ORDER BY created_at DESC",
+        )
+        .await?;
+
+    let rows = client.query(&stmt, &[&match_result_ids]).await?;
+
+    let interactions = rows
+        .into_iter()
+        .map(|row| InteractionLogRow {
+            id: row.get::<_, i64>("id"),
+            match_result_id: row
+                .get::<_, Option<i32>>("match_result_id")
+                .map(|v| v as i64),
+            talent_id: row.get::<_, i32>("talent_id") as i64,
+            project_id: row.get::<_, i32>("project_id") as i64,
+            match_run_id: row.get("match_run_id"),
+            engine_version: row.get("engine_version"),
+            config_version: row.get("config_version"),
+            two_tower_score: row.get("two_tower_score"),
+            business_score: row.get("business_score"),
+            outcome: row.get("outcome"),
+            feedback_at: row.get("feedback_at"),
+            created_at: row.get("created_at"),
+        })
+        .collect();
+
+    Ok(interactions)
+}
+
+async fn fetch_feedback_events(
+    client: &tokio_postgres::Client,
+    interaction_ids: &[i64],
+    match_result_ids: &[i64],
+) -> Result<Vec<FeedbackEventRow>, QueueStorageError> {
+    if interaction_ids.is_empty() && match_result_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let stmt = client
+        .prepare(
+            "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE (interaction_id IS NOT NULL AND interaction_id = ANY($1::bigint[])) OR (match_result_id IS NOT NULL AND match_result_id = ANY($2::int[])) ORDER BY created_at DESC",
+        )
+        .await?;
+
+    let rows = client
+        .query(&stmt, &[&interaction_ids, &match_result_ids])
+        .await?;
+
+    let events = rows
+        .into_iter()
+        .map(|row| FeedbackEventRow {
+            id: row.get::<_, i64>("id"),
+            interaction_id: row.get::<_, Option<i64>>("interaction_id"),
+            match_result_id: row
+                .get::<_, Option<i32>>("match_result_id")
+                .map(|v| v as i64),
+            match_run_id: row.get("match_run_id"),
+            engine_version: row.get("engine_version"),
+            config_version: row.get("config_version"),
+            project_id: row.get::<_, i64>("project_id"),
+            talent_id: row.get::<_, i64>("talent_id"),
+            feedback_type: row.get("feedback_type"),
+            ng_reason_category: row.get("ng_reason_category"),
+            comment: row.get("comment"),
+            actor: row.get("actor"),
+            source: row.get("source"),
+            is_revoked: row.get("is_revoked"),
+            created_at: row.get("created_at"),
+        })
+        .collect();
+
+    Ok(events)
+}
+
+fn latest_interactions_by_match(
+    interactions: Vec<InteractionLogRow>,
+) -> HashMap<i64, InteractionLogRow> {
+    let mut map: HashMap<i64, InteractionLogRow> = HashMap::new();
+    for interaction in interactions {
+        if let Some(match_id) = interaction.match_result_id {
+            let should_replace = match map.get(&match_id) {
+                Some(existing) => interaction.created_at > existing.created_at,
+                None => true,
+            };
+            if should_replace {
+                map.insert(match_id, interaction);
+            }
+        }
+    }
+    map
+}
+
+fn group_feedback_events(
+    events: Vec<FeedbackEventRow>,
+) -> (
+    HashMap<i64, Vec<FeedbackEventRow>>,
+    HashMap<i64, Vec<FeedbackEventRow>>,
+) {
+    let mut by_interaction: HashMap<i64, Vec<FeedbackEventRow>> = HashMap::new();
+    let mut by_match: HashMap<i64, Vec<FeedbackEventRow>> = HashMap::new();
+
+    for event in events {
+        if let Some(interaction_id) = event.interaction_id {
+            by_interaction
+                .entry(interaction_id)
+                .or_default()
+                .push(event.clone());
+        }
+
+        if let Some(match_id) = event.match_result_id {
+            by_match.entry(match_id).or_default().push(event);
+        }
+    }
+
+    (by_interaction, by_match)
+}
+
+pub async fn get_job_detail_with_includes(
+    pool: &PgPool,
+    id: i64,
+    mut includes: JobDetailIncludes,
+    allow_source_text: bool,
+) -> Result<Option<QueueJobDetailResponse>, QueueStorageError> {
+    if includes.include_interactions || includes.include_feedback {
+        includes.include_matches = true;
+    }
+
     let client = pool.get().await?;
 
     let row = client
@@ -426,7 +729,102 @@ pub async fn get_job_by_id(
         )
         .await?;
 
-    Ok(row.map(|r| row_to_job_detail(&r)))
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let mut detail = row_to_job_detail_response(&row);
+    let message_id = detail.job.message_id.clone();
+
+    let include_source = includes.include_source_text && allow_source_text;
+    let talent_snapshot =
+        if includes.include_entity || includes.include_matches || includes.include_source_text {
+            fetch_talent_snapshot(&client, &message_id, include_source).await?
+        } else {
+            None
+        };
+    let project_snapshot =
+        if includes.include_entity || includes.include_matches || includes.include_source_text {
+            fetch_project_snapshot(&client, &message_id, include_source).await?
+        } else {
+            None
+        };
+
+    if includes.include_entity {
+        detail.entity = match (talent_snapshot.clone(), project_snapshot.clone()) {
+            (Some(talent), Some(project)) => Some(JobEntity::Both { talent, project }),
+            (Some(talent), None) => Some(JobEntity::Talent(talent)),
+            (None, Some(project)) => Some(JobEntity::Project(project)),
+            (None, None) => None,
+        };
+    }
+
+    if include_source {
+        detail.source_preview = talent_snapshot
+            .as_ref()
+            .and_then(|t| t.source_text.clone())
+            .or_else(|| {
+                project_snapshot
+                    .as_ref()
+                    .and_then(|p| p.source_text.clone())
+            });
+    }
+
+    if includes.include_matches {
+        let matches = fetch_match_results(
+            &client,
+            talent_snapshot.as_ref().map(|t| t.id),
+            project_snapshot.as_ref().map(|p| p.project_code),
+            includes.days,
+            includes.limit,
+        )
+        .await?;
+
+        let match_ids: Vec<i64> = matches.iter().map(|m| m.id).collect();
+        let mut pairs = Vec::new();
+
+        let interaction_map = if includes.include_interactions || includes.include_feedback {
+            let interactions = fetch_interactions(&client, &match_ids).await?;
+            latest_interactions_by_match(interactions)
+        } else {
+            HashMap::new()
+        };
+
+        let feedback_maps = if includes.include_feedback {
+            let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
+            let events = fetch_feedback_events(&client, &interaction_ids, &match_ids).await?;
+            group_feedback_events(events)
+        } else {
+            (HashMap::new(), HashMap::new())
+        };
+
+        for match_result in matches {
+            let latest_interaction = interaction_map.get(&match_result.id).cloned();
+            let mut feedback_events = Vec::new();
+
+            if let Some(interaction) = &latest_interaction {
+                if let Some(events) = feedback_maps.0.get(&interaction.id) {
+                    feedback_events.extend(events.clone());
+                }
+            }
+
+            if feedback_events.is_empty() {
+                if let Some(events) = feedback_maps.1.get(&match_result.id) {
+                    feedback_events.extend(events.clone());
+                }
+            }
+
+            pairs.push(PairDetail {
+                match_result,
+                latest_interaction,
+                feedback_events,
+            });
+        }
+
+        detail.pairs = Some(pairs);
+    }
+
+    Ok(Some(detail))
 }
 
 #[instrument(skip(pool))]
