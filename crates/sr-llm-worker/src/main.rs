@@ -758,6 +758,34 @@ mod tests {
         }
     }
 
+    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        use std::sync::Mutex;
+        static ENV_GUARD: Mutex<()> = Mutex::new(());
+        let _guard = ENV_GUARD.lock().unwrap();
+
+        let prev: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(key, value)| {
+                let previous = std::env::var(key).ok();
+                match value {
+                    Some(v) => unsafe { std::env::set_var(key, v) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+                (key.to_string(), previous)
+            })
+            .collect();
+
+        f();
+
+        for (key, previous) in prev {
+            if let Some(v) = previous {
+                unsafe { std::env::set_var(&key, v) };
+            } else {
+                unsafe { std::env::remove_var(&key) };
+            }
+        }
+    }
+
     #[test]
     fn llm_job_is_marked_completed() {
         let server = MockServer::start();
