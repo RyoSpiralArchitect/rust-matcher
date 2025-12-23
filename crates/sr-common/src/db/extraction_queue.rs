@@ -4,7 +4,6 @@ use chrono::{DateTime, Duration, Utc};
 use deadpool_postgres::{GenericClient, PoolError};
 use serde_json::Value;
 use tokio_postgres::Error as PgError;
-use tokio_postgres::GenericClient;
 use tokio_postgres::Row;
 use tokio_postgres::types::Json;
 use tokio_postgres::types::ToSql;
@@ -376,7 +375,25 @@ fn truncate_source_preview(text: &str) -> String {
         return text.to_string();
     }
 
-    text.chars().take(SOURCE_PREVIEW_LIMIT).collect::<String>()
+    let mut end = 0usize;
+    let mut last_break = None;
+    let mut count = 0usize;
+
+    for (idx, ch) in text.char_indices() {
+        if count == SOURCE_PREVIEW_LIMIT {
+            break;
+        }
+
+        if ch == '\n' || ch == '。' || ch == '.' {
+            last_break = Some(idx + ch.len_utf8());
+        }
+
+        end = idx + ch.len_utf8();
+        count += 1;
+    }
+
+    let cutoff = last_break.unwrap_or(end);
+    text[..cutoff].to_string()
 }
 
 /// Lock and return the next pending job ordered by priority and created_at.
@@ -678,29 +695,25 @@ async fn fetch_feedback_events(
         return Ok(Vec::new());
     }
 
-    let mut events: Vec<FeedbackEventRow> = Vec::new();
+    let limit_i64 = i64::try_from(limit)
+        .map_err(|e| QueueStorageError::Mapping(format!("invalid feedback limit {limit}: {e}")))?;
 
-    if !interaction_ids.is_empty() {
-        let stmt = client
-            .prepare_cached(
-                "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE interaction_id IS NOT NULL AND interaction_id = ANY($1::bigint[]) ORDER BY created_at DESC",
-            )
-            .await?;
+    let stmt = client
+        .prepare_cached(
+            "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at
+             FROM ses.feedback_events
+             WHERE (interaction_id IS NOT NULL AND interaction_id = ANY($1::bigint[]))
+                OR (match_result_id IS NOT NULL AND match_result_id = ANY($2::int[]))
+             ORDER BY created_at DESC
+             LIMIT $3",
+        )
+        .await?;
 
-        let rows = client.query(&stmt, &[&interaction_ids]).await?;
-        events.extend(rows.into_iter().map(map_feedback_row));
-    }
+    let rows = client
+        .query(&stmt, &[&interaction_ids, &match_result_ids, &limit_i64])
+        .await?;
 
-    if !match_result_ids.is_empty() {
-        let stmt = client
-            .prepare_cached(
-                "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE match_result_id IS NOT NULL AND match_result_id = ANY($1::int[]) ORDER BY created_at DESC",
-            )
-            .await?;
-
-        let rows = client.query(&stmt, &[&match_result_ids]).await?;
-        events.extend(rows.into_iter().map(map_feedback_row));
-    }
+    let mut events: Vec<FeedbackEventRow> = rows.into_iter().map(map_feedback_row).collect();
 
     let mut seen_ids = HashSet::new();
     events.retain(|event| seen_ids.insert(event.id));

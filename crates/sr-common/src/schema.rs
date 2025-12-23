@@ -90,6 +90,7 @@ CREATE TABLE ses.match_results (
     id SERIAL PRIMARY KEY,
     talent_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
+    run_date DATE NOT NULL, -- JST基準でアプリが決定する（UTC境界ずれ防止）
 
     is_knockout BOOLEAN NOT NULL,
     ko_reasons JSONB,
@@ -103,7 +104,7 @@ CREATE TABLE ses.match_results (
 
     created_at TIMESTAMPTZ DEFAULT NOW(),
 
-    UNIQUE(talent_id, project_id, created_at::date)
+    UNIQUE(talent_id, project_id, run_date)
 );
 
 CREATE INDEX idx_match_results_talent ON ses.match_results(talent_id, created_at);
@@ -204,6 +205,7 @@ CREATE TABLE ses.interaction_logs (
     match_result_id INTEGER REFERENCES ses.match_results(id),
     talent_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
+    run_date DATE NOT NULL, -- JST基準でアプリが決定する（UTC境界ずれ防止）
     match_run_id VARCHAR(64),       -- engine_version + config_version を含む実行単位
     engine_version VARCHAR(20),
     config_version VARCHAR(20),
@@ -224,7 +226,7 @@ CREATE TABLE ses.interaction_logs (
     created_at TIMESTAMPTZ DEFAULT NOW(),
 
     -- インデックス
-    CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, created_at::date)
+    CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, run_date)
 );
 
 CREATE INDEX idx_interaction_logs_match_run ON ses.interaction_logs(match_run_id, created_at DESC);
@@ -312,7 +314,8 @@ mod tests {
             "talent_id",
             "project_id",
             "score_breakdown",
-            "UNIQUE(talent_id, project_id, created_at::date)",
+            "run_date",
+            "UNIQUE(talent_id, project_id, run_date)",
             "idx_match_results_project_score_created",
             "idx_match_results_score",
         ] {
@@ -349,6 +352,7 @@ mod tests {
             "match_run_id",
             "engine_version",
             "config_version",
+            "run_date",
             "interaction_logs_unique",
             "idx_interaction_logs_match_run",
             "idx_interaction_logs_match_result",

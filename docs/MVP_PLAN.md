@@ -14617,7 +14617,8 @@ CREATE TABLE ses.match_results (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- 日次ユニーク制約（同じペアは1日1回まで）
-    UNIQUE(talent_snapshot_id, project_snapshot_id, created_at::date)
+    run_date DATE NOT NULL,
+    UNIQUE(talent_snapshot_id, project_snapshot_id, run_date)
 );
 
 -- インデックス
@@ -15393,7 +15394,8 @@ CREATE TABLE ses.interaction_logs (
     created_at TIMESTAMPTZ DEFAULT NOW(),
 
     -- インデックス
-    CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, created_at::date)
+    run_date DATE NOT NULL,
+    CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, run_date)
 );
 
 -- Phase 4 学習用のビュー
@@ -16298,6 +16300,16 @@ pub fn api_routes() -> Router {
 | `GET` | `/api/projects/:id/candidates` | 案件の候補一覧 | `?include_softko=true` | `Vec<MatchResponse>` |
 | `POST` | `/api/feedback` | フィードバック送信 | `FeedbackRequest` | `{ "id": 123 }` |
 | `GET` | `/api/feedback/history/:id` | FB履歴 | - | `Vec<FeedbackEvent>` |
+
+#### Cookie ベース認証（Feature Flag 準備）
+
+- SR_CORS_ORIGINS はワイルドカード（`*`）禁止。Cookie 送信を許可するため、明示的なオリジンを列挙する。
+- `CorsLayer::allow_credentials(true)` を有効化済み。Cookie/JWT 化を行う場合は Next.js 側で `credentials: 'include'` を設定する。
+- フューチャーフラグ（例: `SR_API_USE_COOKIE_AUTH=true`）で Cookie/JWT 化を切り替える実装を追加予定。**実装手順メモ**:
+  1. API 側: `SR_API_USE_COOKIE_AUTH` が true のときは Authorization ヘッダーではなく Cookie (`__Host-sr-token`) を読むミドルウェアを追加し、既存 JWT 検証を再利用する。
+  2. API 側: CORS は `allow_credentials(true)` 前提。SR_CORS_ORIGINS に GUI オリジンを明示列挙し、`*` はバリデーションエラーにする（済）。
+  3. Frontend 側: `fetch` で `credentials: 'include'` を必須にし、`SameSite=None; Secure` の Cookie を発行する。
+  4. Rollout: フラグ off でデプロイ → Next.js を `credentials: 'include'` に変更 → フラグ on で Cookie 認証へ切替。
 
 #### MatchRequest
 

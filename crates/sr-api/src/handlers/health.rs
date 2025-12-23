@@ -48,7 +48,7 @@ mod tests {
     use sr_common::db::create_pool_from_url;
 
     use crate::auth::{AuthConfig, AuthMode, JwtAlgorithm};
-    use crate::{default_rate_limits, AppConfig, AppState, MatchConfig};
+    use crate::{AppConfig, AppState, MatchConfig, default_rate_limits};
 
     fn state_with_readiness(readiness: bool) -> SharedState {
         let pool = create_pool_from_url("postgres://user:pass@localhost:5432/example").unwrap();
