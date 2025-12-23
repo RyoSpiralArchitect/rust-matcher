@@ -108,6 +108,8 @@ CREATE TABLE ses.match_results (
 
 CREATE INDEX idx_match_results_talent ON ses.match_results(talent_id, created_at);
 CREATE INDEX idx_match_results_project ON ses.match_results(project_id, created_at);
+CREATE INDEX idx_match_results_project_score_created
+  ON ses.match_results(project_id, score_total DESC, created_at DESC);
 CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
 "#;
 
@@ -226,6 +228,7 @@ CREATE TABLE ses.interaction_logs (
 );
 
 CREATE INDEX idx_interaction_logs_match_run ON ses.interaction_logs(match_run_id, created_at DESC);
+CREATE INDEX idx_interaction_logs_match_result ON ses.interaction_logs(match_result_id);
 CREATE INDEX idx_interaction_logs_outcome ON ses.interaction_logs(outcome, created_at DESC)
     WHERE outcome IS NOT NULL;
 
@@ -310,6 +313,7 @@ mod tests {
             "project_id",
             "score_breakdown",
             "UNIQUE(talent_id, project_id, created_at::date)",
+            "idx_match_results_project_score_created",
             "idx_match_results_score",
         ] {
             assert!(MATCH_RESULTS_DDL.contains(required));
@@ -347,6 +351,7 @@ mod tests {
             "config_version",
             "interaction_logs_unique",
             "idx_interaction_logs_match_run",
+            "idx_interaction_logs_match_result",
             "idx_interaction_logs_outcome",
             "CREATE OR REPLACE VIEW ses.training_pairs",
             "CREATE OR REPLACE VIEW ses.training_stats",

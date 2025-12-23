@@ -34,6 +34,60 @@ pub enum QueueStorageError {
 
 const DEFAULT_DETAIL_STATEMENT_TIMEOUT_MS: i32 = 5000;
 
+struct QueryBuilder {
+    sql: String,
+    values: Vec<Box<dyn ToSql + Sync + Send>>, // enforce placeholder-only additions
+}
+
+impl QueryBuilder {
+    fn new(base: &str) -> Self {
+        Self {
+            sql: base.to_string(),
+            values: Vec::new(),
+        }
+    }
+
+    fn push_eq(&mut self, column: &str, value: impl ToSql + Sync + Send + 'static) {
+        self.push_fragment(column, "=", value);
+    }
+
+    fn push_ge(&mut self, column: &str, value: impl ToSql + Sync + Send + 'static) {
+        self.push_fragment(column, ">=", value);
+    }
+
+    fn push_le(&mut self, column: &str, value: impl ToSql + Sync + Send + 'static) {
+        self.push_fragment(column, "<=", value);
+    }
+
+    fn push_order_limit_offset(&mut self, order_by: &str, limit: i64, offset: i64) {
+        let limit_placeholder = self.values.len() + 1;
+        let offset_placeholder = self.values.len() + 2;
+        self.sql.push_str(&format!(
+            " ORDER BY {} LIMIT ${} OFFSET ${}",
+            order_by, limit_placeholder, offset_placeholder
+        ));
+
+        self.values.push(Box::new(limit));
+        self.values.push(Box::new(offset));
+    }
+
+    fn finish(self) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
+        (self.sql, self.values)
+    }
+
+    fn push_fragment(
+        &mut self,
+        column: &str,
+        operator: &str,
+        value: impl ToSql + Sync + Send + 'static,
+    ) {
+        let placeholder = self.values.len() + 1;
+        self.sql
+            .push_str(&format!(" AND {} {} ${}", column, operator, placeholder));
+        self.values.push(Box::new(value));
+    }
+}
+
 fn normalize_json(value: &Option<Value>) -> Option<Json<&Value>> {
     value.as_ref().map(Json)
 }
@@ -369,61 +423,43 @@ pub async fn list_jobs(
 
     let fetch_limit = pagination.limit + 1;
 
-    let mut values: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
-    let mut query = String::from(
+    // Guardrail: dynamic fragments must only append "AND column OP $n" clauses so that
+    // the placeholder numbering stays correct and no raw user data is interpolated.
+    let mut query = QueryBuilder::new(
         "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at FROM ses.extraction_queue WHERE 1=1",
     );
 
     if let Some(status) = &filter.status {
-        query.push_str(&format!(" AND status = ${}", values.len() + 1));
-        values.push(Box::new(status.clone()));
+        query.push_eq("status", status.clone());
     }
 
     if let Some(requires_manual_review) = filter.requires_manual_review {
-        query.push_str(&format!(
-            " AND requires_manual_review = ${}",
-            values.len() + 1
-        ));
-        values.push(Box::new(requires_manual_review));
+        query.push_eq("requires_manual_review", requires_manual_review);
     }
 
     if let Some(canary_target) = filter.canary_target {
-        query.push_str(&format!(" AND canary_target = ${}", values.len() + 1));
-        values.push(Box::new(canary_target));
+        query.push_eq("canary_target", canary_target);
     }
 
     if let Some(final_method) = &filter.final_method {
-        query.push_str(&format!(" AND final_method = ${}", values.len() + 1));
-        values.push(Box::new(final_method.clone()));
+        query.push_eq("final_method", final_method.clone());
     }
 
     if let Some(manual_review_reason) = &filter.manual_review_reason {
-        query.push_str(&format!(
-            " AND manual_review_reason = ${}",
-            values.len() + 1
-        ));
-        values.push(Box::new(manual_review_reason.clone()));
+        query.push_eq("manual_review_reason", manual_review_reason.clone());
     }
 
     if let Some(created_after) = filter.created_after {
-        query.push_str(&format!(" AND created_at >= ${}", values.len() + 1));
-        values.push(Box::new(created_after));
+        query.push_ge("created_at", created_after);
     }
 
     if let Some(created_before) = filter.created_before {
-        query.push_str(&format!(" AND created_at <= ${}", values.len() + 1));
-        values.push(Box::new(created_before));
+        query.push_le("created_at", created_before);
     }
 
-    query.push_str(&format!(
-        " ORDER BY created_at DESC, id DESC LIMIT ${} OFFSET ${}",
-        values.len() + 1,
-        values.len() + 2
-    ));
+    query.push_order_limit_offset("created_at DESC, id DESC", fetch_limit, pagination.offset);
 
-    values.push(Box::new(fetch_limit));
-    values.push(Box::new(pagination.offset));
-
+    let (query, values) = query.finish();
     let params: Vec<&(dyn ToSql + Sync)> = values
         .iter()
         .map(|v| v.as_ref() as &(dyn ToSql + Sync))
