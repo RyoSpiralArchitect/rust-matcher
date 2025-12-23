@@ -51,12 +51,45 @@ CREATE INDEX idx_extraction_queue_reprocess ON ses.extraction_queue(reprocess_af
 CREATE INDEX idx_extraction_queue_review_reason ON ses.extraction_queue(manual_review_reason) WHERE manual_review_reason IS NOT NULL;
 "#;
 
+/// Snapshot of parsed talent payloads keyed by message_id.
+pub const TALENTS_ENUM_DDL: &str = r#"
+CREATE TABLE ses.talents_enum (
+    id BIGSERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL UNIQUE,
+    talent_name TEXT NOT NULL,
+    summary_text TEXT,
+    desired_price_min INTEGER,
+    available_date DATE,
+    received_at TIMESTAMPTZ NOT NULL,
+    source_text TEXT
+);
+
+CREATE INDEX idx_talents_enum_message_id ON ses.talents_enum(message_id);
+"#;
+
+/// Snapshot of parsed project payloads keyed by message_id.
+pub const PROJECTS_ENUM_DDL: &str = r#"
+CREATE TABLE ses.projects_enum (
+    project_code BIGINT PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL UNIQUE,
+    project_name TEXT NOT NULL,
+    monthly_tanka_min INTEGER,
+    monthly_tanka_max INTEGER,
+    start_date DATE,
+    source_text TEXT,
+    requires_manual_review BOOLEAN DEFAULT false,
+    manual_review_reason TEXT
+);
+
+CREATE INDEX idx_projects_enum_message_id ON ses.projects_enum(message_id);
+"#;
+
 /// Proposed schema for daily match results snapshots.
 pub const MATCH_RESULTS_DDL: &str = r#"
 CREATE TABLE ses.match_results (
     id SERIAL PRIMARY KEY,
-    talent_id INTEGER NOT NULL,
-    project_id INTEGER NOT NULL,
+    talent_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
 
     is_knockout BOOLEAN NOT NULL,
     ko_reasons JSONB,
@@ -167,8 +200,8 @@ CREATE TABLE ses.interaction_logs (
 
     -- マッチング情報
     match_result_id INTEGER REFERENCES ses.match_results(id),
-    talent_id INTEGER NOT NULL,
-    project_id INTEGER NOT NULL,
+    talent_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
     match_run_id VARCHAR(64),       -- engine_version + config_version を含む実行単位
     engine_version VARCHAR(20),
     config_version VARCHAR(20),
@@ -241,6 +274,32 @@ mod tests {
             "idx_extraction_queue_status_priority",
         ] {
             assert!(EXTRACTION_QUEUE_DDL.contains(required));
+        }
+    }
+
+    #[test]
+    fn talents_enum_schema_covers_lookup_and_source_text() {
+        for required in [
+            "talent_name",
+            "message_id",
+            "source_text",
+            "received_at",
+            "idx_talents_enum_message_id",
+        ] {
+            assert!(TALENTS_ENUM_DDL.contains(required));
+        }
+    }
+
+    #[test]
+    fn projects_enum_schema_covers_lookup_and_manual_review() {
+        for required in [
+            "project_code",
+            "message_id",
+            "source_text",
+            "requires_manual_review",
+            "idx_projects_enum_message_id",
+        ] {
+            assert!(PROJECTS_ENUM_DDL.contains(required));
         }
     }
 

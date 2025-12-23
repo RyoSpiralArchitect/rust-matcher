@@ -11,7 +11,7 @@ use clap::Parser;
 use dotenvy::dotenv;
 use sr_common::api::match_response::MatchConfig;
 use sr_common::db::PgPool;
-use sr_common::db::create_pool_from_url;
+use sr_common::db::create_pool_from_url_checked;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 
@@ -199,7 +199,8 @@ async fn run() -> Result<(), ApiError> {
 
     let cli = Cli::parse();
     let config = AppConfig::from_cli(cli)?;
-    let pool = create_pool_from_url(&config.database_url)
+    let pool = create_pool_from_url_checked(&config.database_url)
+        .await
         .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
 
     let state = Arc::new(AppState {

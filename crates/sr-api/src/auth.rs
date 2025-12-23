@@ -81,8 +81,8 @@ pub struct AuthUser {
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
-    #[allow(dead_code)]
-    exp: Option<usize>,
+    #[serde(rename = "exp")]
+    _exp: usize,
 }
 
 #[async_trait]

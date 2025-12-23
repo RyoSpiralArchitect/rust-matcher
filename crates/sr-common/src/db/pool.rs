@@ -1,5 +1,8 @@
-use deadpool_postgres::{Config, CreatePoolError, ManagerConfig, Pool, RecyclingMethod, Runtime};
-use std::str::FromStr;
+use deadpool_postgres::{
+    Config, CreatePoolError, ManagerConfig, Pool, PoolConfig, PoolError, RecyclingMethod, Runtime,
+    Timeouts,
+};
+use std::{env, str::FromStr, time::Duration};
 use thiserror::Error;
 use tokio_postgres::NoTls;
 
@@ -11,6 +14,44 @@ pub enum DbPoolError {
     InvalidConfig(String),
     #[error("failed to create database pool: {0}")]
     PoolCreation(#[from] CreatePoolError),
+    #[error("failed to check out pool connection: {0}")]
+    PoolCheckout(#[from] PoolError),
+    #[error("failed to validate database connectivity: {0}")]
+    Connectivity(#[from] tokio_postgres::Error),
+}
+
+fn parse_env<T: FromStr>(keys: &[&str]) -> Option<T> {
+    for key in keys {
+        if let Ok(value) = env::var(key) {
+            if let Ok(parsed) = value.parse::<T>() {
+                return Some(parsed);
+            }
+        }
+    }
+
+    None
+}
+
+fn build_options() -> Option<String> {
+    let mut options = Vec::new();
+
+    if let Some(timeout_ms) = parse_env::<u64>(&["SR_DB_STATEMENT_TIMEOUT_MS"]) {
+        options.push(format!("-c statement_timeout={timeout_ms}"));
+    }
+
+    if let Some(app_name) = env
+        ::var("SR_DB_APPLICATION_NAME")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+    {
+        options.push(format!("-c application_name={}", app_name.trim()));
+    }
+
+    if options.is_empty() {
+        None
+    } else {
+        Some(options.join(" "))
+    }
 }
 
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
@@ -20,6 +61,24 @@ pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
     let mut cfg = Config::new();
     cfg.url = Some(db_url.to_string());
 
+    cfg.pool = Some(PoolConfig {
+        max_size: parse_env::<usize>(&["SR_DB_POOL_MAX_SIZE", "SR_DB_MAX_SIZE"]).unwrap_or(16),
+        timeouts: Timeouts {
+            wait: Some(Duration::from_secs(
+                parse_env::<u64>(&["SR_DB_TIMEOUT_WAIT_SECS"]).unwrap_or(5),
+            )),
+            create: Some(Duration::from_secs(
+                parse_env::<u64>(&["SR_DB_TIMEOUT_CREATE_SECS"]).unwrap_or(5),
+            )),
+            recycle: Some(Duration::from_secs(
+                parse_env::<u64>(&["SR_DB_TIMEOUT_RECYCLE_SECS"]).unwrap_or(5),
+            )),
+        },
+        ..Default::default()
+    });
+
+    cfg.options = build_options();
+
     cfg.manager = Some(ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
     });
@@ -28,13 +87,78 @@ pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
         .map_err(DbPoolError::PoolCreation)
 }
 
+fn fail_fast_enabled() -> bool {
+    matches!(
+        env::var("SR_DB_FAIL_FAST")
+            .ok()
+            .map(|value| value.to_ascii_lowercase()),
+        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on")
+    )
+}
+
+pub async fn create_pool_from_url_checked(db_url: &str) -> Result<PgPool, DbPoolError> {
+    let pool = create_pool_from_url(db_url)?;
+
+    if fail_fast_enabled() {
+        // Ensure the pool can establish a live connection on startup so deployments fail
+        // fast instead of hanging on database outages.
+        let client = pool.get().await?;
+        client.simple_query("SELECT 1").await?;
+    }
+
+    Ok(pool)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn builds_pool_without_connecting() {
+        // Ensure env-driven overrides don't break pool creation when set.
+        unsafe {
+            std::env::set_var("SR_DB_MAX_SIZE", "8");
+            std::env::set_var("SR_DB_TIMEOUT_WAIT_SECS", "1");
+            std::env::set_var("SR_DB_TIMEOUT_CREATE_SECS", "1");
+            std::env::set_var("SR_DB_TIMEOUT_RECYCLE_SECS", "1");
+            std::env::set_var("SR_DB_APPLICATION_NAME", "sr-api");
+        }
         let result = create_pool_from_url("postgres://user:pass@localhost:5432/example");
         assert!(result.is_ok());
+    }
+
+    fn with_env(var: &str, value: Option<&str>, f: impl FnOnce()) {
+        use std::sync::Mutex;
+        static ENV_GUARD: Mutex<()> = Mutex::new(());
+        let _guard = ENV_GUARD.lock().unwrap();
+
+        let previous = std::env::var(var).ok();
+        match value {
+            Some(v) => unsafe { std::env::set_var(var, v) },
+            None => unsafe { std::env::remove_var(var) },
+        }
+
+        f();
+
+        match previous {
+            Some(v) => unsafe { std::env::set_var(var, v) },
+            None => unsafe { std::env::remove_var(var) },
+        }
+    }
+
+    #[test]
+    fn fail_fast_default_is_disabled() {
+        with_env("SR_DB_FAIL_FAST", None, || {
+            assert!(!fail_fast_enabled());
+        });
+    }
+
+    #[test]
+    fn fail_fast_accepts_truthy_values() {
+        for value in ["1", "true", "TRUE", "yes", "on"] {
+            with_env("SR_DB_FAIL_FAST", Some(value), || {
+                assert!(fail_fast_enabled());
+            });
+        }
     }
 }
