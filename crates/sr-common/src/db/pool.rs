@@ -39,6 +39,14 @@ fn build_options() -> Option<String> {
         options.push(format!("-c statement_timeout={timeout_ms}"));
     }
 
+    if let Some(timeout_ms) =
+        parse_env::<u64>(&["SR_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", "SR_DB_IDLE_IN_TX_TIMEOUT_MS"])
+    {
+        options.push(format!(
+            "-c idle_in_transaction_session_timeout={timeout_ms}"
+        ));
+    }
+
     if let Some(app_name) = env
         ::var("SR_DB_APPLICATION_NAME")
         .ok()
@@ -127,22 +135,35 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    use std::sync::Mutex;
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
     fn with_env(var: &str, value: Option<&str>, f: impl FnOnce()) {
-        use std::sync::Mutex;
-        static ENV_GUARD: Mutex<()> = Mutex::new(());
+        with_envs(&[(var, value)], f);
+    }
+
+    fn with_envs(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
         let _guard = ENV_GUARD.lock().unwrap();
 
-        let previous = std::env::var(var).ok();
-        match value {
-            Some(v) => unsafe { std::env::set_var(var, v) },
-            None => unsafe { std::env::remove_var(var) },
-        }
+        let previous: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(var, value)| {
+                let old = std::env::var(var).ok();
+                match value {
+                    Some(v) => unsafe { std::env::set_var(var, v) },
+                    None => unsafe { std::env::remove_var(var) },
+                }
+                (*var, old)
+            })
+            .collect();
 
         f();
 
-        match previous {
-            Some(v) => unsafe { std::env::set_var(var, v) },
-            None => unsafe { std::env::remove_var(var) },
+        for (var, previous_value) in previous {
+            match previous_value {
+                Some(v) => unsafe { std::env::set_var(var, v) },
+                None => unsafe { std::env::remove_var(var) },
+            }
         }
     }
 
@@ -160,5 +181,25 @@ mod tests {
                 assert!(fail_fast_enabled());
             });
         }
+    }
+
+    #[test]
+    fn builds_expected_options_from_env() {
+        with_envs(
+            &[
+                ("SR_DB_STATEMENT_TIMEOUT_MS", Some("3000")),
+                (
+                    "SR_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS",
+                    Some("15000"),
+                ),
+                ("SR_DB_APPLICATION_NAME", Some("sr-api")),
+            ],
+            || {
+                let options = build_options().expect("options should be populated");
+                assert!(options.contains("statement_timeout=3000"));
+                assert!(options.contains("idle_in_transaction_session_timeout=15000"));
+                assert!(options.contains("application_name=sr-api"));
+            },
+        );
     }
 }
