@@ -16,6 +16,42 @@ pub enum DbPoolError {
     PoolCreation(#[from] CreatePoolError),
     #[error("failed to check out pool connection: {0}")]
     PoolCheckout(#[from] PoolError),
+    #[error("failed to validate database connectivity: {0}")]
+    Connectivity(#[from] tokio_postgres::Error),
+}
+
+fn parse_env<T: FromStr>(keys: &[&str]) -> Option<T> {
+    for key in keys {
+        if let Ok(value) = env::var(key) {
+            if let Ok(parsed) = value.parse::<T>() {
+                return Some(parsed);
+            }
+        }
+    }
+
+    None
+}
+
+fn build_options() -> Option<String> {
+    let mut options = Vec::new();
+
+    if let Some(timeout_ms) = parse_env::<u64>(&["SR_DB_STATEMENT_TIMEOUT_MS"]) {
+        options.push(format!("-c statement_timeout={timeout_ms}"));
+    }
+
+    if let Some(app_name) = env
+        ::var("SR_DB_APPLICATION_NAME")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+    {
+        options.push(format!("-c application_name={}", app_name.trim()));
+    }
+
+    if options.is_empty() {
+        None
+    } else {
+        Some(options.join(" "))
+    }
 }
 
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
@@ -26,38 +62,22 @@ pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
     cfg.url = Some(db_url.to_string());
 
     cfg.pool = Some(PoolConfig {
-        max_size: env::var("SR_DB_MAX_SIZE")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(16),
+        max_size: parse_env::<usize>(&["SR_DB_POOL_MAX_SIZE", "SR_DB_MAX_SIZE"]).unwrap_or(16),
         timeouts: Timeouts {
             wait: Some(Duration::from_secs(
-                env::var("SR_DB_TIMEOUT_WAIT_SECS")
-                    .ok()
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(5),
+                parse_env::<u64>(&["SR_DB_TIMEOUT_WAIT_SECS"]).unwrap_or(5),
             )),
             create: Some(Duration::from_secs(
-                env::var("SR_DB_TIMEOUT_CREATE_SECS")
-                    .ok()
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(5),
+                parse_env::<u64>(&["SR_DB_TIMEOUT_CREATE_SECS"]).unwrap_or(5),
             )),
             recycle: Some(Duration::from_secs(
-                env::var("SR_DB_TIMEOUT_RECYCLE_SECS")
-                    .ok()
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(5),
+                parse_env::<u64>(&["SR_DB_TIMEOUT_RECYCLE_SECS"]).unwrap_or(5),
             )),
         },
         ..Default::default()
     });
 
-    if let Ok(statement_timeout_ms) = env::var("SR_DB_STATEMENT_TIMEOUT_MS") {
-        if let Ok(timeout_ms) = statement_timeout_ms.parse::<u64>() {
-            cfg.options = Some(format!("-c statement_timeout={timeout_ms}"));
-        }
-    }
+    cfg.options = build_options();
 
     cfg.manager = Some(ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
@@ -82,7 +102,8 @@ pub async fn create_pool_from_url_checked(db_url: &str) -> Result<PgPool, DbPool
     if fail_fast_enabled() {
         // Ensure the pool can establish a live connection on startup so deployments fail
         // fast instead of hanging on database outages.
-        let _ = pool.get().await?;
+        let client = pool.get().await?;
+        client.simple_query("SELECT 1").await?;
     }
 
     Ok(pool)
@@ -100,6 +121,7 @@ mod tests {
             std::env::set_var("SR_DB_TIMEOUT_WAIT_SECS", "1");
             std::env::set_var("SR_DB_TIMEOUT_CREATE_SECS", "1");
             std::env::set_var("SR_DB_TIMEOUT_RECYCLE_SECS", "1");
+            std::env::set_var("SR_DB_APPLICATION_NAME", "sr-api");
         }
         let result = create_pool_from_url("postgres://user:pass@localhost:5432/example");
         assert!(result.is_ok());
