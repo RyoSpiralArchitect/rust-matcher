@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use axum::{
     Router,
+    body::Body,
     http::Method,
+    http::Request,
     http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue},
     routing::{get, post},
 };
@@ -11,8 +13,12 @@ use clap::Parser;
 use dotenvy::dotenv;
 use sr_common::api::match_response::MatchConfig;
 use sr_common::db::PgPool;
-use sr_common::db::create_pool_from_url;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use sr_common::db::create_pool_from_url_checked;
+use tower_http::{
+    cors::CorsLayer,
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    trace::TraceLayer,
+};
 use tracing::info;
 
 mod auth;
@@ -22,6 +28,8 @@ mod handlers;
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
 use handlers::{candidates, feedback, health, queue};
+
+const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "sr-api", about = "HTTP API for sr-match GUI integration")]
@@ -119,7 +127,7 @@ impl AppConfig {
                     ));
                 }
                 _ => {}
-            }
+            },
             _ => {}
         }
 
@@ -145,6 +153,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub config: AppConfig,
     pub match_config: MatchConfig,
+    pub readiness: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -174,6 +183,25 @@ fn cors_layer(origins: &[String]) -> CorsLayer {
 fn create_router(state: SharedState) -> Router {
     let cors = cors_layer(&state.config.cors_origins);
 
+    let request_id_header = HeaderName::from_static("x-request-id");
+    let trace_header = request_id_header.clone();
+
+    let trace = TraceLayer::new_for_http().make_span_with(move |request: &Request<Body>| {
+        let request_id = request
+            .headers()
+            .get(&trace_header)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+
+        tracing::info_span!(
+            "http_request",
+            method = %request.method(),
+            uri = %request.uri(),
+            request_id = %request_id,
+            status = tracing::field::Empty,
+        )
+    });
+
     let api_routes = Router::new()
         .route("/queue/dashboard", get(queue::dashboard))
         .route("/queue/jobs", get(queue::list_jobs))
@@ -186,11 +214,50 @@ fn create_router(state: SharedState) -> Router {
         .route("/feedback", post(feedback::submit_feedback));
 
     Router::new()
-        .route("/health", get(health::health_check))
+        .route("/health", get(health::readyz))
+        .route("/livez", get(health::livez))
+        .route("/readyz", get(health::readyz))
         .nest("/api", api_routes)
-        .layer(TraceLayer::new_for_http())
+        .layer(trace)
+        .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
+        .layer(SetRequestIdLayer::new(
+            request_id_header,
+            MakeRequestUuid::default(),
+        ))
         .layer(cors)
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn sets_request_id_when_missing() {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(TraceLayer::new_for_http())
+            .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
+                "x-request-id",
+            )))
+            .layer(SetRequestIdLayer::new(
+                HeaderName::from_static("x-request-id"),
+                MakeRequestUuid::default(),
+            ));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key("x-request-id"));
+    }
 }
 
 async fn run() -> Result<(), ApiError> {
@@ -199,17 +266,19 @@ async fn run() -> Result<(), ApiError> {
 
     let cli = Cli::parse();
     let config = AppConfig::from_cli(cli)?;
-    let pool = create_pool_from_url(&config.database_url)
+    let pool = create_pool_from_url_checked(&config.database_url)
+        .await
         .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
 
     let state = Arc::new(AppState {
         pool,
         config: config.clone(),
         match_config: MatchConfig::from_env(),
+        readiness: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     let addr: SocketAddr = ([0, 0, 0, 0], config.port).into();
-    let app = create_router(state);
+    let app = create_router(state.clone());
 
     info!(%addr, auth_mode = ?config.auth.mode, "sr-api listening");
 
@@ -219,11 +288,46 @@ async fn run() -> Result<(), ApiError> {
 
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
-    axum::serve(listener, service)
+    let server =
+        axum::serve(listener, service).with_graceful_shutdown(shutdown_signal(state.clone()));
+
+    let server_result = tokio::time::timeout(std::time::Duration::from_secs(30), server)
         .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?;
+        .map_err(|_| ApiError::Internal("server shutdown timed out".into()))?;
+
+    server_result.map_err(|err| ApiError::Internal(err.to_string()))?;
 
     Ok(())
+}
+
+async fn shutdown_signal(state: SharedState) {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+            let _ = sigterm.recv().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    state
+        .readiness
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // Give load balancers a brief window to observe /readyz as not ready
+    // before axum stops accepting new connections.
+    tokio::time::sleep(SHUTDOWN_DRAIN_GRACE).await;
 }
 
 #[tokio::main]

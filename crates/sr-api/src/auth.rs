@@ -4,7 +4,7 @@ use axum::extract::FromRequestParts;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use clap::ValueEnum;
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::Deserialize;
 
 use crate::error::ApiError;
@@ -48,7 +48,9 @@ impl JwtAlgorithm {
     pub fn key_kind(&self) -> JwtKeyKind {
         match self {
             JwtAlgorithm::Hs256 | JwtAlgorithm::Hs384 | JwtAlgorithm::Hs512 => JwtKeyKind::Secret,
-            JwtAlgorithm::Rs256 | JwtAlgorithm::Rs384 | JwtAlgorithm::Rs512 => JwtKeyKind::RsaPublicKey,
+            JwtAlgorithm::Rs256 | JwtAlgorithm::Rs384 | JwtAlgorithm::Rs512 => {
+                JwtKeyKind::RsaPublicKey
+            }
             JwtAlgorithm::Es256 | JwtAlgorithm::Es384 => JwtKeyKind::EcPublicKey,
             JwtAlgorithm::Eddsa => JwtKeyKind::EdPublicKey,
         }
@@ -74,15 +76,31 @@ pub struct AuthConfig {
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
-    #[allow(dead_code)]
     pub subject: String,
+    pub role: UserRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserRole {
+    Admin,
+    User,
+}
+
+impl UserRole {
+    fn from_claim(value: Option<&str>) -> Self {
+        match value {
+            Some(role) if role.eq_ignore_ascii_case("admin") => UserRole::Admin,
+            _ => UserRole::User,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
-    #[allow(dead_code)]
-    exp: Option<usize>,
+    #[serde(rename = "exp")]
+    _exp: usize,
+    role: Option<String>,
 }
 
 #[async_trait]
@@ -121,6 +139,7 @@ fn authorize_api_key(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, Api
 
     Ok(AuthUser {
         subject: "api_key".to_string(),
+        role: UserRole::Admin,
     })
 }
 
@@ -177,5 +196,12 @@ fn authorize_jwt(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, ApiErro
 
     Ok(AuthUser {
         subject: data.claims.sub,
+        role: UserRole::from_claim(data.claims.role.as_deref()),
     })
+}
+
+impl AuthUser {
+    pub fn is_admin(&self) -> bool {
+        self.role == UserRole::Admin
+    }
 }
