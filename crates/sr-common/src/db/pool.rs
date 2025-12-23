@@ -1,5 +1,6 @@
 use deadpool_postgres::{
-    Config, CreatePoolError, ManagerConfig, Pool, PoolConfig, RecyclingMethod, Runtime, Timeouts,
+    Config, CreatePoolError, ManagerConfig, Pool, PoolConfig, PoolError, RecyclingMethod, Runtime,
+    Timeouts,
 };
 use std::{env, str::FromStr, time::Duration};
 use thiserror::Error;
@@ -13,6 +14,8 @@ pub enum DbPoolError {
     InvalidConfig(String),
     #[error("failed to create database pool: {0}")]
     PoolCreation(#[from] CreatePoolError),
+    #[error("failed to check out pool connection: {0}")]
+    PoolCheckout(#[from] PoolError),
 }
 
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
@@ -64,6 +67,27 @@ pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
         .map_err(DbPoolError::PoolCreation)
 }
 
+fn fail_fast_enabled() -> bool {
+    matches!(
+        env::var("SR_DB_FAIL_FAST")
+            .ok()
+            .map(|value| value.to_ascii_lowercase()),
+        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on")
+    )
+}
+
+pub async fn create_pool_from_url_checked(db_url: &str) -> Result<PgPool, DbPoolError> {
+    let pool = create_pool_from_url(db_url)?;
+
+    if fail_fast_enabled() {
+        // Ensure the pool can establish a live connection on startup so deployments fail
+        // fast instead of hanging on database outages.
+        let _ = pool.get().await?;
+    }
+
+    Ok(pool)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,5 +103,40 @@ mod tests {
         }
         let result = create_pool_from_url("postgres://user:pass@localhost:5432/example");
         assert!(result.is_ok());
+    }
+
+    fn with_env(var: &str, value: Option<&str>, f: impl FnOnce()) {
+        use std::sync::Mutex;
+        static ENV_GUARD: Mutex<()> = Mutex::new(());
+        let _guard = ENV_GUARD.lock().unwrap();
+
+        let previous = std::env::var(var).ok();
+        match value {
+            Some(v) => unsafe { std::env::set_var(var, v) },
+            None => unsafe { std::env::remove_var(var) },
+        }
+
+        f();
+
+        match previous {
+            Some(v) => unsafe { std::env::set_var(var, v) },
+            None => unsafe { std::env::remove_var(var) },
+        }
+    }
+
+    #[test]
+    fn fail_fast_default_is_disabled() {
+        with_env("SR_DB_FAIL_FAST", None, || {
+            assert!(!fail_fast_enabled());
+        });
+    }
+
+    #[test]
+    fn fail_fast_accepts_truthy_values() {
+        for value in ["1", "true", "TRUE", "yes", "on"] {
+            with_env("SR_DB_FAIL_FAST", Some(value), || {
+                assert!(fail_fast_enabled());
+            });
+        }
     }
 }
