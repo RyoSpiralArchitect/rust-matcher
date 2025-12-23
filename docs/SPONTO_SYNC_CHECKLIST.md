@@ -469,7 +469,9 @@ CREATE TABLE ses.match_results (
     engine_version VARCHAR(20),
     rule_version VARCHAR(20),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(talent_id, project_id, created_at::date)
+    -- JST基準でアプリが決める日付。UTC境界の重複/欠損を防ぐ
+    run_date DATE NOT NULL,
+    UNIQUE(talent_id, project_id, run_date)
 );
 ```
 
