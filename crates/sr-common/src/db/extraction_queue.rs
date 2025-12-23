@@ -572,7 +572,7 @@ async fn fetch_match_results(
     if let Some(talent_id) = talent_id {
         let stmt = client
             .prepare(
-                "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE talent_id = $1 AND created_at >= NOW() - ($2::int * INTERVAL '1 day') ORDER BY created_at DESC LIMIT $3",
+                "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE talent_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 day') ORDER BY created_at DESC LIMIT $3",
             )
             .await?;
         let rows = client.query(&stmt, &[&talent_id, &days, &limit]).await?;
@@ -586,7 +586,7 @@ async fn fetch_match_results(
     if let Some(project_id) = project_id {
         let stmt = client
             .prepare(
-                "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE project_id = $1 AND created_at >= NOW() - ($2::int * INTERVAL '1 day') ORDER BY created_at DESC LIMIT $3",
+                "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE project_id = $1 AND created_at >= NOW() - ($2::bigint * INTERVAL '1 day') ORDER BY created_at DESC LIMIT $3",
             )
             .await?;
         let rows = client.query(&stmt, &[&project_id, &days, &limit]).await?;
