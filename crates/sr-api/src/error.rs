@@ -2,7 +2,7 @@ use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use std::{borrow::Cow, future::Future};
 use thiserror::Error;
-use tracing::{error, warn};
+use tracing::error;
 
 use sr_common::db::{
     CandidateFetchError, FeedbackStorageError, QueueDashboardError, QueueStorageError,
@@ -62,21 +62,13 @@ impl IntoResponse for ApiError {
         let code = self.code();
         let request_id = current_request_id();
 
-        if status.is_client_error() {
-            warn!(
-                code,
-                request_id = request_id.as_deref().unwrap_or(""),
-                %self,
-                "request failed"
-            );
-        } else {
-            error!(
-                code,
-                request_id = request_id.as_deref().unwrap_or(""),
-                %self,
-                "request failed"
-            );
-        }
+        error!(
+            code,
+            status = %status,
+            request_id = request_id.as_deref().unwrap_or(""),
+            error = %self,
+            "api_error"
+        );
 
         let body = Json(ErrorResponse {
             code,

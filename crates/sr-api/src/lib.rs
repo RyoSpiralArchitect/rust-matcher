@@ -152,6 +152,12 @@ impl AppConfig {
             .filter(|origin| !origin.is_empty())
             .collect::<Vec<_>>();
 
+        if cors_origins.iter().any(|origin| origin == "*") {
+            return Err(ApiError::BadRequest(
+                "SR_CORS_ORIGINS must list explicit origins when credentials are enabled".into(),
+            ));
+        }
+
         let auth = AuthConfig {
             mode: cli.auth_mode,
             api_key: cli.api_key,
@@ -244,6 +250,7 @@ fn cors_layer(origins: &[String]) -> CorsLayer {
             CONTENT_TYPE,
             HeaderName::from_static("x-api-key"),
         ])
+        .allow_credentials(true)
 }
 
 fn build_ip_limiter(per_second: u64, burst_size: u32) -> Arc<IpRateLimiter> {
