@@ -29,6 +29,8 @@ use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
 use handlers::{candidates, feedback, health, queue};
 
+const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+
 #[derive(Debug, Clone, Parser)]
 #[command(name = "sr-api", about = "HTTP API for sr-match GUI integration")]
 struct Cli {
@@ -151,6 +153,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub config: AppConfig,
     pub match_config: MatchConfig,
+    pub readiness: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -228,7 +231,10 @@ fn create_router(state: SharedState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{http::{Request, StatusCode}, routing::get};
+    use axum::{
+        http::{Request, StatusCode},
+        routing::get,
+    };
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -268,10 +274,11 @@ async fn run() -> Result<(), ApiError> {
         pool,
         config: config.clone(),
         match_config: MatchConfig::from_env(),
+        readiness: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     let addr: SocketAddr = ([0, 0, 0, 0], config.port).into();
-    let app = create_router(state);
+    let app = create_router(state.clone());
 
     info!(%addr, auth_mode = ?config.auth.mode, "sr-api listening");
 
@@ -281,7 +288,8 @@ async fn run() -> Result<(), ApiError> {
 
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
-    let server = axum::serve(listener, service).with_graceful_shutdown(shutdown_signal());
+    let server =
+        axum::serve(listener, service).with_graceful_shutdown(shutdown_signal(state.clone()));
 
     let server_result = tokio::time::timeout(std::time::Duration::from_secs(30), server)
         .await
@@ -292,14 +300,14 @@ async fn run() -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(state: SharedState) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
 
     #[cfg(unix)]
     let terminate = async {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
             let _ = sigterm.recv().await;
         }
@@ -312,6 +320,14 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
+
+    state
+        .readiness
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // Give load balancers a brief window to observe /readyz as not ready
+    // before axum stops accepting new connections.
+    tokio::time::sleep(SHUTDOWN_DRAIN_GRACE).await;
 }
 
 #[tokio::main]
