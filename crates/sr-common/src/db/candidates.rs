@@ -77,6 +77,8 @@ pub async fn fetch_candidates_for_project(
     pool: &PgPool,
     project_id: i64,
     include_softko: bool,
+    limit: u32,
+    offset: u32,
     config: &MatchConfig,
 ) -> Result<Vec<MatchResponse>, CandidateFetchError> {
     let client = pool.get().await?;
@@ -89,26 +91,36 @@ pub async fn fetch_candidates_for_project(
     let where_clause = conditions.join(" AND ");
 
     let query = format!(
-        "SELECT \
-            il.id AS interaction_id,\
-            mr.talent_id,\
-            mr.project_id,\
-            mr.needs_manual_review,\
-            mr.is_knockout,\
-            mr.score_total,\
-            mr.score_breakdown,\
-            mr.ko_reasons,\
-            mr.engine_version,\
-            mr.rule_version,\
-            mr.created_at,\
-            il.two_tower_score\
-        FROM ses.interaction_logs il\
-        JOIN ses.match_results mr ON mr.id = il.match_result_id\
-        WHERE {where_clause}\
-        ORDER BY mr.score_total DESC NULLS LAST, il.created_at DESC"
+        "SELECT * FROM (\
+            SELECT DISTINCT ON (mr.id)\
+                il.id AS interaction_id,\
+                mr.id AS match_result_id,\
+                mr.talent_id,\
+                mr.project_id,\
+                mr.needs_manual_review,\
+                mr.is_knockout,\
+                mr.score_total,\
+                mr.score_breakdown,\
+                mr.ko_reasons,\
+                mr.engine_version,\
+                mr.rule_version,\
+                mr.created_at,\
+                il.two_tower_score,\
+                il.created_at AS interaction_created_at\
+            FROM ses.match_results mr\
+            JOIN ses.interaction_logs il ON il.match_result_id = mr.id\
+            WHERE {where_clause}\
+            ORDER BY mr.id, il.created_at DESC\
+        ) t\
+        ORDER BY t.score_total DESC NULLS LAST, t.interaction_created_at DESC\
+        LIMIT $2 OFFSET $3"
     );
 
-    let rows = client.query(&query, &[&project_id]).await?;
+    let bounded_limit = limit.min(200) as i64;
+    let offset = offset as i64;
+    let rows = client
+        .query(&query, &[&project_id, &bounded_limit, &offset])
+        .await?;
 
     let responses = rows
         .into_iter()
@@ -118,8 +130,8 @@ pub async fn fetch_candidates_for_project(
 
             let mut response = MatchResponse {
                 interaction_id: row.get("interaction_id"),
-                talent_id: row.get::<_, i32>("talent_id") as i64,
-                project_id: row.get::<_, i32>("project_id") as i64,
+                talent_id: row.get::<_, i64>("talent_id"),
+                project_id: row.get::<_, i64>("project_id"),
                 auto_match_eligible: false,
                 manual_review_required: row.get("needs_manual_review"),
                 score: row.get::<_, Option<f64>>("score_total").unwrap_or_default() as f32,
@@ -153,8 +165,7 @@ pub async fn fetch_candidates_for_project(
                 response.manual_review_required = true;
             }
 
-            response.auto_match_eligible =
-                !is_knockout && response.is_auto_match_eligible(config);
+            response.auto_match_eligible = !is_knockout && response.is_auto_match_eligible(config);
             Ok(response)
         })
         .collect::<Result<Vec<_>, CandidateFetchError>>()?;
