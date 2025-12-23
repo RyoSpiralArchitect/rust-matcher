@@ -14,6 +14,8 @@ pub enum FeedbackStorageError {
     Postgres(#[from] PgError),
     #[error("interaction not found: {0}")]
     InteractionNotFound(i64),
+    #[error("feedback actor is missing" )]
+    MissingActor,
 }
 
 struct InteractionContext {
@@ -63,11 +65,17 @@ async fn fetch_interaction_context(
     })
 }
 
-#[instrument(skip(pool, request))]
+#[instrument(skip(pool, actor, request))]
 pub async fn insert_feedback_event(
     pool: &PgPool,
+    actor: &str,
     request: &FeedbackRequest,
 ) -> Result<FeedbackResponse, FeedbackStorageError> {
+    let actor = actor.trim();
+    if actor.is_empty() {
+        return Err(FeedbackStorageError::MissingActor);
+    }
+
     let client = pool.get().await?;
     let interaction = fetch_interaction_context(&client, request.interaction_id).await?;
 
@@ -108,7 +116,7 @@ pub async fn insert_feedback_event(
                 &request.feedback_type.as_str(),
                 &map_ng_reason(&request.ng_reason_category),
                 &request.comment,
-                &request.actor,
+                &actor,
                 &request.source.as_str(),
             ],
         )

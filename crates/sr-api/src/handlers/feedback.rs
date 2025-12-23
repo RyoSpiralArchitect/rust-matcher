@@ -9,9 +9,9 @@ use crate::error::ApiError;
 
 pub async fn submit_feedback(
     State(state): State<SharedState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Json(payload): Json<FeedbackRequest>,
 ) -> Result<Json<FeedbackResponse>, ApiError> {
-    let response = insert_feedback_event(&state.pool, &payload).await?;
+    let response = insert_feedback_event(&state.pool, &auth.subject, &payload).await?;
     Ok(Json(response))
 }
