@@ -6,7 +6,7 @@ use reqwest::{blocking::Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sr_common::db::{
-    create_pool_from_url, fetch_email_body, lock_next_pending_job, upsert_extraction_job,
+    create_pool_from_url_checked, fetch_email_body, lock_next_pending_job, upsert_extraction_job,
 };
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
@@ -740,7 +740,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
     let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
-    let pool = create_pool_from_url(&args.db_url)?;
+    let pool = create_pool_from_url_checked(&args.db_url).await?;
     let status = pool.status();
     info!(
         size = status.size,
