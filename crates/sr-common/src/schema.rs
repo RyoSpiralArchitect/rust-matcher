@@ -90,7 +90,7 @@ CREATE TABLE ses.match_results (
     id SERIAL PRIMARY KEY,
     talent_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
-    run_date DATE NOT NULL,
+    run_date DATE NOT NULL, -- JST基準でアプリが決定する（UTC境界ずれ防止）
 
     is_knockout BOOLEAN NOT NULL,
     ko_reasons JSONB,
@@ -205,7 +205,7 @@ CREATE TABLE ses.interaction_logs (
     match_result_id INTEGER REFERENCES ses.match_results(id),
     talent_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
-    run_date DATE NOT NULL,
+    run_date DATE NOT NULL, -- JST基準でアプリが決定する（UTC境界ずれ防止）
     match_run_id VARCHAR(64),       -- engine_version + config_version を含む実行単位
     engine_version VARCHAR(20),
     config_version VARCHAR(20),

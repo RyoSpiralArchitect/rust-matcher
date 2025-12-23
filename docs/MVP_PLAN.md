@@ -16305,7 +16305,11 @@ pub fn api_routes() -> Router {
 
 - SR_CORS_ORIGINS はワイルドカード（`*`）禁止。Cookie 送信を許可するため、明示的なオリジンを列挙する。
 - `CorsLayer::allow_credentials(true)` を有効化済み。Cookie/JWT 化を行う場合は Next.js 側で `credentials: 'include'` を設定する。
-- フューチャーフラグ（例: `SR_API_USE_COOKIE_AUTH=true`）で Cookie/JWT 化を切り替える実装を追加予定。
+- フューチャーフラグ（例: `SR_API_USE_COOKIE_AUTH=true`）で Cookie/JWT 化を切り替える実装を追加予定。**実装手順メモ**:
+  1. API 側: `SR_API_USE_COOKIE_AUTH` が true のときは Authorization ヘッダーではなく Cookie (`__Host-sr-token`) を読むミドルウェアを追加し、既存 JWT 検証を再利用する。
+  2. API 側: CORS は `allow_credentials(true)` 前提。SR_CORS_ORIGINS に GUI オリジンを明示列挙し、`*` はバリデーションエラーにする（済）。
+  3. Frontend 側: `fetch` で `credentials: 'include'` を必須にし、`SameSite=None; Secure` の Cookie を発行する。
+  4. Rollout: フラグ off でデプロイ → Next.js を `credentials: 'include'` に変更 → フラグ on で Cookie 認証へ切替。
 
 #### MatchRequest
 
