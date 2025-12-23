@@ -80,6 +80,5 @@ pub struct FeedbackRequest {
     pub feedback_type: FeedbackType,
     pub ng_reason_category: Option<NgReasonCategory>,
     pub comment: Option<String>,
-    pub actor: String,
     pub source: FeedbackSource,
 }
