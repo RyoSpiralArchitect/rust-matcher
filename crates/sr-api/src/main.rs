@@ -211,7 +211,9 @@ fn create_router(state: SharedState) -> Router {
         .route("/feedback", post(feedback::submit_feedback));
 
     Router::new()
-        .route("/health", get(health::health_check))
+        .route("/health", get(health::readyz))
+        .route("/livez", get(health::livez))
+        .route("/readyz", get(health::readyz))
         .nest("/api", api_routes)
         .layer(trace)
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
@@ -279,11 +281,37 @@ async fn run() -> Result<(), ApiError> {
 
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
-    axum::serve(listener, service)
+    let server = axum::serve(listener, service).with_graceful_shutdown(shutdown_signal());
+
+    let server_result = tokio::time::timeout(std::time::Duration::from_secs(30), server)
         .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?;
+        .map_err(|_| ApiError::Internal("server shutdown timed out".into()))?;
+
+    server_result.map_err(|err| ApiError::Internal(err.to_string()))?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+            let _ = sigterm.recv().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 #[tokio::main]

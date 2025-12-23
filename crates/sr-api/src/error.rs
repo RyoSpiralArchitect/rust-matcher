@@ -22,6 +22,8 @@ pub enum ApiError {
     BadRequest(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
     #[error("internal server error: {0}")]
     Internal(String),
 }
@@ -62,6 +64,7 @@ impl ApiError {
             ApiError::Forbidden(_) => "forbidden",
             ApiError::NotFound(_) => "not_found",
             ApiError::Conflict(_) => "conflict",
+            ApiError::ServiceUnavailable(_) => "service_unavailable",
             ApiError::Database(_) => "database_error",
             ApiError::Internal(_) => "internal_error",
         }
@@ -74,6 +77,7 @@ impl ApiError {
             ApiError::Forbidden(_) => Cow::Borrowed("forbidden"),
             ApiError::NotFound(msg) => Cow::Owned(msg.clone()),
             ApiError::Conflict(msg) => Cow::Owned(msg.clone()),
+            ApiError::ServiceUnavailable(_) => Cow::Borrowed("service unavailable"),
             ApiError::Database(_) | ApiError::Internal(_) => Cow::Borrowed("internal server error"),
         }
     }
@@ -85,6 +89,7 @@ impl ApiError {
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Database(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
