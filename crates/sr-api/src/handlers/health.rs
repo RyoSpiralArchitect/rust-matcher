@@ -2,8 +2,8 @@ use axum::{Json, extract::State};
 use serde_json::json;
 use tokio::time::{Duration, timeout};
 
+use crate::SharedState;
 use crate::error::ApiError;
-use crate::{SharedState, default_rate_limits};
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -48,7 +48,7 @@ mod tests {
     use sr_common::db::create_pool_from_url;
 
     use crate::auth::{AuthConfig, AuthMode, JwtAlgorithm};
-    use crate::{AppConfig, AppState, MatchConfig};
+    use crate::{default_rate_limits, AppConfig, AppState, MatchConfig};
 
     fn state_with_readiness(readiness: bool) -> SharedState {
         let pool = create_pool_from_url("postgres://user:pass@localhost:5432/example").unwrap();

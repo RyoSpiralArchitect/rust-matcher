@@ -600,7 +600,7 @@ async fn fetch_match_results(
     client: &impl GenericClient,
     talent_id: Option<i64>,
     project_id: Option<i64>,
-    days: i64,
+    days: i32,
     limit: i64,
 ) -> Result<Vec<MatchResultRow>, QueueStorageError> {
     if talent_id.is_none() && project_id.is_none() {
@@ -613,8 +613,9 @@ async fn fetch_match_results(
         )
         .await?;
 
+    let days_bigint = i64::from(days);
     let rows = client
-        .query(&stmt, &[&talent_id, &project_id, &days, &limit])
+        .query(&stmt, &[&talent_id, &project_id, &days_bigint, &limit])
         .await?;
 
     let mut results = Vec::new();
@@ -832,7 +833,7 @@ async fn get_job_detail_with_client<C: GenericClient>(
     includes: JobDetailIncludes,
     allow_source_text: bool,
     safe_limit: i64,
-    safe_days: i64,
+    safe_days: i32,
 ) -> Result<Option<QueueJobDetailResponse>, QueueStorageError> {
     let row = client
         .query_opt(
@@ -937,13 +938,7 @@ async fn get_job_detail_with_client<C: GenericClient>(
             (HashMap::new(), HashMap::new())
         };
 
-        for match_result in matches {
-            let match_id_i32 = i32::try_from(match_result.id).map_err(|e| {
-                QueueStorageError::Mapping(format!(
-                    "match_result id {} exceeds i32 range: {e}",
-                    match_result.id
-                ))
-            })?;
+        for (match_result, match_id_i32) in matches.into_iter().zip(match_ids_i32.into_iter()) {
             let latest_interaction = interaction_map.get(&match_id_i32).cloned();
             let mut feedback_events = Vec::new();
 

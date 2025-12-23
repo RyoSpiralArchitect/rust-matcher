@@ -257,7 +257,7 @@ pub struct JobDetailIncludes {
     pub include_feedback: bool,
     pub include_source_text: bool,
     pub limit: i64,
-    pub days: i64,
+    pub days: i32,
 }
 
 #[cfg(test)]

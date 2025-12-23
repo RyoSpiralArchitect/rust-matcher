@@ -53,11 +53,11 @@ fn validate_filter(filter: &QueueJobFilter) -> Result<(), ApiError> {
 pub struct JobDetailParams {
     pub include: Option<String>,
     pub limit: Option<i64>,
-    pub days: Option<i64>,
+    pub days: Option<i32>,
 }
 
 fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, ApiError> {
-    const MAX_LOOKBACK_DAYS: i64 = 365;
+    const MAX_LOOKBACK_DAYS: i32 = 365;
     let mut includes = JobDetailIncludes {
         limit: params.limit.unwrap_or(20),
         days: params.days.unwrap_or(30),

@@ -176,8 +176,7 @@ mod tests {
     #[tokio::test]
     async fn includes_request_id_in_response_body_when_present() {
         let err = ApiError::Internal("boom".into());
-        let response =
-            with_request_id(Some("req-123".into()), async { err.into_response() }).await;
+        let response = with_request_id(Some("req-123".into()), async { err.into_response() }).await;
 
         let (parts, body) = response.into_parts();
         assert_eq!(parts.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
