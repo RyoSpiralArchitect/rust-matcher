@@ -1,3 +1,4 @@
+use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -109,6 +110,39 @@ pub(crate) struct RateLimits {
     retry: Arc<IpRateLimiter>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RateLimitConfig {
+    global_per_sec: u64,
+    global_burst: u32,
+    retry_per_sec: u64,
+    retry_burst: u32,
+}
+
+impl RateLimitConfig {
+    fn parse_env_u64(vars: &[&str]) -> Option<u64> {
+        vars.iter()
+            .find_map(|name| env::var(name).ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+    }
+
+    fn parse_env_u32(vars: &[&str]) -> Option<u32> {
+        vars.iter()
+            .find_map(|name| env::var(name).ok())
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+    }
+
+    fn from_env() -> Self {
+        Self {
+            global_per_sec: Self::parse_env_u64(&["SR_RATE_LIMIT_GLOBAL_PER_SEC"]).unwrap_or(20),
+            global_burst: Self::parse_env_u32(&["SR_RATE_LIMIT_GLOBAL_BURST"]).unwrap_or(40),
+            retry_per_sec: Self::parse_env_u64(&["SR_RATE_LIMIT_RETRY_PER_SEC"]).unwrap_or(1),
+            retry_burst: Self::parse_env_u32(&["SR_RATE_LIMIT_RETRY_BURST"]).unwrap_or(3),
+        }
+    }
+}
+
 impl AppConfig {
     fn from_cli(cli: Cli) -> Result<Self, ApiError> {
         let cors_origins = cli
@@ -211,9 +245,10 @@ fn build_ip_limiter(per_second: u64, burst_size: u32) -> Arc<IpRateLimiter> {
 }
 
 pub(crate) fn default_rate_limits() -> RateLimits {
+    let cfg = RateLimitConfig::from_env();
     RateLimits {
-        global: build_ip_limiter(20, 40),
-        retry: build_ip_limiter(1, 3),
+        global: build_ip_limiter(cfg.global_per_sec, cfg.global_burst),
+        retry: build_ip_limiter(cfg.retry_per_sec, cfg.retry_burst),
     }
 }
 
@@ -249,6 +284,19 @@ async fn retry_rate_limit(
 ) -> Result<Response, ApiError> {
     enforce_rate_limit(&state.rate_limits.retry, request_ip(&req))?;
     Ok(next.run(req).await)
+}
+
+async fn attach_request_id_context(
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
+
+    Ok(error::with_request_id(request_id, next.run(req)).await)
 }
 
 fn create_router(state: SharedState) -> Router {
@@ -299,6 +347,7 @@ fn create_router(state: SharedState) -> Router {
             state.clone(),
             global_rate_limit,
         ))
+        .layer(middleware::from_fn(attach_request_id_context))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(trace)
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
@@ -317,7 +366,35 @@ mod tests {
         http::{Request, StatusCode},
         routing::get,
     };
+    use std::sync::Mutex;
     use tower::ServiceExt;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    fn with_envs(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = ENV_GUARD.lock().unwrap();
+
+        let previous: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(var, value)| {
+                let old = env::var(var).ok();
+                match value {
+                    Some(v) => unsafe { env::set_var(var, v) },
+                    None => unsafe { env::remove_var(var) },
+                }
+                (*var, old)
+            })
+            .collect();
+
+        f();
+
+        for (var, previous_value) in previous {
+            match previous_value {
+                Some(v) => unsafe { env::set_var(var, v) },
+                None => unsafe { env::remove_var(var) },
+            }
+        }
+    }
 
     #[tokio::test]
     async fn sets_request_id_when_missing() {
@@ -340,6 +417,30 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().contains_key("x-request-id"));
     }
+
+    #[test]
+    fn rate_limit_config_respects_env_overrides() {
+        with_envs(
+            &[
+                ("SR_RATE_LIMIT_GLOBAL_PER_SEC", Some("10")),
+                ("SR_RATE_LIMIT_GLOBAL_BURST", Some("25")),
+                ("SR_RATE_LIMIT_RETRY_PER_SEC", Some("2")),
+                ("SR_RATE_LIMIT_RETRY_BURST", Some("5")),
+            ],
+            || {
+                let cfg = RateLimitConfig::from_env();
+                assert_eq!(
+                    cfg,
+                    RateLimitConfig {
+                        global_per_sec: 10,
+                        global_burst: 25,
+                        retry_per_sec: 2,
+                        retry_burst: 5,
+                    }
+                );
+            },
+        );
+    }
 }
 
 async fn run() -> Result<(), ApiError> {
@@ -352,10 +453,7 @@ async fn run() -> Result<(), ApiError> {
         .await
         .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
 
-    let rate_limits = RateLimits {
-        global: build_ip_limiter(20, 40),
-        retry: build_ip_limiter(1, 3),
-    };
+    let rate_limits = default_rate_limits();
 
     let state = Arc::new(AppState {
         pool,

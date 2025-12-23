@@ -23,3 +23,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 jsonwebtoken.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"

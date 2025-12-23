@@ -1,12 +1,31 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
-use std::borrow::Cow;
+use std::{borrow::Cow, future::Future};
 use thiserror::Error;
 use tracing::{error, warn};
 
 use sr_common::db::{
     CandidateFetchError, FeedbackStorageError, QueueDashboardError, QueueStorageError,
 };
+
+tokio::task_local! {
+    static REQUEST_ID: String;
+}
+
+pub async fn with_request_id<Fut, T>(request_id: Option<String>, fut: Fut) -> T
+where
+    Fut: Future<Output = T>,
+{
+    if let Some(request_id) = request_id {
+        REQUEST_ID.scope(request_id, fut).await
+    } else {
+        fut.await
+    }
+}
+
+pub fn current_request_id() -> Option<String> {
+    REQUEST_ID.try_with(|value| value.clone()).ok()
+}
 
 #[derive(Debug, Error)]
 pub enum ApiError {
@@ -41,17 +60,28 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let status = self.status_code();
         let code = self.code();
+        let request_id = current_request_id();
 
         if status.is_client_error() {
-            warn!(code, %self, "request failed");
+            warn!(
+                code,
+                request_id = request_id.as_deref().unwrap_or(""),
+                %self,
+                "request failed"
+            );
         } else {
-            error!(code, %self, "request failed");
+            error!(
+                code,
+                request_id = request_id.as_deref().unwrap_or(""),
+                %self,
+                "request failed"
+            );
         }
 
         let body = Json(ErrorResponse {
             code,
             message: self.public_message().into_owned(),
-            request_id: None,
+            request_id,
         });
 
         (status, body).into_response()
@@ -133,5 +163,26 @@ impl From<QueueStorageError> for ApiError {
             QueueStorageError::Conflict(msg) => ApiError::Conflict(msg),
             other => ApiError::Database(other.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http_body_util::BodyExt;
+    use serde_json::Value;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn includes_request_id_in_response_body_when_present() {
+        let err = ApiError::Internal("boom".into());
+        let response =
+            with_request_id(Some("req-123".into()), async { err.into_response() }).await;
+
+        let (parts, body) = response.into_parts();
+        assert_eq!(parts.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["request_id"], "req-123");
     }
 }
