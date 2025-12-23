@@ -17,8 +17,8 @@ pub enum MatchResultStorageError {
 
 #[derive(Debug, Clone, Default)]
 pub struct MatchResultInsert {
-    pub talent_id: i32,
-    pub project_id: i32,
+    pub talent_id: i64,
+    pub project_id: i64,
     pub is_knockout: bool,
     pub ko_reasons: Option<Value>,
     pub needs_manual_review: bool,
@@ -42,7 +42,7 @@ pub async fn insert_match_result(
     let client = pool.get().await?;
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "INSERT INTO ses.match_results (
                 talent_id,
                 project_id,

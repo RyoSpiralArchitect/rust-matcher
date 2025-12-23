@@ -2,13 +2,13 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::skill_normalizer::normalize_skill_set;
 use crate::corrections::{
     flow_depth::correct_flow_dept,
     remote_onsite::correct_remote_onsite,
     todofuken::{TODOFUKEN_TO_AREA, correct_todofuken},
 };
 use crate::queue::RecommendedMethod;
+use crate::skill_normalizer::normalize_skill_set;
 
 /// sr-extractor がメール本文から拾う項目（MVP 範囲）
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

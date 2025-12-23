@@ -1,18 +1,37 @@
-use std::net::SocketAddr;
+use std::env;
+use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     Router,
+    body::Body,
+    extract::DefaultBodyLimit,
+    extract::State,
+    extract::connect_info::ConnectInfo,
     http::Method,
+    http::Request,
     http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue},
+    middleware,
+    middleware::Next,
+    response::Response,
     routing::{get, post},
 };
 use clap::Parser;
 use dotenvy::dotenv;
+use governor::{
+    Quota, RateLimiter, clock::DefaultClock, middleware::NoOpMiddleware,
+    state::keyed::DashMapStateStore,
+};
 use sr_common::api::match_response::MatchConfig;
 use sr_common::db::PgPool;
-use sr_common::db::create_pool_from_url;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use sr_common::db::create_pool_from_url_checked;
+use tower_http::{
+    cors::CorsLayer,
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    trace::TraceLayer,
+};
 use tracing::info;
 
 mod auth;
@@ -22,6 +41,8 @@ mod handlers;
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
 use handlers::{candidates, feedback, health, queue};
+
+const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "sr-api", about = "HTTP API for sr-match GUI integration")]
@@ -81,6 +102,47 @@ pub struct AppConfig {
     pub job_detail_statement_timeout_ms: i32,
 }
 
+type IpRateLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock, NoOpMiddleware>;
+
+#[derive(Clone)]
+pub(crate) struct RateLimits {
+    global: Arc<IpRateLimiter>,
+    retry: Arc<IpRateLimiter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RateLimitConfig {
+    global_per_sec: u64,
+    global_burst: u32,
+    retry_per_sec: u64,
+    retry_burst: u32,
+}
+
+impl RateLimitConfig {
+    fn parse_env_u64(vars: &[&str]) -> Option<u64> {
+        vars.iter()
+            .find_map(|name| env::var(name).ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+    }
+
+    fn parse_env_u32(vars: &[&str]) -> Option<u32> {
+        vars.iter()
+            .find_map(|name| env::var(name).ok())
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+    }
+
+    fn from_env() -> Self {
+        Self {
+            global_per_sec: Self::parse_env_u64(&["SR_RATE_LIMIT_GLOBAL_PER_SEC"]).unwrap_or(20),
+            global_burst: Self::parse_env_u32(&["SR_RATE_LIMIT_GLOBAL_BURST"]).unwrap_or(40),
+            retry_per_sec: Self::parse_env_u64(&["SR_RATE_LIMIT_RETRY_PER_SEC"]).unwrap_or(1),
+            retry_burst: Self::parse_env_u32(&["SR_RATE_LIMIT_RETRY_BURST"]).unwrap_or(3),
+        }
+    }
+}
+
 impl AppConfig {
     fn from_cli(cli: Cli) -> Result<Self, ApiError> {
         let cors_origins = cli
@@ -119,7 +181,7 @@ impl AppConfig {
                     ));
                 }
                 _ => {}
-            }
+            },
             _ => {}
         }
 
@@ -145,6 +207,8 @@ pub struct AppState {
     pub pool: PgPool,
     pub config: AppConfig,
     pub match_config: MatchConfig,
+    pub(crate) rate_limits: RateLimits,
+    pub readiness: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -171,14 +235,103 @@ fn cors_layer(origins: &[String]) -> CorsLayer {
         ])
 }
 
+fn build_ip_limiter(per_second: u64, burst_size: u32) -> Arc<IpRateLimiter> {
+    let nanos_per_token = 1_000_000_000u64 / per_second.max(1);
+    let quota = Quota::with_period(Duration::from_nanos(nanos_per_token.max(1)))
+        .unwrap()
+        .allow_burst(NonZeroU32::new(burst_size).unwrap());
+
+    Arc::new(RateLimiter::keyed(quota))
+}
+
+pub(crate) fn default_rate_limits() -> RateLimits {
+    let cfg = RateLimitConfig::from_env();
+    RateLimits {
+        global: build_ip_limiter(cfg.global_per_sec, cfg.global_burst),
+        retry: build_ip_limiter(cfg.retry_per_sec, cfg.retry_burst),
+    }
+}
+
+fn request_ip<B>(req: &Request<B>) -> Option<IpAddr> {
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip())
+}
+
+fn enforce_rate_limit(limiter: &IpRateLimiter, ip: Option<IpAddr>) -> Result<(), ApiError> {
+    if let Some(client_ip) = ip {
+        if limiter.check_key(&client_ip).is_err() {
+            return Err(ApiError::TooManyRequests("rate limit exceeded".into()));
+        }
+    }
+
+    Ok(())
+}
+
+async fn global_rate_limit(
+    State(state): State<SharedState>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    enforce_rate_limit(&state.rate_limits.global, request_ip(&req))?;
+    Ok(next.run(req).await)
+}
+
+async fn retry_rate_limit(
+    State(state): State<SharedState>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    enforce_rate_limit(&state.rate_limits.retry, request_ip(&req))?;
+    Ok(next.run(req).await)
+}
+
+async fn attach_request_id_context(
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
+
+    Ok(error::with_request_id(request_id, next.run(req)).await)
+}
+
 fn create_router(state: SharedState) -> Router {
     let cors = cors_layer(&state.config.cors_origins);
+
+    let request_id_header = HeaderName::from_static("x-request-id");
+    let trace_header = request_id_header.clone();
+
+    let trace = TraceLayer::new_for_http().make_span_with(move |request: &Request<Body>| {
+        let request_id = request
+            .headers()
+            .get(&trace_header)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+
+        tracing::info_span!(
+            "http_request",
+            method = %request.method(),
+            uri = %request.uri(),
+            request_id = %request_id,
+            status = tracing::field::Empty,
+        )
+    });
 
     let api_routes = Router::new()
         .route("/queue/dashboard", get(queue::dashboard))
         .route("/queue/jobs", get(queue::list_jobs))
         .route("/queue/jobs/:id", get(queue::get_job))
-        .route("/queue/retry/:id", post(queue::retry_job))
+        .route(
+            "/queue/retry/:id",
+            post(queue::retry_job).route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                retry_rate_limit,
+            )),
+        )
         .route(
             "/projects/:project_id/candidates",
             get(candidates::list_candidates),
@@ -186,11 +339,108 @@ fn create_router(state: SharedState) -> Router {
         .route("/feedback", post(feedback::submit_feedback));
 
     Router::new()
-        .route("/health", get(health::health_check))
+        .route("/health", get(health::readyz))
+        .route("/livez", get(health::livez))
+        .route("/readyz", get(health::readyz))
         .nest("/api", api_routes)
-        .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            global_rate_limit,
+        ))
+        .layer(middleware::from_fn(attach_request_id_context))
+        .layer(DefaultBodyLimit::max(256 * 1024))
+        .layer(trace)
+        .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
+        .layer(SetRequestIdLayer::new(
+            request_id_header,
+            MakeRequestUuid::default(),
+        ))
         .layer(cors)
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use std::sync::Mutex;
+    use tower::ServiceExt;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    fn with_envs(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = ENV_GUARD.lock().unwrap();
+
+        let previous: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(var, value)| {
+                let old = env::var(var).ok();
+                match value {
+                    Some(v) => unsafe { env::set_var(var, v) },
+                    None => unsafe { env::remove_var(var) },
+                }
+                (*var, old)
+            })
+            .collect();
+
+        f();
+
+        for (var, previous_value) in previous {
+            match previous_value {
+                Some(v) => unsafe { env::set_var(var, v) },
+                None => unsafe { env::remove_var(var) },
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sets_request_id_when_missing() {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(TraceLayer::new_for_http())
+            .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
+                "x-request-id",
+            )))
+            .layer(SetRequestIdLayer::new(
+                HeaderName::from_static("x-request-id"),
+                MakeRequestUuid::default(),
+            ));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key("x-request-id"));
+    }
+
+    #[test]
+    fn rate_limit_config_respects_env_overrides() {
+        with_envs(
+            &[
+                ("SR_RATE_LIMIT_GLOBAL_PER_SEC", Some("10")),
+                ("SR_RATE_LIMIT_GLOBAL_BURST", Some("25")),
+                ("SR_RATE_LIMIT_RETRY_PER_SEC", Some("2")),
+                ("SR_RATE_LIMIT_RETRY_BURST", Some("5")),
+            ],
+            || {
+                let cfg = RateLimitConfig::from_env();
+                assert_eq!(
+                    cfg,
+                    RateLimitConfig {
+                        global_per_sec: 10,
+                        global_burst: 25,
+                        retry_per_sec: 2,
+                        retry_burst: 5,
+                    }
+                );
+            },
+        );
+    }
 }
 
 async fn run() -> Result<(), ApiError> {
@@ -199,17 +449,22 @@ async fn run() -> Result<(), ApiError> {
 
     let cli = Cli::parse();
     let config = AppConfig::from_cli(cli)?;
-    let pool = create_pool_from_url(&config.database_url)
+    let pool = create_pool_from_url_checked(&config.database_url)
+        .await
         .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
+
+    let rate_limits = default_rate_limits();
 
     let state = Arc::new(AppState {
         pool,
         config: config.clone(),
         match_config: MatchConfig::from_env(),
+        rate_limits,
+        readiness: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     let addr: SocketAddr = ([0, 0, 0, 0], config.port).into();
-    let app = create_router(state);
+    let app = create_router(state.clone());
 
     info!(%addr, auth_mode = ?config.auth.mode, "sr-api listening");
 
@@ -219,11 +474,46 @@ async fn run() -> Result<(), ApiError> {
 
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
-    axum::serve(listener, service)
+    let server =
+        axum::serve(listener, service).with_graceful_shutdown(shutdown_signal(state.clone()));
+
+    let server_result = tokio::time::timeout(std::time::Duration::from_secs(30), server)
         .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?;
+        .map_err(|_| ApiError::Internal("server shutdown timed out".into()))?;
+
+    server_result.map_err(|err| ApiError::Internal(err.to_string()))?;
 
     Ok(())
+}
+
+async fn shutdown_signal(state: SharedState) {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+            let _ = sigterm.recv().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    state
+        .readiness
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // Give load balancers a brief window to observe /readyz as not ready
+    // before axum stops accepting new connections.
+    tokio::time::sleep(SHUTDOWN_DRAIN_GRACE).await;
 }
 
 #[tokio::main]
