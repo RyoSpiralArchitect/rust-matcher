@@ -1,16 +1,28 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     Router,
     body::Body,
+    extract::DefaultBodyLimit,
+    extract::State,
+    extract::connect_info::ConnectInfo,
     http::Method,
     http::Request,
     http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue},
+    middleware,
+    middleware::Next,
+    response::Response,
     routing::{get, post},
 };
 use clap::Parser;
 use dotenvy::dotenv;
+use governor::{
+    Quota, RateLimiter, clock::DefaultClock, middleware::NoOpMiddleware,
+    state::keyed::DashMapStateStore,
+};
 use sr_common::api::match_response::MatchConfig;
 use sr_common::db::PgPool;
 use sr_common::db::create_pool_from_url_checked;
@@ -89,6 +101,14 @@ pub struct AppConfig {
     pub job_detail_statement_timeout_ms: i32,
 }
 
+type IpRateLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock, NoOpMiddleware>;
+
+#[derive(Clone)]
+pub(crate) struct RateLimits {
+    global: Arc<IpRateLimiter>,
+    retry: Arc<IpRateLimiter>,
+}
+
 impl AppConfig {
     fn from_cli(cli: Cli) -> Result<Self, ApiError> {
         let cors_origins = cli
@@ -153,6 +173,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub config: AppConfig,
     pub match_config: MatchConfig,
+    pub(crate) rate_limits: RateLimits,
     pub readiness: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -178,6 +199,56 @@ fn cors_layer(origins: &[String]) -> CorsLayer {
             CONTENT_TYPE,
             HeaderName::from_static("x-api-key"),
         ])
+}
+
+fn build_ip_limiter(per_second: u64, burst_size: u32) -> Arc<IpRateLimiter> {
+    let nanos_per_token = 1_000_000_000u64 / per_second.max(1);
+    let quota = Quota::with_period(Duration::from_nanos(nanos_per_token.max(1)))
+        .unwrap()
+        .allow_burst(NonZeroU32::new(burst_size).unwrap());
+
+    Arc::new(RateLimiter::keyed(quota))
+}
+
+pub(crate) fn default_rate_limits() -> RateLimits {
+    RateLimits {
+        global: build_ip_limiter(20, 40),
+        retry: build_ip_limiter(1, 3),
+    }
+}
+
+fn request_ip<B>(req: &Request<B>) -> Option<IpAddr> {
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip())
+}
+
+fn enforce_rate_limit(limiter: &IpRateLimiter, ip: Option<IpAddr>) -> Result<(), ApiError> {
+    if let Some(client_ip) = ip {
+        if limiter.check_key(&client_ip).is_err() {
+            return Err(ApiError::TooManyRequests("rate limit exceeded".into()));
+        }
+    }
+
+    Ok(())
+}
+
+async fn global_rate_limit(
+    State(state): State<SharedState>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    enforce_rate_limit(&state.rate_limits.global, request_ip(&req))?;
+    Ok(next.run(req).await)
+}
+
+async fn retry_rate_limit(
+    State(state): State<SharedState>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    enforce_rate_limit(&state.rate_limits.retry, request_ip(&req))?;
+    Ok(next.run(req).await)
 }
 
 fn create_router(state: SharedState) -> Router {
@@ -206,7 +277,13 @@ fn create_router(state: SharedState) -> Router {
         .route("/queue/dashboard", get(queue::dashboard))
         .route("/queue/jobs", get(queue::list_jobs))
         .route("/queue/jobs/:id", get(queue::get_job))
-        .route("/queue/retry/:id", post(queue::retry_job))
+        .route(
+            "/queue/retry/:id",
+            post(queue::retry_job).route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                retry_rate_limit,
+            )),
+        )
         .route(
             "/projects/:project_id/candidates",
             get(candidates::list_candidates),
@@ -218,6 +295,11 @@ fn create_router(state: SharedState) -> Router {
         .route("/livez", get(health::livez))
         .route("/readyz", get(health::readyz))
         .nest("/api", api_routes)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            global_rate_limit,
+        ))
+        .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(trace)
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(
@@ -270,10 +352,16 @@ async fn run() -> Result<(), ApiError> {
         .await
         .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
 
+    let rate_limits = RateLimits {
+        global: build_ip_limiter(20, 40),
+        retry: build_ip_limiter(1, 3),
+    };
+
     let state = Arc::new(AppState {
         pool,
         config: config.clone(),
         match_config: MatchConfig::from_env(),
+        rate_limits,
         readiness: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 

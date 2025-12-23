@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
-use deadpool_postgres::PoolError;
+use deadpool_postgres::{GenericClient, PoolError};
 use serde_json::Value;
 use tokio_postgres::Error as PgError;
 use tokio_postgres::GenericClient;
@@ -101,7 +101,7 @@ pub async fn upsert_extraction_job(
     let client = pool.get().await?;
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "INSERT INTO ses.extraction_queue (
                 message_id,
                 email_subject,
@@ -210,7 +210,7 @@ pub async fn recover_stuck_jobs(
     let cutoff = now - max_processing;
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "UPDATE ses.extraction_queue SET
                 status = 'pending',
                 locked_by = NULL,
@@ -388,7 +388,7 @@ pub async fn lock_next_pending_job(
 ) -> Result<Option<ExtractionJob>, QueueStorageError> {
     let client = pool.get().await?;
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "UPDATE ses.extraction_queue
 SET
     status = 'processing',
@@ -516,7 +516,7 @@ async fn fetch_talent_snapshot(
     include_source: bool,
 ) -> Result<Option<TalentSnapshot>, QueueStorageError> {
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "SELECT id, message_id, talent_name, summary_text, desired_price_min, available_date, received_at, source_text FROM ses.talents_enum WHERE message_id = $1 LIMIT 1",
         )
         .await?;
@@ -546,7 +546,7 @@ async fn fetch_project_snapshot(
     include_source: bool,
 ) -> Result<Option<ProjectSnapshot>, QueueStorageError> {
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "SELECT project_code, message_id, project_name, monthly_tanka_min, monthly_tanka_max, start_date, source_text, requires_manual_review, manual_review_reason FROM ses.projects_enum WHERE message_id = $1 LIMIT 1",
         )
         .await?;
@@ -608,7 +608,7 @@ async fn fetch_match_results(
     }
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE created_at >= NOW() - ($3::bigint * INTERVAL '1 day') AND ( ($1::bigint IS NOT NULL AND talent_id = $1) OR ($2::bigint IS NOT NULL AND project_id = $2) ) ORDER BY created_at DESC LIMIT $4",
         )
         .await?;
@@ -639,7 +639,7 @@ async fn fetch_interactions(
     }
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::int[]) ORDER BY match_result_id, created_at DESC",
         )
         .await?;
@@ -681,7 +681,7 @@ async fn fetch_feedback_events(
 
     if !interaction_ids.is_empty() {
         let stmt = client
-            .prepare(
+            .prepare_cached(
                 "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE interaction_id IS NOT NULL AND interaction_id = ANY($1::bigint[]) ORDER BY created_at DESC",
             )
             .await?;
@@ -692,7 +692,7 @@ async fn fetch_feedback_events(
 
     if !match_result_ids.is_empty() {
         let stmt = client
-            .prepare(
+            .prepare_cached(
                 "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE match_result_id IS NOT NULL AND match_result_id = ANY($1::int[]) ORDER BY created_at DESC",
             )
             .await?;
@@ -793,8 +793,7 @@ pub async fn get_job_detail_with_includes(
     let set_statement_timeout = statement_timeout_ms > 0;
 
     if set_statement_timeout {
-        let pg_client: &mut tokio_postgres::Client = &mut *client;
-        let transaction = pg_client.build_transaction().start().await?;
+        let transaction = client.transaction().await?;
         transaction
             .batch_execute(&format!(
                 "SET LOCAL statement_timeout = '{}ms'",
@@ -815,9 +814,8 @@ pub async fn get_job_detail_with_includes(
         transaction.commit().await?;
         Ok(result)
     } else {
-        let pg_client: &tokio_postgres::Client = &*client;
         get_job_detail_with_client(
-            pg_client,
+            &client,
             id,
             includes,
             allow_source_text,

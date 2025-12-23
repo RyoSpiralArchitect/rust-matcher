@@ -89,7 +89,8 @@ fn check_required_skills_with_threshold(
             is_knockout: false,
             match_percentage: 0.0,
             matched_skills: vec![],
-            reason: "人材スキル情報が不足しているため必須スキルを確認できません (要手動確認)".to_string(),
+            reason: "人材スキル情報が不足しているため必須スキルを確認できません (要手動確認)"
+                .to_string(),
             requires_manual_review: true,
         };
     }
@@ -206,7 +207,10 @@ mod tests {
         );
 
         assert!(!result.is_knockout);
-        assert!(result.reason.contains("一致: react, rust") || result.reason.contains("一致: rust, react"));
+        assert!(
+            result.reason.contains("一致: react, rust")
+                || result.reason.contains("一致: rust, react")
+        );
         assert!(result.reason.contains("不足: kubernetes"));
     }
 }

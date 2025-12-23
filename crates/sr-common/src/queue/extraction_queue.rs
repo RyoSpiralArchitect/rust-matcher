@@ -172,10 +172,7 @@ impl ExtractionQueue {
             .filter(|(_, job)| {
                 job.status == QueueStatus::Pending
                     && job.next_retry_at.map(|ts| ts <= now).unwrap_or(true)
-                    && job
-                        .reprocess_after
-                        .map(|ts| ts <= now)
-                        .unwrap_or(true)
+                    && job.reprocess_after.map(|ts| ts <= now).unwrap_or(true)
             })
             .max_by(|(_, a), (_, b)| {
                 a.priority

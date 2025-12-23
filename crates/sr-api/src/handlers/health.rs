@@ -2,8 +2,8 @@ use axum::{Json, extract::State};
 use serde_json::json;
 use tokio::time::{Duration, timeout};
 
-use crate::SharedState;
 use crate::error::ApiError;
+use crate::{SharedState, default_rate_limits};
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -71,6 +71,7 @@ mod tests {
             pool,
             config,
             match_config: MatchConfig::default(),
+            rate_limits: default_rate_limits(),
             readiness: Arc::new(AtomicBool::new(readiness)),
         })
     }

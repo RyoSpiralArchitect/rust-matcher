@@ -39,16 +39,16 @@ fn build_options() -> Option<String> {
         options.push(format!("-c statement_timeout={timeout_ms}"));
     }
 
-    if let Some(timeout_ms) =
-        parse_env::<u64>(&["SR_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", "SR_DB_IDLE_IN_TX_TIMEOUT_MS"])
-    {
+    if let Some(timeout_ms) = parse_env::<u64>(&[
+        "SR_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS",
+        "SR_DB_IDLE_IN_TX_TIMEOUT_MS",
+    ]) {
         options.push(format!(
             "-c idle_in_transaction_session_timeout={timeout_ms}"
         ));
     }
 
-    if let Some(app_name) = env
-        ::var("SR_DB_APPLICATION_NAME")
+    if let Some(app_name) = env::var("SR_DB_APPLICATION_NAME")
         .ok()
         .filter(|name| !name.trim().is_empty())
     {
@@ -188,10 +188,7 @@ mod tests {
         with_envs(
             &[
                 ("SR_DB_STATEMENT_TIMEOUT_MS", Some("3000")),
-                (
-                    "SR_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS",
-                    Some("15000"),
-                ),
+                ("SR_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", Some("15000")),
                 ("SR_DB_APPLICATION_NAME", Some("sr-api")),
             ],
             || {

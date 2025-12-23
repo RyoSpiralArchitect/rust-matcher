@@ -42,7 +42,7 @@ pub async fn insert_match_result(
     let client = pool.get().await?;
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "INSERT INTO ses.match_results (
                 talent_id,
                 project_id,

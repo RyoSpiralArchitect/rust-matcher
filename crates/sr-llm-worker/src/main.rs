@@ -2,7 +2,7 @@ use chrono::Utc;
 use clap::Parser;
 use dotenvy::dotenv;
 use rand::Rng;
-use reqwest::{blocking::Client, StatusCode};
+use reqwest::{StatusCode, blocking::Client};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sr_common::db::{
@@ -14,7 +14,7 @@ use sr_common::queue::{
 };
 use std::thread::sleep as std_sleep;
 use std::time::Duration as StdDuration;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::info;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +117,10 @@ impl LlmRuntimeConfig {
 
         fn parse_bool(key: &str, default: bool) -> bool {
             match std::env::var(key) {
-                Ok(val) => matches!(val.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+                Ok(val) => matches!(
+                    val.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ),
                 Err(_) => default,
             }
         }
@@ -150,9 +153,10 @@ impl LlmRuntimeConfig {
 
         let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "deepseek".into());
         let (default_model, default_endpoint) = provider_defaults(&provider);
-        let primary_provider = std::env::var("LLM_PRIMARY_PROVIDER")
-            .unwrap_or_else(|_| provider.clone());
-        let shadow_provider = std::env::var("LLM_SHADOW_PROVIDER").unwrap_or_else(|_| "openai".into());
+        let primary_provider =
+            std::env::var("LLM_PRIMARY_PROVIDER").unwrap_or_else(|_| provider.clone());
+        let shadow_provider =
+            std::env::var("LLM_SHADOW_PROVIDER").unwrap_or_else(|_| "openai".into());
 
         let api_key = std::env::var("LLM_API_KEY")
             .ok()
@@ -328,7 +332,10 @@ fn build_extractor_hints(partial_fields: &Option<serde_json::Value>) -> serde_js
     if let Some(max) = obj.get("monthly_tanka_max").and_then(|v| v.as_i64()) {
         hints.insert("monthly_tanka_max".to_string(), json!(max));
     }
-    if let Some(skills) = obj.get("required_skills_keywords").and_then(|v| v.as_array()) {
+    if let Some(skills) = obj
+        .get("required_skills_keywords")
+        .and_then(|v| v.as_array())
+    {
         hints.insert("required_skills_keywords".to_string(), json!(skills));
     }
     if let Some(remote) = obj.get("remote_onsite").and_then(|v| v.as_str()) {
@@ -350,7 +357,11 @@ fn build_extractor_hints(partial_fields: &Option<serde_json::Value>) -> serde_js
     serde_json::Value::Object(hints)
 }
 
-fn build_llm_request(job: &ExtractionJob, body_text: &str, config: &LlmRuntimeConfig) -> LlmRequest {
+fn build_llm_request(
+    job: &ExtractionJob,
+    body_text: &str,
+    config: &LlmRuntimeConfig,
+) -> LlmRequest {
     LlmRequest {
         message_id: job.message_id.clone(),
         source_text: body_text.to_string(),
@@ -399,9 +410,11 @@ fn perform_llm_request(
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
-                    return resp.json::<LlmResponse>().map_err(|err| JobError::Permanent {
-                        message: format!("invalid llm response body: {err}"),
-                    });
+                    return resp
+                        .json::<LlmResponse>()
+                        .map_err(|err| JobError::Permanent {
+                            message: format!("invalid llm response body: {err}"),
+                        });
                 }
 
                 if is_retryable_status(status) && attempt < config.max_retries {
@@ -430,9 +443,7 @@ fn perform_llm_request(
 
                 return Err(JobError::Retryable {
                     message: format!("llm request error: {err}"),
-                    retry_after: Some(chrono::Duration::seconds(
-                        config.retry_backoff_secs as i64,
-                    )),
+                    retry_after: Some(chrono::Duration::seconds(config.retry_backoff_secs as i64)),
                 });
             }
         }
@@ -440,9 +451,7 @@ fn perform_llm_request(
 
     Err(JobError::Retryable {
         message: "llm retries exhausted".into(),
-        retry_after: Some(chrono::Duration::seconds(
-            config.retry_backoff_secs as i64,
-        )),
+        retry_after: Some(chrono::Duration::seconds(config.retry_backoff_secs as i64)),
     })
 }
 
@@ -463,10 +472,7 @@ fn shadow_endpoint_and_model(config: &LlmRuntimeConfig) -> (String, String) {
 
     let (default_model, default_endpoint) = provider_defaults(&config.shadow_provider);
     (
-        config
-            .shadow_endpoint
-            .clone()
-            .unwrap_or(default_endpoint),
+        config.shadow_endpoint.clone().unwrap_or(default_endpoint),
         config.shadow_model.clone().unwrap_or(default_model),
     )
 }
@@ -506,13 +512,12 @@ fn spawn_shadow_compare(
         let request = build_llm_request(&job, &body_text, &shadow_config);
         match perform_llm_request(&shadow_config, &shadow_endpoint, &shadow_api_key, &request) {
             Ok(shadow_resp) => {
-                let diff = if shadow_resp.extracted
-                    == job.partial_fields.clone().unwrap_or_default()
-                {
-                    "match"
-                } else {
-                    "diff"
-                };
+                let diff =
+                    if shadow_resp.extracted == job.partial_fields.clone().unwrap_or_default() {
+                        "match"
+                    } else {
+                        "diff"
+                    };
                 info!(
                     message_id = %job.message_id,
                     %shadow_provider,
@@ -578,7 +583,10 @@ fn handle_llm_job(
 
     if !response.status.is_empty() {
         decorations.push(format!("status={}", response.status));
-        if !matches!(response.status.to_ascii_lowercase().as_str(), "ok" | "success") {
+        if !matches!(
+            response.status.to_ascii_lowercase().as_str(),
+            "ok" | "success"
+        ) {
             requires_manual_review = true;
         }
     }
@@ -716,8 +724,10 @@ async fn process_locked_job(
         }
     };
 
-    let (processed, _status) =
-        apply_outcome(locked.clone(), handle_llm_job(&locked, &body_text, llm_config));
+    let (processed, _status) = apply_outcome(
+        locked.clone(),
+        handle_llm_job(&locked, &body_text, llm_config),
+    );
     let rows = upsert_extraction_job(pool, &processed).await?;
     info!(
         rows,
@@ -834,7 +844,10 @@ mod tests {
         });
 
         with_env(
-            &[("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))), ("LLM_API_KEY", Some("token"))],
+            &[
+                ("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))),
+                ("LLM_API_KEY", Some("token")),
+            ],
             || {
                 let queue = run_sample_flow();
 
@@ -843,13 +856,17 @@ mod tests {
                 assert_eq!(job.final_method, Some(FinalMethod::LlmCompleted));
                 assert_eq!(job.status.as_str(), "completed");
                 assert!(!job.requires_manual_review);
-                assert_eq!(job.partial_fields.as_ref().unwrap()["project_name"], json!("from-llm"));
+                assert_eq!(
+                    job.partial_fields.as_ref().unwrap()["project_name"],
+                    json!("from-llm")
+                );
                 assert_eq!(job.llm_latency_ms, Some(222));
-                assert!(job
-                    .decision_reason
-                    .as_ref()
-                    .map(|r| r.contains("llm ok"))
-                    .unwrap_or(false));
+                assert!(
+                    job.decision_reason
+                        .as_ref()
+                        .map(|r| r.contains("llm ok"))
+                        .unwrap_or(false)
+                );
             },
         );
     }
@@ -870,7 +887,10 @@ mod tests {
         });
 
         with_env(
-            &[("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))), ("LLM_API_KEY", Some("token"))],
+            &[
+                ("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))),
+                ("LLM_API_KEY", Some("token")),
+            ],
             || {
                 let queue = run_sample_flow();
 
@@ -893,7 +913,7 @@ mod tests {
         let _mock = server.mock(|when, then| {
             when.method(POST).path("/api/v1/extract");
             then.status(200).json_body(json!({
-                "message_id": "unexpected", 
+                "message_id": "unexpected",
                 "extracted": {"project_name": "from-llm"},
                 "latency_ms": 80,
                 "status": "ok",
@@ -901,7 +921,10 @@ mod tests {
         });
 
         with_env(
-            &[("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))), ("LLM_API_KEY", Some("token"))],
+            &[
+                ("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))),
+                ("LLM_API_KEY", Some("token")),
+            ],
             || {
                 let queue = run_sample_flow();
 
@@ -925,9 +948,7 @@ mod tests {
 
         queue.enqueue(job);
 
-        queue.process_next_with_worker("sr-llm-worker", |j| {
-            handle_llm_job(j, "body", &llm_config)
-        });
+        queue.process_next_with_worker("sr-llm-worker", |j| handle_llm_job(j, "body", &llm_config));
 
         let job = &queue.jobs[0];
         assert_eq!(job.status, QueueStatus::Completed);
@@ -969,11 +990,13 @@ mod tests {
         assert!(updated.locked_by.is_none());
         assert!(updated.retry_count > 0);
         assert!(updated.next_retry_at.is_some());
-        assert!(updated
-            .last_error
-            .as_ref()
-            .map(|e| e.contains("temporary"))
-            .unwrap_or(false));
+        assert!(
+            updated
+                .last_error
+                .as_ref()
+                .map(|e| e.contains("temporary"))
+                .unwrap_or(false)
+        );
     }
 
     #[test]
@@ -1164,11 +1187,12 @@ mod tests {
             assert_eq!(job.status, QueueStatus::Completed);
             assert_eq!(job.final_method, Some(FinalMethod::ManualReview));
             assert!(job.requires_manual_review);
-            assert!(job
-                .decision_reason
-                .as_ref()
-                .map(|r| r.contains("LLM_DISABLED"))
-                .unwrap_or(false));
+            assert!(
+                job.decision_reason
+                    .as_ref()
+                    .map(|r| r.contains("LLM_DISABLED"))
+                    .unwrap_or(false)
+            );
         });
     }
 

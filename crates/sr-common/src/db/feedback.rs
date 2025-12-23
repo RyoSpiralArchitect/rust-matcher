@@ -14,7 +14,7 @@ pub enum FeedbackStorageError {
     Postgres(#[from] PgError),
     #[error("interaction not found: {0}")]
     InteractionNotFound(i64),
-    #[error("feedback actor is missing" )]
+    #[error("feedback actor is missing")]
     MissingActor,
 }
 
@@ -80,7 +80,7 @@ pub async fn insert_feedback_event(
     let interaction = fetch_interaction_context(&client, request.interaction_id).await?;
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "INSERT INTO ses.feedback_events (\
                 interaction_id,\
                 match_result_id,\
