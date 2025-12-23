@@ -14,6 +14,14 @@ use crate::error::ApiError;
 pub struct CandidateQuery {
     #[serde(default)]
     pub include_softko: bool,
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+const fn default_limit() -> u32 {
+    50
 }
 
 pub async fn list_candidates(
@@ -26,6 +34,8 @@ pub async fn list_candidates(
         &state.pool,
         project_id,
         query.include_softko,
+        query.limit,
+        query.offset,
         &state.match_config,
     )
     .await?;

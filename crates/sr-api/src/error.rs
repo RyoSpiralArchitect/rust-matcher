@@ -63,6 +63,9 @@ impl From<FeedbackStorageError> for ApiError {
             FeedbackStorageError::InteractionNotFound(id) => {
                 ApiError::NotFound(format!("interaction not found: {id}"))
             }
+            FeedbackStorageError::MissingActor => {
+                ApiError::BadRequest("feedback actor is required".into())
+            }
             other => ApiError::Database(other.to_string()),
         }
     }
