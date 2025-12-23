@@ -239,11 +239,7 @@ static ALIAS_TO_CANONICAL: LazyLock<HashMap<&'static str, &'static str>> = LazyL
 });
 
 fn nfkc_lower_trim(input: &str) -> String {
-    input
-        .nfkc()
-        .collect::<String>()
-        .trim()
-        .to_lowercase()
+    input.nfkc().collect::<String>().trim().to_lowercase()
 }
 
 fn compact_key(input: &str) -> String {
@@ -275,7 +271,7 @@ fn match_canonical_token(token: &str) -> Option<String> {
 
 fn split_segments(input: &str) -> impl Iterator<Item = String> + '_ {
     input
-        .split(|c: char| matches!(c, ' ' | '　' | '/' | '／' | '・' | ',' | ';' | '|' | '+' ))
+        .split(|c: char| matches!(c, ' ' | '　' | '/' | '／' | '・' | ',' | ';' | '|' | '+'))
         .map(nfkc_lower_trim)
         .filter(|s| !s.is_empty())
 }
@@ -309,7 +305,7 @@ fn fuzzy_match_canonical(compact: &str) -> Option<String> {
         match best {
             None => best = Some((*canonical, distance)),
             Some((_, best_dist)) if distance < best_dist => best = Some((*canonical, distance)),
-            _ => {},
+            _ => {}
         }
     }
 

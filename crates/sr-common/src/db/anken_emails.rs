@@ -27,7 +27,7 @@ pub async fn fetch_email_body(
 ) -> Result<Option<String>, PendingEmailError> {
     let client = pool.get().await?;
     let stmt = client
-        .prepare("SELECT body_text FROM ses.anken_emails WHERE message_id = $1")
+        .prepare_cached("SELECT body_text FROM ses.anken_emails WHERE message_id = $1")
         .await?;
 
     let row = client.query_opt(&stmt, &[&message_id]).await?;
@@ -46,7 +46,7 @@ pub async fn fetch_pending_emails(
     let client = pool.get().await?;
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "SELECT ae.message_id, ae.subject, ae.body_text, ae.created_at
              FROM ses.anken_emails ae
              LEFT JOIN ses.extraction_queue eq ON ae.message_id = eq.message_id
