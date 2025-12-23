@@ -516,7 +516,7 @@ async fn fetch_project_snapshot(
 
     let row = client.query_opt(&stmt, &[&message_id]).await?;
     let snapshot = row.map(|r| ProjectSnapshot {
-        project_code: r.get::<_, i32>("project_code") as i64,
+        project_code: r.get("project_code"),
         message_id: r.get("message_id"),
         project_name: r.get("project_name"),
         monthly_tanka_min: r.get("monthly_tanka_min"),
