@@ -369,7 +369,7 @@ fn row_to_job_detail_response(row: &Row) -> QueueJobDetailResponse {
     }
 }
 
-const SOURCE_PREVIEW_LIMIT: usize = 4000;
+const SOURCE_PREVIEW_LIMIT: usize = 1000;
 
 fn truncate_source_preview(text: &str) -> String {
     if text.chars().count() <= SOURCE_PREVIEW_LIMIT {
