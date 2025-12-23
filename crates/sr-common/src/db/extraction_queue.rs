@@ -369,30 +369,41 @@ fn row_to_job_detail_response(row: &Row) -> QueueJobDetailResponse {
 }
 
 const SOURCE_PREVIEW_LIMIT: usize = 1000;
+const SOURCE_PREVIEW_LOOKAHEAD: usize = 200;
 
 fn truncate_source_preview(text: &str) -> String {
     if text.chars().count() <= SOURCE_PREVIEW_LIMIT {
         return text.to_string();
     }
 
-    let mut end = 0usize;
-    let mut last_break = None;
+    let mut end_at_limit = 0usize;
+    let mut last_break_before_limit = None;
+    let mut first_break_after_limit = None;
     let mut count = 0usize;
 
     for (idx, ch) in text.char_indices() {
-        if count == SOURCE_PREVIEW_LIMIT {
+        count += 1;
+        let boundary = idx + ch.len_utf8();
+        end_at_limit = end_at_limit.max(boundary);
+
+        if matches!(ch, '\n' | '。' | '.') {
+            if count <= SOURCE_PREVIEW_LIMIT {
+                last_break_before_limit = Some(boundary);
+            } else if first_break_after_limit.is_none()
+                && count <= SOURCE_PREVIEW_LIMIT + SOURCE_PREVIEW_LOOKAHEAD
+            {
+                first_break_after_limit = Some(boundary);
+            }
+        }
+
+        if count > SOURCE_PREVIEW_LIMIT + SOURCE_PREVIEW_LOOKAHEAD {
             break;
         }
-
-        if ch == '\n' || ch == '。' || ch == '.' {
-            last_break = Some(idx + ch.len_utf8());
-        }
-
-        end = idx + ch.len_utf8();
-        count += 1;
     }
 
-    let cutoff = last_break.unwrap_or(end);
+    let cutoff = last_break_before_limit
+        .or(first_break_after_limit)
+        .unwrap_or(end_at_limit);
     text[..cutoff].to_string()
 }
 
@@ -954,16 +965,23 @@ async fn get_job_detail_with_client<C: GenericClient>(
         for (match_result, match_id_i32) in matches.into_iter().zip(match_ids_i32.into_iter()) {
             let latest_interaction = interaction_map.get(&match_id_i32).cloned();
             let mut feedback_events = Vec::new();
+            let mut seen_feedback_ids = HashSet::new();
 
             if let Some(interaction) = &latest_interaction {
                 if let Some(events) = feedback_maps.0.get(&interaction.id) {
-                    feedback_events.extend(events.clone());
+                    for event in events {
+                        if seen_feedback_ids.insert(event.id) {
+                            feedback_events.push(event.clone());
+                        }
+                    }
                 }
             }
 
-            if feedback_events.is_empty() {
-                if let Some(events) = feedback_maps.1.get(&match_id_i32) {
-                    feedback_events.extend(events.clone());
+            if let Some(events) = feedback_maps.1.get(&match_id_i32) {
+                for event in events {
+                    if seen_feedback_ids.insert(event.id) {
+                        feedback_events.push(event.clone());
+                    }
                 }
             }
 
