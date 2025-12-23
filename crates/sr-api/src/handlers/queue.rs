@@ -170,12 +170,6 @@ pub async fn retry_job(
 }
 
 #[cfg(test)]
-fn assert_query_bounds() {
-    fn assert_send_sync<T: Send + Sync + serde::de::DeserializeOwned>() {}
-    assert_send_sync::<ListJobsParams>();
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -234,5 +228,11 @@ mod tests {
 
         let includes = build_detail_includes(&params).expect("should accept max boundary");
         assert_eq!(includes.days, 365);
+    }
+
+    #[test]
+    fn list_jobs_params_are_send_sync_deserializable() {
+        fn assert_send_sync<T: Send + Sync + serde::de::DeserializeOwned>() {}
+        assert_send_sync::<ListJobsParams>();
     }
 }
