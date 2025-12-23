@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
-use deadpool_postgres::PoolError;
+use deadpool_postgres::{GenericClient, PoolError};
 use serde_json::Value;
 use tokio_postgres::Error as PgError;
 use tokio_postgres::Row;
@@ -9,10 +9,10 @@ use tokio_postgres::types::Json;
 use tokio_postgres::types::ToSql;
 use tracing::instrument;
 
-use crate::api::queue_job::{
+use crate::api::models::queue::{
     FeedbackEventRow, InteractionLogRow, JobDetailIncludes, JobEntity, MatchResultRow, Pagination,
     PairDetail, ProjectSnapshot, QueueJobDetail, QueueJobDetailResponse, QueueJobFilter,
-    QueueJobListResponse, QueueJobSummary, TalentSnapshot,
+    QueueJobListItem, QueueJobListResponse, TalentSnapshot,
 };
 use crate::db::PgPool;
 use crate::queue::{ExtractionJob, QueueStatus};
@@ -33,6 +33,60 @@ pub enum QueueStorageError {
 
 const DEFAULT_DETAIL_STATEMENT_TIMEOUT_MS: i32 = 5000;
 
+struct QueryBuilder {
+    sql: String,
+    values: Vec<Box<dyn ToSql + Sync + Send>>, // enforce placeholder-only additions
+}
+
+impl QueryBuilder {
+    fn new(base: &str) -> Self {
+        Self {
+            sql: base.to_string(),
+            values: Vec::new(),
+        }
+    }
+
+    fn push_eq(&mut self, column: &str, value: impl ToSql + Sync + Send + 'static) {
+        self.push_fragment(column, "=", value);
+    }
+
+    fn push_ge(&mut self, column: &str, value: impl ToSql + Sync + Send + 'static) {
+        self.push_fragment(column, ">=", value);
+    }
+
+    fn push_le(&mut self, column: &str, value: impl ToSql + Sync + Send + 'static) {
+        self.push_fragment(column, "<=", value);
+    }
+
+    fn push_order_limit_offset(&mut self, order_by: &str, limit: i64, offset: i64) {
+        let limit_placeholder = self.values.len() + 1;
+        let offset_placeholder = self.values.len() + 2;
+        self.sql.push_str(&format!(
+            " ORDER BY {} LIMIT ${} OFFSET ${}",
+            order_by, limit_placeholder, offset_placeholder
+        ));
+
+        self.values.push(Box::new(limit));
+        self.values.push(Box::new(offset));
+    }
+
+    fn finish(self) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
+        (self.sql, self.values)
+    }
+
+    fn push_fragment(
+        &mut self,
+        column: &str,
+        operator: &str,
+        value: impl ToSql + Sync + Send + 'static,
+    ) {
+        let placeholder = self.values.len() + 1;
+        self.sql
+            .push_str(&format!(" AND {} {} ${}", column, operator, placeholder));
+        self.values.push(Box::new(value));
+    }
+}
+
 fn normalize_json(value: &Option<Value>) -> Option<Json<&Value>> {
     value.as_ref().map(Json)
 }
@@ -46,7 +100,7 @@ pub async fn upsert_extraction_job(
     let client = pool.get().await?;
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "INSERT INTO ses.extraction_queue (
                 message_id,
                 email_subject,
@@ -155,7 +209,7 @@ pub async fn recover_stuck_jobs(
     let cutoff = now - max_processing;
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "UPDATE ses.extraction_queue SET
                 status = 'pending',
                 locked_by = NULL,
@@ -271,8 +325,8 @@ fn row_to_job(row: &Row) -> Result<ExtractionJob, QueueStorageError> {
     })
 }
 
-fn row_to_job_summary(row: &Row) -> QueueJobSummary {
-    QueueJobSummary {
+fn row_to_list_item(row: &Row) -> QueueJobListItem {
+    QueueJobListItem {
         id: row.get("id"),
         message_id: row.get("message_id"),
         status: row.get("status"),
@@ -290,7 +344,7 @@ fn row_to_job_summary(row: &Row) -> QueueJobSummary {
 
 fn row_to_job_detail(row: &Row) -> QueueJobDetail {
     QueueJobDetail {
-        job: row_to_job_summary(row),
+        job: row_to_list_item(row),
         partial_fields: row.get("partial_fields"),
         last_error: row.get("last_error"),
         llm_latency_ms: row.get("llm_latency_ms"),
@@ -314,7 +368,7 @@ fn row_to_job_detail_response(row: &Row) -> QueueJobDetailResponse {
     }
 }
 
-const SOURCE_PREVIEW_LIMIT: usize = 4000;
+const SOURCE_PREVIEW_LIMIT: usize = 1000;
 
 fn truncate_source_preview(text: &str) -> String {
     if text.chars().count() <= SOURCE_PREVIEW_LIMIT {
@@ -333,7 +387,7 @@ pub async fn lock_next_pending_job(
 ) -> Result<Option<ExtractionJob>, QueueStorageError> {
     let client = pool.get().await?;
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "UPDATE ses.extraction_queue
 SET
     status = 'processing',
@@ -368,68 +422,50 @@ pub async fn list_jobs(
 
     let fetch_limit = pagination.limit + 1;
 
-    let mut values: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
-    let mut query = String::from(
+    // Guardrail: dynamic fragments must only append "AND column OP $n" clauses so that
+    // the placeholder numbering stays correct and no raw user data is interpolated.
+    let mut query = QueryBuilder::new(
         "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at FROM ses.extraction_queue WHERE 1=1",
     );
 
     if let Some(status) = &filter.status {
-        query.push_str(&format!(" AND status = ${}", values.len() + 1));
-        values.push(Box::new(status.clone()));
+        query.push_eq("status", status.clone());
     }
 
     if let Some(requires_manual_review) = filter.requires_manual_review {
-        query.push_str(&format!(
-            " AND requires_manual_review = ${}",
-            values.len() + 1
-        ));
-        values.push(Box::new(requires_manual_review));
+        query.push_eq("requires_manual_review", requires_manual_review);
     }
 
     if let Some(canary_target) = filter.canary_target {
-        query.push_str(&format!(" AND canary_target = ${}", values.len() + 1));
-        values.push(Box::new(canary_target));
+        query.push_eq("canary_target", canary_target);
     }
 
     if let Some(final_method) = &filter.final_method {
-        query.push_str(&format!(" AND final_method = ${}", values.len() + 1));
-        values.push(Box::new(final_method.clone()));
+        query.push_eq("final_method", final_method.clone());
     }
 
     if let Some(manual_review_reason) = &filter.manual_review_reason {
-        query.push_str(&format!(
-            " AND manual_review_reason = ${}",
-            values.len() + 1
-        ));
-        values.push(Box::new(manual_review_reason.clone()));
+        query.push_eq("manual_review_reason", manual_review_reason.clone());
     }
 
     if let Some(created_after) = filter.created_after {
-        query.push_str(&format!(" AND created_at >= ${}", values.len() + 1));
-        values.push(Box::new(created_after));
+        query.push_ge("created_at", created_after);
     }
 
     if let Some(created_before) = filter.created_before {
-        query.push_str(&format!(" AND created_at <= ${}", values.len() + 1));
-        values.push(Box::new(created_before));
+        query.push_le("created_at", created_before);
     }
 
-    query.push_str(&format!(
-        " ORDER BY created_at DESC, id DESC LIMIT ${} OFFSET ${}",
-        values.len() + 1,
-        values.len() + 2
-    ));
+    query.push_order_limit_offset("created_at DESC, id DESC", fetch_limit, pagination.offset);
 
-    values.push(Box::new(fetch_limit));
-    values.push(Box::new(pagination.offset));
-
+    let (query, values) = query.finish();
     let params: Vec<&(dyn ToSql + Sync)> = values
         .iter()
         .map(|v| v.as_ref() as &(dyn ToSql + Sync))
         .collect();
     let rows = client.query(&query, &params).await?;
 
-    let mut items: Vec<QueueJobSummary> = rows.iter().map(row_to_job_summary).collect();
+    let mut items: Vec<QueueJobListItem> = rows.iter().map(row_to_list_item).collect();
     let has_more = (items.len() as i64) > pagination.limit;
     if has_more {
         items.pop();
@@ -460,26 +496,26 @@ pub async fn get_job_by_id(
         false,
         DEFAULT_DETAIL_STATEMENT_TIMEOUT_MS,
     )
-        .await
-        .map(|opt| {
-            opt.map(|detail| QueueJobDetail {
-                job: detail.job,
-                partial_fields: detail.partial_fields,
-                last_error: detail.last_error,
-                llm_latency_ms: detail.llm_latency_ms,
-                processing_started_at: detail.processing_started_at,
-                completed_at: detail.completed_at,
-            })
+    .await
+    .map(|opt| {
+        opt.map(|detail| QueueJobDetail {
+            job: detail.job,
+            partial_fields: detail.partial_fields,
+            last_error: detail.last_error,
+            llm_latency_ms: detail.llm_latency_ms,
+            processing_started_at: detail.processing_started_at,
+            completed_at: detail.completed_at,
         })
+    })
 }
 
 async fn fetch_talent_snapshot(
-    client: &tokio_postgres::Client,
+    client: &impl GenericClient,
     message_id: &str,
     include_source: bool,
 ) -> Result<Option<TalentSnapshot>, QueueStorageError> {
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "SELECT id, message_id, talent_name, summary_text, desired_price_min, available_date, received_at, source_text FROM ses.talents_enum WHERE message_id = $1 LIMIT 1",
         )
         .await?;
@@ -504,19 +540,19 @@ async fn fetch_talent_snapshot(
 }
 
 async fn fetch_project_snapshot(
-    client: &tokio_postgres::Client,
+    client: &impl GenericClient,
     message_id: &str,
     include_source: bool,
 ) -> Result<Option<ProjectSnapshot>, QueueStorageError> {
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "SELECT project_code, message_id, project_name, monthly_tanka_min, monthly_tanka_max, start_date, source_text, requires_manual_review, manual_review_reason FROM ses.projects_enum WHERE message_id = $1 LIMIT 1",
         )
         .await?;
 
     let row = client.query_opt(&stmt, &[&message_id]).await?;
     let snapshot = row.map(|r| ProjectSnapshot {
-        project_code: r.get::<_, i32>("project_code") as i64,
+        project_code: r.get("project_code"),
         message_id: r.get("message_id"),
         project_name: r.get("project_name"),
         monthly_tanka_min: r.get("monthly_tanka_min"),
@@ -546,8 +582,8 @@ fn map_match_result(row: &Row) -> MatchResultRow {
 
     MatchResultRow {
         id: row.get::<_, i32>("id") as i64,
-        talent_id: row.get::<_, i32>("talent_id") as i64,
-        project_id: row.get::<_, i32>("project_id") as i64,
+        talent_id: row.get::<_, i64>("talent_id"),
+        project_id: row.get::<_, i64>("project_id"),
         is_knockout: row.get("is_knockout"),
         ko_reasons,
         needs_manual_review: row.get("needs_manual_review"),
@@ -560,58 +596,42 @@ fn map_match_result(row: &Row) -> MatchResultRow {
 }
 
 async fn fetch_match_results(
-    client: &tokio_postgres::Client,
+    client: &impl GenericClient,
     talent_id: Option<i64>,
     project_id: Option<i64>,
-    days: i64,
+    days: i32,
     limit: i64,
 ) -> Result<Vec<MatchResultRow>, QueueStorageError> {
+    if talent_id.is_none() && project_id.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let stmt = client
+        .prepare_cached(
+            "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE created_at >= NOW() - ($3::bigint * INTERVAL '1 day') AND ( ($1::bigint IS NOT NULL AND talent_id = $1) OR ($2::bigint IS NOT NULL AND project_id = $2) ) ORDER BY created_at DESC LIMIT $4",
+        )
+        .await?;
+
+    let days_bigint = i64::from(days);
+    let rows = client
+        .query(&stmt, &[&talent_id, &project_id, &days_bigint, &limit])
+        .await?;
+
     let mut results = Vec::new();
     let mut seen = HashSet::new();
 
-    if let Some(talent_id) = talent_id {
-        let stmt = client
-            .prepare(
-                "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE talent_id = $1 AND created_at >= NOW() - ($2::int * INTERVAL '1 day') ORDER BY created_at DESC LIMIT $3",
-            )
-            .await?;
-        let rows = client.query(&stmt, &[&talent_id, &days, &limit]).await?;
-        for row in rows {
-            let mapped = map_match_result(&row);
-            seen.insert(mapped.id);
+    for row in rows {
+        let mapped = map_match_result(&row);
+        if seen.insert(mapped.id) {
             results.push(mapped);
         }
-    }
-
-    if let Some(project_id) = project_id {
-        let stmt = client
-            .prepare(
-                "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE project_id = $1 AND created_at >= NOW() - ($2::int * INTERVAL '1 day') ORDER BY created_at DESC LIMIT $3",
-            )
-            .await?;
-        let rows = client.query(&stmt, &[&project_id, &days, &limit]).await?;
-        for row in rows {
-            let mapped = map_match_result(&row);
-            if seen.insert(mapped.id) {
-                results.push(mapped);
-            }
-        }
-    }
-
-    results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-    let limit_usize = usize::try_from(limit)
-        .map_err(|e| QueueStorageError::Mapping(format!("invalid limit {limit}: {e}")))?;
-
-    if results.len() > limit_usize {
-        results.truncate(limit_usize);
     }
 
     Ok(results)
 }
 
 async fn fetch_interactions(
-    client: &tokio_postgres::Client,
+    client: &impl GenericClient,
     match_result_ids: &[i32],
 ) -> Result<Vec<InteractionLogRow>, QueueStorageError> {
     if match_result_ids.is_empty() {
@@ -619,7 +639,7 @@ async fn fetch_interactions(
     }
 
     let stmt = client
-        .prepare(
+        .prepare_cached(
             "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::int[]) ORDER BY match_result_id, created_at DESC",
         )
         .await?;
@@ -631,8 +651,8 @@ async fn fetch_interactions(
         .map(|row| InteractionLogRow {
             id: row.get::<_, i64>("id"),
             match_result_id: row.get::<_, Option<i32>>("match_result_id"),
-            talent_id: row.get::<_, i32>("talent_id") as i64,
-            project_id: row.get::<_, i32>("project_id") as i64,
+            talent_id: row.get::<_, i64>("talent_id"),
+            project_id: row.get::<_, i64>("project_id"),
             match_run_id: row.get("match_run_id"),
             engine_version: row.get("engine_version"),
             config_version: row.get("config_version"),
@@ -648,7 +668,7 @@ async fn fetch_interactions(
 }
 
 async fn fetch_feedback_events(
-    client: &tokio_postgres::Client,
+    client: &impl GenericClient,
     interaction_ids: &[i64],
     match_result_ids: &[i32],
     limit: usize,
@@ -661,7 +681,7 @@ async fn fetch_feedback_events(
 
     if !interaction_ids.is_empty() {
         let stmt = client
-            .prepare(
+            .prepare_cached(
                 "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE interaction_id IS NOT NULL AND interaction_id = ANY($1::bigint[]) ORDER BY created_at DESC",
             )
             .await?;
@@ -672,7 +692,7 @@ async fn fetch_feedback_events(
 
     if !match_result_ids.is_empty() {
         let stmt = client
-            .prepare(
+            .prepare_cached(
                 "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at FROM ses.feedback_events WHERE match_result_id IS NOT NULL AND match_result_id = ANY($1::int[]) ORDER BY created_at DESC",
             )
             .await?;
@@ -769,171 +789,181 @@ pub async fn get_job_detail_with_includes(
     let safe_limit = includes.limit.clamp(1, 200);
     let safe_days = includes.days.clamp(1, 365);
 
-    let client = pool.get().await?;
+    let mut client = pool.get().await?;
     let set_statement_timeout = statement_timeout_ms > 0;
+
     if set_statement_timeout {
-        client
+        let transaction = client.transaction().await?;
+        transaction
             .batch_execute(&format!(
-                "SET statement_timeout = '{}ms'",
+                "SET LOCAL statement_timeout = '{}ms'",
                 statement_timeout_ms
             ))
             .await?;
+
+        let result = get_job_detail_with_client(
+            &transaction,
+            id,
+            includes,
+            allow_source_text,
+            safe_limit,
+            safe_days,
+        )
+        .await?;
+
+        transaction.commit().await?;
+        Ok(result)
+    } else {
+        get_job_detail_with_client(
+            &client,
+            id,
+            includes,
+            allow_source_text,
+            safe_limit,
+            safe_days,
+        )
+        .await
+    }
+}
+
+async fn get_job_detail_with_client<C: GenericClient>(
+    client: &C,
+    id: i64,
+    includes: JobDetailIncludes,
+    allow_source_text: bool,
+    safe_limit: i64,
+    safe_days: i32,
+) -> Result<Option<QueueJobDetailResponse>, QueueStorageError> {
+    let row = client
+        .query_opt(
+            "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at, partial_fields, last_error, llm_latency_ms, processing_started_at, completed_at FROM ses.extraction_queue WHERE id = $1",
+            &[&id],
+        )
+        .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let mut detail = row_to_job_detail_response(&row);
+    let message_id = detail.job.message_id.clone();
+
+    let include_source = includes.include_source_text && allow_source_text;
+    let talent_snapshot =
+        if includes.include_entity || includes.include_matches || includes.include_source_text {
+            fetch_talent_snapshot(client, &message_id, include_source).await?
+        } else {
+            None
+        };
+    let project_snapshot =
+        if includes.include_entity || includes.include_matches || includes.include_source_text {
+            fetch_project_snapshot(client, &message_id, include_source).await?
+        } else {
+            None
+        };
+
+    if includes.include_entity {
+        detail.entity = match (talent_snapshot.clone(), project_snapshot.clone()) {
+            (Some(talent), Some(project)) => Some(JobEntity::Both { talent, project }),
+            (Some(talent), None) => Some(JobEntity::Talent(talent)),
+            (None, Some(project)) => Some(JobEntity::Project(project)),
+            (None, None) => None,
+        };
     }
 
-    let result: Result<Option<QueueJobDetailResponse>, QueueStorageError> = async {
-        let row = client
-            .query_opt(
-                "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at, partial_fields, last_error, llm_latency_ms, processing_started_at, completed_at FROM ses.extraction_queue WHERE id = $1",
-                &[&id],
-            )
-            .await?;
+    if include_source {
+        detail.source_preview = talent_snapshot
+            .as_ref()
+            .and_then(|t| t.source_text.clone())
+            .or_else(|| {
+                project_snapshot
+                    .as_ref()
+                    .and_then(|p| p.source_text.clone())
+            })
+            .map(|text| truncate_source_preview(&text));
+    }
 
-        let Some(row) = row else {
-            return Ok(None);
-        };
+    if includes.include_matches {
+        let matches = fetch_match_results(
+            client,
+            talent_snapshot.as_ref().map(|t| t.id),
+            project_snapshot.as_ref().map(|p| p.project_code),
+            safe_days,
+            safe_limit,
+        )
+        .await?;
 
-        let mut detail = row_to_job_detail_response(&row);
-        let message_id = detail.job.message_id.clone();
-
-        let include_source = includes.include_source_text && allow_source_text;
-        let talent_snapshot = if includes.include_entity
-            || includes.include_matches
-            || includes.include_source_text
-        {
-            fetch_talent_snapshot(&client, &message_id, include_source).await?
-        } else {
-            None
-        };
-        let project_snapshot = if includes.include_entity
-            || includes.include_matches
-            || includes.include_source_text
-        {
-            fetch_project_snapshot(&client, &message_id, include_source).await?
-        } else {
-            None
-        };
-
-        if includes.include_entity {
-            detail.entity = match (talent_snapshot.clone(), project_snapshot.clone()) {
-                (Some(talent), Some(project)) => Some(JobEntity::Both { talent, project }),
-                (Some(talent), None) => Some(JobEntity::Talent(talent)),
-                (None, Some(project)) => Some(JobEntity::Project(project)),
-                (None, None) => None,
-            };
-        }
-
-        if include_source {
-            detail.source_preview = talent_snapshot
-                .as_ref()
-                .and_then(|t| t.source_text.clone())
-                .or_else(|| {
-                    project_snapshot
-                        .as_ref()
-                        .and_then(|p| p.source_text.clone())
-                })
-                .map(|text| truncate_source_preview(&text));
-        }
-
-        if includes.include_matches {
-            let matches = fetch_match_results(
-                &client,
-                talent_snapshot.as_ref().map(|t| t.id),
-                project_snapshot.as_ref().map(|p| p.project_code),
-                safe_days,
-                safe_limit,
-            )
-            .await?;
-
-            let match_ids_i32: Vec<i32> = matches
-                .iter()
-                .map(|m| {
-                    i32::try_from(m.id).map_err(|e| {
-                        QueueStorageError::Mapping(format!(
-                            "match_result id {} exceeds i32 range: {e}",
-                            m.id
-                        ))
-                    })
-                })
-                .collect::<Result<_, _>>()?;
-            let mut pairs = Vec::new();
-
-            let interaction_map: HashMap<i32, InteractionLogRow> =
-                if includes.include_interactions || includes.include_feedback {
-                    let interactions = fetch_interactions(&client, &match_ids_i32).await?;
-                    latest_interactions_by_match(interactions)
-                } else {
-                    HashMap::new()
-                };
-
-            let feedback_maps: (
-                HashMap<i64, Vec<FeedbackEventRow>>,
-                HashMap<i32, Vec<FeedbackEventRow>>,
-            ) = if includes.include_feedback {
-                let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
-                let base_limit = safe_limit.max(1);
-                let feedback_limit = usize::try_from(base_limit)
-                    .map(|limit| std::cmp::min(limit.saturating_mul(5), 200))
-                    .map_err(|e| {
-                        QueueStorageError::Mapping(format!(
-                            "invalid feedback limit from includes.limit={}: {e}",
-                            includes.limit
-                        ))
-                    })?;
-
-                let events = fetch_feedback_events(&client, &interaction_ids, &match_ids_i32, feedback_limit)
-                    .await?;
-                group_feedback_events(events)
-            } else {
-                (HashMap::new(), HashMap::new())
-            };
-
-            for match_result in matches {
-                let match_id_i32 = i32::try_from(match_result.id).map_err(|e| {
+        let match_ids_i32: Vec<i32> = matches
+            .iter()
+            .map(|m| {
+                i32::try_from(m.id).map_err(|e| {
                     QueueStorageError::Mapping(format!(
                         "match_result id {} exceeds i32 range: {e}",
-                        match_result.id
+                        m.id
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let mut pairs = Vec::new();
+
+        let interaction_map: HashMap<i32, InteractionLogRow> =
+            if includes.include_interactions || includes.include_feedback {
+                let interactions = fetch_interactions(client, &match_ids_i32).await?;
+                latest_interactions_by_match(interactions)
+            } else {
+                HashMap::new()
+            };
+
+        let feedback_maps: (
+            HashMap<i64, Vec<FeedbackEventRow>>,
+            HashMap<i32, Vec<FeedbackEventRow>>,
+        ) = if includes.include_feedback {
+            let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
+            let base_limit = safe_limit.max(1);
+            let feedback_limit = usize::try_from(base_limit)
+                .map(|limit| std::cmp::min(limit.saturating_mul(5), 200))
+                .map_err(|e| {
+                    QueueStorageError::Mapping(format!(
+                        "invalid feedback limit from includes.limit={}: {e}",
+                        includes.limit
                     ))
                 })?;
-                let latest_interaction = interaction_map.get(&match_id_i32).cloned();
-                let mut feedback_events = Vec::new();
 
-                if let Some(interaction) = &latest_interaction {
-                    if let Some(events) = feedback_maps.0.get(&interaction.id) {
-                        feedback_events.extend(events.clone());
-                    }
+            let events =
+                fetch_feedback_events(client, &interaction_ids, &match_ids_i32, feedback_limit)
+                    .await?;
+            group_feedback_events(events)
+        } else {
+            (HashMap::new(), HashMap::new())
+        };
+
+        for (match_result, match_id_i32) in matches.into_iter().zip(match_ids_i32.into_iter()) {
+            let latest_interaction = interaction_map.get(&match_id_i32).cloned();
+            let mut feedback_events = Vec::new();
+
+            if let Some(interaction) = &latest_interaction {
+                if let Some(events) = feedback_maps.0.get(&interaction.id) {
+                    feedback_events.extend(events.clone());
                 }
-
-                if feedback_events.is_empty() {
-                    if let Some(events) = feedback_maps.1.get(&match_id_i32) {
-                        feedback_events.extend(events.clone());
-                    }
-                }
-
-                pairs.push(PairDetail {
-                    match_result,
-                    latest_interaction,
-                    feedback_events,
-                });
             }
 
-            detail.pairs = Some(pairs);
+            if feedback_events.is_empty() {
+                if let Some(events) = feedback_maps.1.get(&match_id_i32) {
+                    feedback_events.extend(events.clone());
+                }
+            }
+
+            pairs.push(PairDetail {
+                match_result,
+                latest_interaction,
+                feedback_events,
+            });
         }
 
-        Ok(Some(detail))
+        detail.pairs = Some(pairs);
     }
-    .await;
 
-    if set_statement_timeout {
-        let reset_result = client.batch_execute("RESET statement_timeout").await;
-
-        match (result, reset_result) {
-            (Ok(value), Ok(_)) => Ok(value),
-            (Ok(_), Err(err)) => Err(QueueStorageError::Postgres(err)),
-            (Err(err), _) => Err(err),
-        }
-    } else {
-        result
-    }
+    Ok(Some(detail))
 }
 
 #[instrument(skip(pool))]

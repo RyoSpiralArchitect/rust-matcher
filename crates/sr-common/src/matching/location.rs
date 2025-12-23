@@ -374,10 +374,16 @@ fn apply_remote_preference(
         ),
         (Some(project), pref) => (
             KoDecision::SoftKo {
-                reason: format!("remote_conflict: talent_pref={} vs project={}", pref, project),
+                reason: format!(
+                    "remote_conflict: talent_pref={} vs project={}",
+                    pref, project
+                ),
             },
             Some(0.75),
-            format!("remote_conflict: talent_pref={} vs project={}", pref, project),
+            format!(
+                "remote_conflict: talent_pref={} vs project={}",
+                pref, project
+            ),
         ),
     };
 
@@ -419,7 +425,10 @@ fn apply_remote_unknown(
         return evaluation;
     }
 
-    let reason_suffix = format!("remote_unknown: 案件リモート形態未設定 (talent_pref={})", pref);
+    let reason_suffix = format!(
+        "remote_unknown: 案件リモート形態未設定 (talent_pref={})",
+        pref
+    );
 
     evaluation.ko_decision = match evaluation.ko_decision {
         KoDecision::Pass => KoDecision::SoftKo {
@@ -642,7 +651,9 @@ mod tests {
         // remote_onsite が None の場合、normalize_remote_onsite により "リモート併用" にフォールバック
         assert!(matches!(result.ko_decision, KoDecision::Pass));
         assert!(
-            result.details.contains("remote_onsite=Some(\"リモート併用\")")
+            result
+                .details
+                .contains("remote_onsite=Some(\"リモート併用\")")
                 || result.details.contains("隣接都道府県")
         );
     }

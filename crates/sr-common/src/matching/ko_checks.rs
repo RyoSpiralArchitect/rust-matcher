@@ -72,7 +72,8 @@ fn check_tanka_ko(project: &Project, talent: &Talent) -> KoDecision {
 
     KoDecision::SoftKo {
         reason: format!(
-            "tanka_unknown: talent_min={}万, project_max=None", talent_min
+            "tanka_unknown: talent_min={}万, project_max=None",
+            talent_min
         ),
     }
 }
@@ -110,7 +111,9 @@ fn check_language_ko(project: &Project, talent: &Talent) -> KoDecision {
         project.japanese_skill.as_deref(),
         talent.japanese_skill.as_deref(),
     ) {
-        Some(true) => hard_reasons.push("japanese_skill_insufficient: 日本語レベル不足".to_string()),
+        Some(true) => {
+            hard_reasons.push("japanese_skill_insufficient: 日本語レベル不足".to_string())
+        }
         Some(false) => {}
         None => soft_reasons.push("japanese_skill_unknown: 日本語スキル情報不足".to_string()),
     }
@@ -125,7 +128,8 @@ fn check_language_ko(project: &Project, talent: &Talent) -> KoDecision {
         _ if is_english_ko(
             project.english_skill.as_deref(),
             talent.english_skill.as_deref(),
-        ) => {
+        ) =>
+        {
             hard_reasons.push("english_skill_insufficient: 英語レベル不足".to_string());
         }
         _ => {}
@@ -589,7 +593,7 @@ mod tests {
                 if reason.contains("ゲーム") && reason.contains("金融") == false
         ));
 
-        let soft = check_ng_keyword_ko(Some(&["  ,  " .to_string()]), Some(&["foo".into()]));
+        let soft = check_ng_keyword_ko(Some(&["  ,  ".to_string()]), Some(&["foo".into()]));
         assert!(matches!(soft, KoDecision::SoftKo { .. }));
     }
 

@@ -53,11 +53,11 @@ fn validate_filter(filter: &QueueJobFilter) -> Result<(), ApiError> {
 pub struct JobDetailParams {
     pub include: Option<String>,
     pub limit: Option<i64>,
-    pub days: Option<i64>,
+    pub days: Option<i32>,
 }
 
 fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, ApiError> {
-    const MAX_LOOKBACK_DAYS: i64 = 365;
+    const MAX_LOOKBACK_DAYS: i32 = 365;
     let mut includes = JobDetailIncludes {
         limit: params.limit.unwrap_or(20),
         days: params.days.unwrap_or(30),
@@ -138,18 +138,30 @@ pub async fn list_jobs(
 
 pub async fn get_job(
     State(state): State<SharedState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(id): Path<i64>,
 
     Query(params): Query<JobDetailParams>,
 ) -> Result<Json<QueueJobDetailResponse>, ApiError> {
     let includes = build_detail_includes(&params)?;
 
+    if includes.include_source_text {
+        if !state.config.allow_source_text {
+            return Err(ApiError::Forbidden("source_text is disabled".into()));
+        }
+
+        if !auth.is_admin() {
+            return Err(ApiError::Forbidden(
+                "source_text access requires admin permissions".into(),
+            ));
+        }
+    }
+
     let job = get_job_detail_with_includes(
         &state.pool,
         id,
         includes,
-        state.config.allow_source_text,
+        state.config.allow_source_text && auth.is_admin(),
         state.config.job_detail_statement_timeout_ms,
     )
     .await?
@@ -160,19 +172,19 @@ pub async fn get_job(
 
 pub async fn retry_job(
     State(state): State<SharedState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    if !auth.is_admin() {
+        return Err(ApiError::Forbidden(
+            "retrying jobs requires admin permissions".into(),
+        ));
+    }
+
     retry_queue_job(&state.pool, id).await?;
     Ok(Json(
         serde_json::json!({ "success": true, "status": "pending" }),
     ))
-}
-
-#[cfg(test)]
-fn assert_query_bounds() {
-    fn assert_send_sync<T: Send + Sync + serde::de::DeserializeOwned>() {}
-    assert_send_sync::<ListJobsParams>();
 }
 
 #[cfg(test)]
@@ -234,5 +246,11 @@ mod tests {
 
         let includes = build_detail_includes(&params).expect("should accept max boundary");
         assert_eq!(includes.days, 365);
+    }
+
+    #[test]
+    fn list_jobs_params_are_send_sync_deserializable() {
+        fn assert_send_sync<T: Send + Sync + serde::de::DeserializeOwned>() {}
+        assert_send_sync::<ListJobsParams>();
     }
 }
