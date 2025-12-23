@@ -369,30 +369,41 @@ fn row_to_job_detail_response(row: &Row) -> QueueJobDetailResponse {
 }
 
 const SOURCE_PREVIEW_LIMIT: usize = 1000;
+const SOURCE_PREVIEW_LOOKAHEAD: usize = 200;
 
 fn truncate_source_preview(text: &str) -> String {
     if text.chars().count() <= SOURCE_PREVIEW_LIMIT {
         return text.to_string();
     }
 
-    let mut end = 0usize;
-    let mut last_break = None;
+    let mut end_at_limit = 0usize;
+    let mut last_break_before_limit = None;
+    let mut first_break_after_limit = None;
     let mut count = 0usize;
 
     for (idx, ch) in text.char_indices() {
-        if count == SOURCE_PREVIEW_LIMIT {
+        count += 1;
+        let boundary = idx + ch.len_utf8();
+        end_at_limit = end_at_limit.max(boundary);
+
+        if matches!(ch, '\n' | '。' | '.') {
+            if count <= SOURCE_PREVIEW_LIMIT {
+                last_break_before_limit = Some(boundary);
+            } else if first_break_after_limit.is_none()
+                && count <= SOURCE_PREVIEW_LIMIT + SOURCE_PREVIEW_LOOKAHEAD
+            {
+                first_break_after_limit = Some(boundary);
+            }
+        }
+
+        if count > SOURCE_PREVIEW_LIMIT + SOURCE_PREVIEW_LOOKAHEAD {
             break;
         }
-
-        if ch == '\n' || ch == '。' || ch == '.' {
-            last_break = Some(idx + ch.len_utf8());
-        }
-
-        end = idx + ch.len_utf8();
-        count += 1;
     }
 
-    let cutoff = last_break.unwrap_or(end);
+    let cutoff = last_break_before_limit
+        .or(first_break_after_limit)
+        .unwrap_or(end_at_limit);
     text[..cutoff].to_string()
 }
 
@@ -954,16 +965,23 @@ async fn get_job_detail_with_client<C: GenericClient>(
         for (match_result, match_id_i32) in matches.into_iter().zip(match_ids_i32.into_iter()) {
             let latest_interaction = interaction_map.get(&match_id_i32).cloned();
             let mut feedback_events = Vec::new();
+            let mut seen_feedback_ids = HashSet::new();
 
             if let Some(interaction) = &latest_interaction {
                 if let Some(events) = feedback_maps.0.get(&interaction.id) {
-                    feedback_events.extend(events.clone());
+                    for event in events {
+                        if seen_feedback_ids.insert(event.id) {
+                            feedback_events.push(event.clone());
+                        }
+                    }
                 }
             }
 
-            if feedback_events.is_empty() {
-                if let Some(events) = feedback_maps.1.get(&match_id_i32) {
-                    feedback_events.extend(events.clone());
+            if let Some(events) = feedback_maps.1.get(&match_id_i32) {
+                for event in events {
+                    if seen_feedback_ids.insert(event.id) {
+                        feedback_events.push(event.clone());
+                    }
                 }
             }
 
@@ -1017,6 +1035,7 @@ pub async fn retry_job(pool: &PgPool, id: i64) -> Result<(), QueueStorageError> 
 mod tests {
     use super::*;
     use crate::queue::{FinalMethod, RecommendedMethod};
+    use chrono::TimeZone;
 
     fn sample_job() -> ExtractionJob {
         let mut job = ExtractionJob::new("m1", "s", Utc::now(), "hash");
@@ -1080,5 +1099,119 @@ mod tests {
         assert!(parse_status("completed").is_ok());
         let err = parse_status("broken").unwrap_err();
         assert!(format!("{err}").contains("unknown status"));
+    }
+
+    #[test]
+    fn truncate_source_preview_prefers_boundaries() {
+        let newline_offset = SOURCE_PREVIEW_LIMIT - 10;
+        let mut text = "a".repeat(newline_offset);
+        text.push('\n');
+        text.push_str(&"b".repeat(20));
+
+        let truncated = truncate_source_preview(&text);
+        assert_eq!(truncated.chars().count(), newline_offset + 1);
+        assert!(truncated.ends_with('\n'));
+
+        let mut text_with_sentence = "c".repeat(SOURCE_PREVIEW_LIMIT + 5);
+        text_with_sentence.push('。');
+        text_with_sentence.push_str("tail");
+
+        let truncated_sentence = truncate_source_preview(&text_with_sentence);
+        assert!(truncated_sentence.ends_with('。'));
+        assert!(
+            truncated_sentence.chars().count() <= SOURCE_PREVIEW_LIMIT + SOURCE_PREVIEW_LOOKAHEAD
+        );
+    }
+
+    #[test]
+    fn feedback_events_are_deduped_per_pair() {
+        let match_id = 42;
+        let interaction_id = 99;
+
+        let match_result = MatchResultRow {
+            id: match_id.into(),
+            talent_id: 1,
+            project_id: 2,
+            is_knockout: false,
+            ko_reasons: vec![],
+            needs_manual_review: false,
+            score_total: None,
+            score_breakdown: None,
+            engine_version: None,
+            rule_version: None,
+            created_at: Utc::now(),
+        };
+
+        let latest_interaction = InteractionLogRow {
+            id: interaction_id,
+            match_result_id: Some(match_id),
+            talent_id: 1,
+            project_id: 2,
+            match_run_id: None,
+            engine_version: None,
+            config_version: None,
+            two_tower_score: None,
+            business_score: None,
+            outcome: None,
+            feedback_at: None,
+            created_at: Utc.timestamp_opt(0, 0).single().unwrap(),
+        };
+
+        let duplicated_feedback = FeedbackEventRow {
+            id: 1,
+            interaction_id: Some(interaction_id),
+            match_result_id: Some(match_id),
+            match_run_id: None,
+            engine_version: None,
+            config_version: None,
+            project_id: 2,
+            talent_id: 1,
+            feedback_type: "positive".into(),
+            ng_reason_category: None,
+            comment: None,
+            actor: "tester".into(),
+            source: "ui".into(),
+            is_revoked: false,
+            created_at: Utc.timestamp_opt(1, 0).single().unwrap(),
+        };
+
+        let feedback_maps = group_feedback_events(vec![duplicated_feedback.clone()]);
+        let mut feedback_events = Vec::new();
+        let mut seen_feedback_ids = HashSet::new();
+
+        if let Some(events) = feedback_maps.0.get(&interaction_id) {
+            for event in events {
+                if seen_feedback_ids.insert(event.id) {
+                    feedback_events.push(event.clone());
+                }
+            }
+        }
+
+        if let Some(events) = feedback_maps.1.get(&match_id) {
+            for event in events {
+                if seen_feedback_ids.insert(event.id) {
+                    feedback_events.push(event.clone());
+                }
+            }
+        }
+
+        assert_eq!(feedback_events.len(), 1);
+        assert_eq!(feedback_events[0].id, duplicated_feedback.id);
+        assert_eq!(
+            feedback_events[0].interaction_id,
+            duplicated_feedback.interaction_id
+        );
+        assert_eq!(
+            feedback_events[0].match_result_id,
+            duplicated_feedback.match_result_id
+        );
+
+        let pair = PairDetail {
+            match_result,
+            latest_interaction: Some(latest_interaction),
+            feedback_events,
+        };
+
+        assert_eq!(pair.feedback_events.len(), 1);
     }
 }
