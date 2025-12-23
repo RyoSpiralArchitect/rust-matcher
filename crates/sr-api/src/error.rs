@@ -2,6 +2,7 @@ use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use std::borrow::Cow;
 use thiserror::Error;
+use tracing::{error, warn};
 
 use sr_common::db::{
     CandidateFetchError, FeedbackStorageError, QueueDashboardError, QueueStorageError,
@@ -35,8 +36,16 @@ struct ErrorResponse {
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let status = self.status_code();
+        let code = self.code();
+
+        if status.is_client_error() {
+            warn!(code, %self, "request failed");
+        } else {
+            error!(code, %self, "request failed");
+        }
+
         let body = Json(ErrorResponse {
-            code: self.code(),
+            code,
             message: self.public_message().into_owned(),
             request_id: None,
         });
