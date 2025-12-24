@@ -9,5 +9,11 @@ export {
   ApiError,
 } from "./client";
 
+// Query Client
+export { queryClient } from "./queryClient";
+
+// Hooks
+export * from "./hooks";
+
 // Types
 export type * from "./types";
