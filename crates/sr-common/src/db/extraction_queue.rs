@@ -1006,8 +1006,7 @@ async fn get_job_detail_with_client<C: GenericClient>(
                 })?;
 
             let events =
-                fetch_feedback_events(client, &interaction_ids, &match_ids, feedback_limit)
-                    .await?;
+                fetch_feedback_events(client, &interaction_ids, &match_ids, feedback_limit).await?;
             group_feedback_events(events)
         } else {
             (HashMap::new(), HashMap::new())
