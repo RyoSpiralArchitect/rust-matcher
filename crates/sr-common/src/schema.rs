@@ -605,6 +605,9 @@ mod tests {
     fn interaction_logs_schema_covers_views_and_unique_constraint() {
         for required in [
             "two_tower_score",
+            "two_tower_embedder",
+            "two_tower_version",
+            "variant",
             "business_score",
             "match_run_id VARCHAR(64) NOT NULL",
             "engine_version",
@@ -625,6 +628,23 @@ mod tests {
             assert!(
                 INTERACTION_LOGS_DDL.contains(required),
                 "missing: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn training_pairs_view_exposes_two_tower_and_business_scores() {
+        for required in [
+            "il.two_tower_score",
+            "il.two_tower_embedder",
+            "il.two_tower_version",
+            "il.business_score",
+            "il.variant",
+            "CASE",
+        ] {
+            assert!(
+                INTERACTION_LOGS_DDL.contains(required),
+                "missing in training_pairs view: {required}"
             );
         }
     }
