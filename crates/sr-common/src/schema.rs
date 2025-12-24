@@ -67,6 +67,76 @@ CREATE TABLE ses.talents_enum (
 CREATE INDEX idx_talents_enum_message_id ON ses.talents_enum(message_id);
 "#;
 
+/// Master talent table for Lark-sourced talent data.
+/// This is the authoritative source for talent matching.
+pub const TALENTS_DDL: &str = r#"
+CREATE TABLE ses.talents (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- 基本情報
+    name TEXT NOT NULL,
+    age INTEGER,
+    birth_year INTEGER,
+    nearest_station TEXT,
+
+    -- 単価・稼働
+    desired_price INTEGER,           -- 参考原価（月額）
+    current_utilization REAL,        -- 現稼働率 (0.0-1.0)
+    available_date DATE,             -- 稼働開始可能日
+
+    -- 営業ステータス
+    sales_status TEXT,               -- NG, SPONTO稼働中, 他社稼働中, etc.
+    sales_rep TEXT,                  -- 担当営業
+    priority_rank TEXT,              -- 注力ランク
+
+    -- スキル・能力
+    skill_tags TEXT[],               -- スキルタグ配列
+    project_preferences TEXT[],      -- 案件希望配列
+    usage_types TEXT[],              -- 用途（SES, コンサル, 受託）
+
+    -- 能力レベル（◎〇△✕ → 数値変換: ◎=3, 〇=2, △=1, ✕=0）
+    capability_pm INTEGER,           -- PM/PMO
+    capability_se INTEGER,           -- SE
+    capability_bpo INTEGER,          -- BPO
+    capability_consul INTEGER,       -- コンサル
+
+    -- 言語
+    english_level TEXT,
+
+    -- 商流
+    business_relationship TEXT,      -- SPONTOから見る商流
+
+    -- 連絡先
+    phone TEXT,
+    email TEXT,
+    linkedin_url TEXT,
+
+    -- スキルシート
+    skill_sheet_url TEXT,
+    skill_sheet_url_2 TEXT,
+
+    -- メタデータ
+    memo TEXT,
+    inflow_source TEXT,              -- 流入経路
+    inflow_date DATE,                -- 流入日
+    registration_date DATE,          -- 登録日
+
+    -- Lark同期用
+    lark_record_id TEXT UNIQUE,      -- Lark上のレコードID（将来の同期用）
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_talents_name ON ses.talents(name);
+CREATE INDEX idx_talents_sales_status ON ses.talents(sales_status);
+CREATE INDEX idx_talents_available ON ses.talents(available_date) WHERE available_date IS NOT NULL;
+CREATE INDEX idx_talents_price ON ses.talents(desired_price) WHERE desired_price IS NOT NULL;
+CREATE INDEX idx_talents_skills ON ses.talents USING GIN(skill_tags);
+
+COMMENT ON TABLE ses.talents IS 'マスター人材テーブル（Larkから同期）';
+"#;
+
 /// Snapshot of parsed project payloads keyed by message_id.
 pub const PROJECTS_ENUM_DDL: &str = r#"
 CREATE TABLE ses.projects_enum (

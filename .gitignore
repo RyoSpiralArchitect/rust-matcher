@@ -29,3 +29,4 @@ target
 # (explicitly not ignored)
 .DS_Store
 .env
+*.csv
