@@ -242,11 +242,27 @@ pub struct FeedbackEventRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// GUI行動イベント（FBなしでも残る「良い兆候」）
+#[derive(Debug, Clone, Serialize)]
+pub struct InteractionEventRow {
+    pub id: i64,
+    pub interaction_id: i64,
+    pub event_type: String, // viewed_candidate_detail, copied_template, clicked_contact, shortlisted
+    pub actor: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PairDetail {
     pub match_result: MatchResultRow,
     pub latest_interaction: Option<InteractionLogRow>,
     pub feedback_events: Vec<FeedbackEventRow>,
+    /// GUI行動イベント（clicked_contact, copied_template 等）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub interaction_events: Vec<InteractionEventRow>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -255,6 +271,8 @@ pub struct JobDetailIncludes {
     pub include_matches: bool,
     pub include_interactions: bool,
     pub include_feedback: bool,
+    /// GUI行動イベント（clicked_contact, copied_template 等）
+    pub include_events: bool,
     pub include_source_text: bool,
     pub limit: i64,
     pub days: i32,

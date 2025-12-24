@@ -182,8 +182,10 @@ CREATE TABLE ses.feedback_events (
     feedback_tags JSONB,  -- ["単価NG", "スキル不足"] 等の自由配列
 
     -- 取り消しフラグ（間違い訂正用）
+    -- revoke は元行を UPDATE で表現（append-only ではない）
     is_revoked BOOLEAN NOT NULL DEFAULT false,
     revoked_at TIMESTAMPTZ,
+    revoked_by TEXT,  -- 誰が取り消したか（監査用）
 
     -- 誰が・どこから
     actor TEXT NOT NULL,   -- user_id / "sales" / "ops" / "system"
@@ -205,6 +207,94 @@ CREATE INDEX idx_feedback_not_revoked ON ses.feedback_events(interaction_id, cre
     WHERE is_revoked = false;
 
 COMMENT ON TABLE ses.feedback_events IS '営業/GUIフィードバックの統一イベントログ（Two-Tower学習の正解ラベル源）';
+"#;
+
+/// GUI行動ログ: FBを押さなくても残る「良い兆候」イベント
+/// idempotency_key で同じ操作のリトライを冪等に処理
+///
+/// ユニーク戦略:
+/// - idempotency_key: グローバルユニーク（同一リクエストの再送防止）
+/// - shortlisted: interaction + actor で1回だけ（トグル状態は meta.active で表現）
+/// - その他: 複数回OK（閲覧回数、再連絡など価値がある）
+pub const INTERACTION_EVENTS_DDL: &str = r#"
+CREATE TABLE ses.interaction_events (
+    id BIGSERIAL PRIMARY KEY,
+    interaction_id BIGINT NOT NULL REFERENCES ses.interaction_logs(id),
+
+    -- イベント種別
+    -- Phase 1: viewed_candidate_detail, copied_template, clicked_contact, shortlisted
+    event_type TEXT NOT NULL,
+    CONSTRAINT chk_interaction_event_type CHECK (event_type IN (
+        'viewed_candidate_detail',
+        'copied_template',
+        'clicked_contact',
+        'shortlisted'
+    )),
+
+    -- 誰が・どこから
+    actor TEXT NOT NULL,          -- JWTならsub、APIキーなら固定ID
+    source TEXT NOT NULL DEFAULT 'gui',
+
+    -- 冪等性キー（同じ操作のリトライで重複INSERT防止）
+    idempotency_key TEXT NOT NULL UNIQUE,
+
+    -- 追加情報
+    meta JSONB,  -- { "template": "default" }, { "active": true } など
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- shortlisted は 1回だけ（トグルなら meta.active で状態管理、latest が正）
+CREATE UNIQUE INDEX uniq_interaction_shortlist_once
+    ON ses.interaction_events(interaction_id, actor)
+    WHERE event_type = 'shortlisted';
+
+CREATE INDEX idx_interaction_events_interaction ON ses.interaction_events(interaction_id, created_at DESC);
+CREATE INDEX idx_interaction_events_actor ON ses.interaction_events(actor, created_at DESC);
+CREATE INDEX idx_interaction_events_type ON ses.interaction_events(event_type, created_at DESC);
+
+COMMENT ON TABLE ses.interaction_events IS 'GUI行動ログ（FBなしでも良い兆候を取る）';
+"#;
+
+/// CVログ: 面談化/成約など実際のビジネス成果
+/// interaction_id が取れない場合は talent_id/project_id で紐づけ
+pub const CONVERSION_EVENTS_DDL: &str = r#"
+CREATE TABLE ses.conversion_events (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- 紐づけ（interaction_id が取れれば最高、取れなければ talent/project で）
+    interaction_id BIGINT REFERENCES ses.interaction_logs(id),
+    talent_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
+
+    -- ステージ
+    -- 進行順: contacted → entry → interview_scheduled → offer → contract_signed
+    -- 離脱: lost（どの段階でも発生しうる）
+    stage TEXT NOT NULL,
+    CONSTRAINT chk_conversion_stage CHECK (stage IN (
+        'contacted',           -- 連絡済み
+        'entry',               -- エントリー完了
+        'interview_scheduled', -- 面談設定
+        'offer',               -- オファー
+        'contract_signed',     -- 成約
+        'lost'                 -- 離脱/NG
+    )),
+
+    -- 誰が・どこから
+    actor TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'gui',  -- gui / crm / import
+
+    -- 追加情報
+    meta JSONB,  -- { "lost_reason": "tanka" } など
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_conversion_events_interaction ON ses.conversion_events(interaction_id, created_at DESC);
+CREATE INDEX idx_conversion_events_talent_project ON ses.conversion_events(talent_id, project_id, created_at DESC);
+CREATE INDEX idx_conversion_events_stage ON ses.conversion_events(stage, created_at DESC);
+
+COMMENT ON TABLE ses.conversion_events IS 'CV（面談化/成約）ログ（Two-Tower学習の強いシグナル）';
 "#;
 
 /// Interaction logging for recommendations and downstream training views.
@@ -231,8 +321,14 @@ CREATE TABLE ses.interaction_logs (
     business_score DOUBLE PRECISION,
 
     -- 結果（後から更新）
-    outcome VARCHAR(20),  -- accepted / rejected / no_response / NULL
+    -- 許容値: accepted, rejected, interview_scheduled, review_ok, review_ng,
+    --         thumbs_up, thumbs_down, no_response, NULL（初期値）
+    -- ※ 'pending' 文字列は使わない（初期状態 = NULL）
+    outcome VARCHAR(20),
     feedback_at TIMESTAMPTZ,
+
+    -- A/Bテスト
+    variant VARCHAR(50),  -- 'control', 'two_tower_10pct', ...
 
     -- メタデータ
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -258,26 +354,161 @@ SELECT
     il.talent_id,
     il.project_id,
     il.two_tower_score,
+    il.two_tower_embedder,
+    il.two_tower_version,
     il.business_score,
     il.outcome,
+    il.variant,
     CASE
         WHEN il.outcome = 'accepted' THEN 1.0
         WHEN il.outcome = 'rejected' THEN 0.0
-        ELSE NULL  -- no_response は除外
+        WHEN il.outcome = 'thumbs_up' THEN 1.0
+        WHEN il.outcome = 'thumbs_down' THEN 0.0
+        WHEN il.outcome = 'review_ok' THEN 1.0
+        WHEN il.outcome = 'review_ng' THEN 0.0
+        WHEN il.outcome = 'interview_scheduled' THEN 0.8
+        ELSE NULL
     END AS label,
+    il.run_date,
     il.created_at
 FROM ses.interaction_logs il
-WHERE il.outcome IN ('accepted', 'rejected');
+WHERE il.outcome IS NOT NULL
+  AND il.outcome <> 'no_response';
+-- ※ 'pending' は NULL で表現するため、outcome IS NOT NULL で除外済み
 
 CREATE OR REPLACE VIEW ses.training_stats AS
 SELECT
     COUNT(*) FILTER (WHERE outcome = 'accepted') AS accepted_count,
     COUNT(*) FILTER (WHERE outcome = 'rejected') AS rejected_count,
     COUNT(*) FILTER (WHERE outcome IS NULL) AS pending_count,
+    -- Cold Start判定用: training_pairsで使えるラベル総数
+    -- ※ 'pending' は NULL で表現するため、outcome IS NOT NULL で除外済み
+    COUNT(*) FILTER (WHERE outcome IS NOT NULL AND outcome <> 'no_response') AS labeled_count,
     MIN(created_at) AS first_log_at,
     MAX(created_at) AS last_log_at,
-    COUNT(DISTINCT DATE_TRUNC('day', created_at)) AS active_days
+    COUNT(DISTINCT run_date) AS active_days  -- JST基準のrun_dateを使用
 FROM ses.interaction_logs;
+
+-- 統合学習ラベル: CV + FB + 行動ログを優先順位で統合
+-- ※ training_pairs は後方互換のため残す。新規学習はこちらを使用推奨
+--
+-- ラベルスケール設計:
+--   CV層（最強）: contract_signed=1.0, offer=0.9, interview=0.8, entry=0.7, contacted=0.4, lost=0.0
+--   FB層（中間）: accepted/thumbs_up/review_ok=1.0, interview=0.8, rejected/thumbs_down/review_ng=0.0
+--   行動層（弱）: shortlisted/clicked_contact=0.3, copied_template=0.2, viewed_detail=0.1
+--
+-- best_stage 採用理由:
+--   外部要因で lost になっても "マッチング品質" まで否定しないため
+--   final_stage が欲しい分析は別VIEWで ORDER BY created_at DESC にして作る
+--
+-- Phase 1: interaction_id があるCVだけ学習に使う（安全）
+-- Phase 2: CRM import は mapping を作って interaction_id に紐付ける
+CREATE OR REPLACE VIEW ses.training_labels AS
+WITH cv_best AS (
+    -- interaction_id ごとに最強のCVステージを取得
+    SELECT DISTINCT ON (interaction_id)
+        interaction_id,
+        stage AS cv_stage,
+        CASE stage
+            WHEN 'contract_signed'     THEN 1.0
+            WHEN 'offer'               THEN 0.9
+            WHEN 'interview_scheduled' THEN 0.8
+            WHEN 'entry'               THEN 0.7
+            WHEN 'contacted'           THEN 0.4
+            WHEN 'lost'                THEN 0.0
+            ELSE NULL
+        END AS cv_label
+    FROM ses.conversion_events
+    WHERE interaction_id IS NOT NULL
+    ORDER BY interaction_id,
+        CASE stage
+            WHEN 'contract_signed'     THEN 1
+            WHEN 'offer'               THEN 2
+            WHEN 'interview_scheduled' THEN 3
+            WHEN 'entry'               THEN 4
+            WHEN 'contacted'           THEN 5
+            WHEN 'lost'                THEN 6
+            ELSE 999
+        END ASC,
+        created_at DESC
+),
+behavior_best AS (
+    -- interaction_id ごとに最強の行動イベントを取得
+    SELECT DISTINCT ON (interaction_id)
+        interaction_id,
+        event_type AS behavior_type,
+        CASE event_type
+            WHEN 'shortlisted'             THEN 0.3
+            WHEN 'clicked_contact'         THEN 0.3
+            WHEN 'copied_template'         THEN 0.2
+            WHEN 'viewed_candidate_detail' THEN 0.1
+            ELSE NULL
+        END AS behavior_label
+    FROM ses.interaction_events
+    ORDER BY interaction_id,
+        CASE event_type
+            WHEN 'shortlisted'             THEN 1
+            WHEN 'clicked_contact'         THEN 2
+            WHEN 'copied_template'         THEN 3
+            WHEN 'viewed_candidate_detail' THEN 4
+            ELSE 999
+        END ASC,
+        created_at DESC
+),
+fb AS (
+    -- FBラベル: training_pairs と同じスケール（accepted = 1.0）
+    SELECT
+        id AS interaction_id,
+        CASE
+            WHEN outcome = 'accepted'            THEN 1.0
+            WHEN outcome = 'rejected'            THEN 0.0
+            WHEN outcome = 'thumbs_up'           THEN 1.0
+            WHEN outcome = 'thumbs_down'         THEN 0.0
+            WHEN outcome = 'review_ok'           THEN 1.0
+            WHEN outcome = 'review_ng'           THEN 0.0
+            WHEN outcome = 'interview_scheduled' THEN 0.8
+            ELSE NULL
+        END AS fb_label
+    FROM ses.interaction_logs
+    WHERE outcome IS NOT NULL
+      AND outcome <> 'no_response'
+)
+SELECT
+    il.id AS interaction_id,
+    il.talent_id,
+    il.project_id,
+    il.two_tower_score,
+    il.two_tower_embedder,
+    il.two_tower_version,
+    il.business_score,
+    il.variant,
+    il.run_date,
+    il.created_at,
+
+    -- 元データ（デバッグ/分析用）
+    cv.cv_stage,
+    il.outcome AS fb_outcome,
+    bb.behavior_type,
+
+    -- signal_source: どのソースからラベルが来たか
+    CASE
+        WHEN cv.cv_label IS NOT NULL THEN 'conversion'
+        WHEN fb.fb_label IS NOT NULL THEN 'feedback'
+        WHEN bb.behavior_label IS NOT NULL THEN 'behavior'
+        ELSE NULL
+    END AS signal_source,
+
+    -- label: 優先順位で統合（CV > FB > 行動ログ）
+    -- NULL = 未知（学習には使わない、負例扱いしない）
+    COALESCE(cv.cv_label, fb.fb_label, bb.behavior_label) AS label
+
+FROM ses.interaction_logs il
+LEFT JOIN cv_best cv       ON cv.interaction_id = il.id
+LEFT JOIN fb               ON fb.interaction_id = il.id
+LEFT JOIN behavior_best bb ON bb.interaction_id = il.id
+WHERE cv.cv_label IS NOT NULL
+   OR fb.fb_label IS NOT NULL
+   OR bb.behavior_label IS NOT NULL;
 "#;
 
 #[cfg(test)]
@@ -357,6 +588,7 @@ mod tests {
             "engine_version",
             "config_version",
             "is_revoked",
+            "revoked_by",  // 監査用
             "idx_feedback_project_talent",
             "idx_feedback_match_run",
             "idx_feedback_not_revoked",
@@ -388,6 +620,7 @@ mod tests {
             "idx_interaction_logs_outcome",
             "CREATE OR REPLACE VIEW ses.training_pairs",
             "CREATE OR REPLACE VIEW ses.training_stats",
+            "labeled_count",  // Cold Start判定用
         ] {
             assert!(INTERACTION_LOGS_DDL.contains(required), "missing: {required}");
         }
@@ -403,6 +636,76 @@ mod tests {
             "idx_llm_comparison_providers",
         ] {
             assert!(LLM_COMPARISON_RESULTS_DDL.contains(required));
+        }
+    }
+
+    #[test]
+    fn interaction_events_schema_covers_event_types_and_idempotency() {
+        for required in [
+            "interaction_id",
+            "event_type",
+            "actor",
+            "source",
+            "idempotency_key TEXT NOT NULL UNIQUE",
+            "meta JSONB",
+            "viewed_candidate_detail",
+            "copied_template",
+            "clicked_contact",
+            "shortlisted",
+            "chk_interaction_event_type",
+            "idx_interaction_events_interaction",
+            "idx_interaction_events_actor",
+            "idx_interaction_events_type",
+            "uniq_interaction_shortlist_once",
+            "WHERE event_type = 'shortlisted'",
+            "COMMENT ON TABLE ses.interaction_events",
+        ] {
+            assert!(INTERACTION_EVENTS_DDL.contains(required), "missing: {required}");
+        }
+    }
+
+    #[test]
+    fn conversion_events_schema_covers_stages_and_indexes() {
+        for required in [
+            "interaction_id",
+            "talent_id",
+            "project_id",
+            "stage",
+            "actor",
+            "source",
+            "meta JSONB",
+            "contacted",
+            "entry",
+            "interview_scheduled",
+            "offer",
+            "contract_signed",
+            "lost",
+            "chk_conversion_stage",
+            "idx_conversion_events_interaction",
+            "idx_conversion_events_talent_project",
+            "idx_conversion_events_stage",
+            "COMMENT ON TABLE ses.conversion_events",
+        ] {
+            assert!(CONVERSION_EVENTS_DDL.contains(required), "missing: {required}");
+        }
+    }
+
+    #[test]
+    fn interaction_logs_has_training_labels_view() {
+        for required in [
+            "CREATE OR REPLACE VIEW ses.training_labels",
+            "cv_best",
+            "behavior_best",
+            "fb AS",  // fb CTE for feedback labels
+            "fb_label",
+            "signal_source",
+            "COALESCE(cv.cv_label, fb.fb_label, bb.behavior_label)",
+            "WHERE interaction_id IS NOT NULL",  // Phase 1: only CVs with interaction_id
+            "best_stage 採用理由",
+            "Phase 1:",
+            "Phase 2:",
+        ] {
+            assert!(INTERACTION_LOGS_DDL.contains(required), "missing: {required}");
         }
     }
 }

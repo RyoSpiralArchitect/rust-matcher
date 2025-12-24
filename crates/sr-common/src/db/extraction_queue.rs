@@ -10,9 +10,9 @@ use tokio_postgres::types::ToSql;
 use tracing::instrument;
 
 use crate::api::models::queue::{
-    FeedbackEventRow, InteractionLogRow, JobDetailIncludes, JobEntity, MatchResultRow, Pagination,
-    PairDetail, ProjectSnapshot, QueueJobDetail, QueueJobDetailResponse, QueueJobFilter,
-    QueueJobListItem, QueueJobListResponse, TalentSnapshot,
+    FeedbackEventRow, InteractionEventRow, InteractionLogRow, JobDetailIncludes, JobEntity,
+    MatchResultRow, Pagination, PairDetail, ProjectSnapshot, QueueJobDetail,
+    QueueJobDetailResponse, QueueJobFilter, QueueJobListItem, QueueJobListResponse, TalentSnapshot,
 };
 use crate::db::PgPool;
 use crate::queue::{ExtractionJob, QueueStatus};
@@ -766,6 +766,51 @@ fn map_feedback_row(row: tokio_postgres::Row) -> FeedbackEventRow {
     }
 }
 
+/// GUI行動イベント（clicked_contact, copied_template 等）を取得
+async fn fetch_interaction_events(
+    client: &impl GenericClient,
+    interaction_ids: &[i64],
+    limit: usize,
+) -> Result<HashMap<i64, Vec<InteractionEventRow>>, QueueStorageError> {
+    if interaction_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let limit_i64 = i64::try_from(limit)
+        .map_err(|e| QueueStorageError::Mapping(format!("invalid events limit {limit}: {e}")))?;
+
+    let stmt = client
+        .prepare_cached(
+            "SELECT id, interaction_id, event_type, actor, source, meta, created_at
+             FROM ses.interaction_events
+             WHERE interaction_id = ANY($1::bigint[])
+             ORDER BY created_at DESC
+             LIMIT $2",
+        )
+        .await?;
+
+    let rows = client.query(&stmt, &[&interaction_ids, &limit_i64]).await?;
+
+    let mut by_interaction: HashMap<i64, Vec<InteractionEventRow>> = HashMap::new();
+    for row in rows {
+        let event = InteractionEventRow {
+            id: row.get::<_, i64>("id"),
+            interaction_id: row.get::<_, i64>("interaction_id"),
+            event_type: row.get("event_type"),
+            actor: row.get("actor"),
+            source: row.get("source"),
+            meta: row.get("meta"),
+            created_at: row.get("created_at"),
+        };
+        by_interaction
+            .entry(event.interaction_id)
+            .or_default()
+            .push(event);
+    }
+
+    Ok(by_interaction)
+}
+
 fn latest_interactions_by_match(
     interactions: Vec<InteractionLogRow>,
 ) -> HashMap<i64, InteractionLogRow> {
@@ -816,6 +861,10 @@ pub async fn get_job_detail_with_includes(
     allow_source_text: bool,
     statement_timeout_ms: i32,
 ) -> Result<Option<QueueJobDetailResponse>, QueueStorageError> {
+    // events requires interactions (to get interaction_id)
+    if includes.include_events {
+        includes.include_interactions = true;
+    }
     if includes.include_interactions || includes.include_feedback {
         includes.include_matches = true;
     }
@@ -939,11 +988,13 @@ async fn get_job_detail_with_client<C: GenericClient>(
                 HashMap::new()
             };
 
+        // Collect interaction_ids for feedback and events queries
+        let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
+
         let feedback_maps: (
             HashMap<i64, Vec<FeedbackEventRow>>,
             HashMap<i64, Vec<FeedbackEventRow>>,
         ) = if includes.include_feedback {
-            let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
             let base_limit = safe_limit.max(1);
             let feedback_limit = usize::try_from(base_limit)
                 .map(|limit| std::cmp::min(limit.saturating_mul(5), 200))
@@ -960,6 +1011,21 @@ async fn get_job_detail_with_client<C: GenericClient>(
             group_feedback_events(events)
         } else {
             (HashMap::new(), HashMap::new())
+        };
+
+        // Fetch GUI行動イベント (clicked_contact, copied_template 等)
+        let events_map: HashMap<i64, Vec<InteractionEventRow>> = if includes.include_events {
+            let events_limit = usize::try_from(safe_limit.max(1))
+                .map(|limit| std::cmp::min(limit.saturating_mul(10), 200))
+                .map_err(|e| {
+                    QueueStorageError::Mapping(format!(
+                        "invalid events limit from includes.limit={}: {e}",
+                        includes.limit
+                    ))
+                })?;
+            fetch_interaction_events(client, &interaction_ids, events_limit).await?
+        } else {
+            HashMap::new()
         };
 
         for (match_result, match_id) in matches.into_iter().zip(match_ids.into_iter()) {
@@ -985,10 +1051,18 @@ async fn get_job_detail_with_client<C: GenericClient>(
                 }
             }
 
+            // Get interaction_events for this pair's latest interaction
+            let interaction_events = latest_interaction
+                .as_ref()
+                .and_then(|i| events_map.get(&i.id))
+                .cloned()
+                .unwrap_or_default();
+
             pairs.push(PairDetail {
                 match_result,
                 latest_interaction,
                 feedback_events,
+                interaction_events,
             });
         }
 
@@ -1210,6 +1284,7 @@ mod tests {
             match_result,
             latest_interaction: Some(latest_interaction),
             feedback_events,
+            interaction_events: vec![],
         };
 
         assert_eq!(pair.feedback_events.len(), 1);

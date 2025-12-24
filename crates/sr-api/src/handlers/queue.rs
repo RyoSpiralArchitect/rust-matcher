@@ -93,6 +93,7 @@ fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, 
                 "matches" => includes.include_matches = true,
                 "interactions" => includes.include_interactions = true,
                 "feedback" => includes.include_feedback = true,
+                "events" => includes.include_events = true,
                 "source_text" => includes.include_source_text = true,
                 other => {
                     return Err(ApiError::BadRequest(format!(
