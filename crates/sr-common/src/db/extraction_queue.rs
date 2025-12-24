@@ -678,7 +678,7 @@ async fn fetch_interactions(
 
     let stmt = client
         .prepare_cached(
-            "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::bigint[]) ORDER BY match_result_id, created_at DESC",
+            "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, two_tower_embedder, two_tower_version, business_score, outcome, feedback_at, variant, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::bigint[]) ORDER BY match_result_id, created_at DESC",
         )
         .await?;
 
@@ -695,9 +695,12 @@ async fn fetch_interactions(
             engine_version: row.get("engine_version"),
             config_version: row.get("config_version"),
             two_tower_score: row.get("two_tower_score"),
+            two_tower_embedder: row.get("two_tower_embedder"),
+            two_tower_version: row.get("two_tower_version"),
             business_score: row.get("business_score"),
             outcome: row.get("outcome"),
             feedback_at: row.get("feedback_at"),
+            variant: row.get("variant"),
             created_at: row.get("created_at"),
         })
         .collect();
@@ -1224,9 +1227,12 @@ mod tests {
             engine_version: None,
             config_version: None,
             two_tower_score: None,
+            two_tower_embedder: None,
+            two_tower_version: None,
             business_score: None,
             outcome: None,
             feedback_at: None,
+            variant: None,
             created_at: Utc.timestamp_opt(0, 0).single().unwrap(),
         };
 
