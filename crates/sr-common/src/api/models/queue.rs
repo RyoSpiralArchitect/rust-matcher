@@ -217,9 +217,12 @@ pub struct InteractionLogRow {
     pub engine_version: Option<String>,
     pub config_version: Option<String>,
     pub two_tower_score: Option<f64>,
+    pub two_tower_embedder: Option<String>,
+    pub two_tower_version: Option<String>,
     pub business_score: Option<f64>,
     pub outcome: Option<String>,
     pub feedback_at: Option<DateTime<Utc>>,
+    pub variant: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
