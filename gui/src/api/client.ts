@@ -4,7 +4,9 @@
  * 認証方式の切り替え（API Key → JWT）に対応できるよう wrapper で隠蔽
  */
 
-const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "http://localhost:3000";
+// 開発時: Vite proxy が /api/* を sr-api に転送
+// 本番時: VITE_API_ORIGIN を設定するか、同一オリジンにデプロイ
+const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
 
 type AuthConfig =
   | { type: "api-key"; key: string }
