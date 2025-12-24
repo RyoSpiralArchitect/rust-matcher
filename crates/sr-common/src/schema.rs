@@ -588,7 +588,7 @@ mod tests {
             "engine_version",
             "config_version",
             "is_revoked",
-            "revoked_by",  // 監査用
+            "revoked_by", // 監査用
             "idx_feedback_project_talent",
             "idx_feedback_match_run",
             "idx_feedback_not_revoked",
@@ -620,9 +620,12 @@ mod tests {
             "idx_interaction_logs_outcome",
             "CREATE OR REPLACE VIEW ses.training_pairs",
             "CREATE OR REPLACE VIEW ses.training_stats",
-            "labeled_count",  // Cold Start判定用
+            "labeled_count", // Cold Start判定用
         ] {
-            assert!(INTERACTION_LOGS_DDL.contains(required), "missing: {required}");
+            assert!(
+                INTERACTION_LOGS_DDL.contains(required),
+                "missing: {required}"
+            );
         }
     }
 
@@ -660,7 +663,10 @@ mod tests {
             "WHERE event_type = 'shortlisted'",
             "COMMENT ON TABLE ses.interaction_events",
         ] {
-            assert!(INTERACTION_EVENTS_DDL.contains(required), "missing: {required}");
+            assert!(
+                INTERACTION_EVENTS_DDL.contains(required),
+                "missing: {required}"
+            );
         }
     }
 
@@ -686,7 +692,10 @@ mod tests {
             "idx_conversion_events_stage",
             "COMMENT ON TABLE ses.conversion_events",
         ] {
-            assert!(CONVERSION_EVENTS_DDL.contains(required), "missing: {required}");
+            assert!(
+                CONVERSION_EVENTS_DDL.contains(required),
+                "missing: {required}"
+            );
         }
     }
 
@@ -696,16 +705,19 @@ mod tests {
             "CREATE OR REPLACE VIEW ses.training_labels",
             "cv_best",
             "behavior_best",
-            "fb AS",  // fb CTE for feedback labels
+            "fb AS", // fb CTE for feedback labels
             "fb_label",
             "signal_source",
             "COALESCE(cv.cv_label, fb.fb_label, bb.behavior_label)",
-            "WHERE interaction_id IS NOT NULL",  // Phase 1: only CVs with interaction_id
+            "WHERE interaction_id IS NOT NULL", // Phase 1: only CVs with interaction_id
             "best_stage 採用理由",
             "Phase 1:",
             "Phase 2:",
         ] {
-            assert!(INTERACTION_LOGS_DDL.contains(required), "missing: {required}");
+            assert!(
+                INTERACTION_LOGS_DDL.contains(required),
+                "missing: {required}"
+            );
         }
     }
 }
