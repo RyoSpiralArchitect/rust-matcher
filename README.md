@@ -27,11 +27,12 @@ Phase 2 完了 ─────────────────────�
 | 3 | 3 | systemd 本番ループ | ✅ 完了 |
 | 3 | 3-A | Two-Tower 骨格 (HashTwoTower) | 🔴 着手予定 |
 | 3 | 3-B | interaction_logs DDL | ✅ 完了 |
-| 3.5 | A | HTTP API (Axum) — QueueDashboard / MatchResponse / Feedback | ⏳ 待機 |
+| 3.5 | A | HTTP API (Axum) — sr-api 基盤 | ✅ 完了 |
 | 3.5 | B | MatchResponse DTO + MatchConfig | ✅ 完了 |
-| 3.5 | C | QueueDashboard DTO | ✅ 完了 |
+| 3.5 | C | QueueDashboard DTO + API | ✅ 完了 |
 | 3.5 | D | feedback_events DDL（統一版） | ✅ 完了 |
-| 3.5 | E | **GUI (Next.js)** | 🎯 **ゴール** |
+| 3.5 | E | スキーマ堅牢化（FK型整合・UPSERT・run_id自動生成） | ✅ 完了 |
+| 3.5 | F | **GUI (Next.js)** | 🎯 **ゴール** |
 | 4 | - | Two-Tower 学習（interaction_logs + feedback_events 蓄積後） | 🔜 将来 |
 
 ---
@@ -52,6 +53,12 @@ Phase 2 完了 ─────────────────────�
 - **ワーカーと運用の準備が整った**: LLM ワーカーは環境変数だけで ON/OFF やプロバイダ切替、影比較（shadow）まで制御でき、systemd 常駐や単発実行フラグで本番運用を想定した動作が確認済み。
 - **フロントと話せる契約を明文化**: GUI 側が依存するレスポンス形式（候補一覧の `interaction_id` を含むなど）と、フィードバックの冪等性ルール（同じ interaction に対する重複 POST は無視）を設計・実装しているので、Next.js 側はこの契約を前提に作り込みできる。
 - **CORS やトレース設定も用意済み**: 環境変数で CORS 許可オリジンを切り替え、`TraceLayer` でリクエストログも出るため、デプロイ直後から最低限の運用監視が効く。
+- **スキーマの堅牢化が完了**: GUI運用に入る前に潜在的な地雷を潰した。
+  - **FK型整合**: `match_results.id` が BIGSERIAL なので、参照する `interaction_logs.match_result_id` と `feedback_events.match_result_id` も BIGINT に統一。FK制約が正しく張れる。
+  - **日次スナップショットのUPSERT化**: `match_results` は同日2回目以降のマッチングで上書き更新（DO UPDATE）するように変更。`updated_at` と `last_match_run_id` を追加し、「いつ・どの実行で更新されたか」を追跡可能に。
+  - **interaction_logs の柔軟化**: UNIQUE制約を `(talent_id, project_id, run_date)` から `(match_run_id, talent_id, project_id)` に変更。同日に複数回マッチングを実行しても全て記録され、学習データや監査ログが欠落しない。
+  - **run_date Generated Column**: `created_at` から JST 日付を自動算出する Generated Column を導入。全バイナリで一貫した日付計算が保証される。
+  - **run_id 自動生成**: プロセス起動時に ULID を自動生成する `sr_common::run_id` モジュールを追加。`run_id::get()` を呼ぶだけで、手動でUUID生成する必要がなくなった。
 
 #### 達成物の詳細（着地イメージ）
 
@@ -193,9 +200,11 @@ interaction_logs (Exposure)          feedback_events (Label)
               └────────────────────────┘
 ```
 
-- `interaction_logs` = 「誰に何を候補として見せたか」の露出ログ。必ず `match_run_id`（engine_version / config_version を内包）を保存して再現性を確保。
+- `match_results` = 日次スナップショット。同じ talent×project×run_date は最新で上書き（UPSERT）。`last_match_run_id` でどの実行が最終更新したか追跡可能。
+- `interaction_logs` = 「誰に何を候補として見せたか」の露出ログ。`match_run_id` は実行インスタンスID（ULID）で、同日複数実行でも全て記録される。UNIQUE は `(match_run_id, talent_id, project_id)` なので、同じ実行内での二重INSERTは防ぎつつ、別実行は通る。
 - `feedback_events` = 「どの露出に対して誰がどんなフィードバックをしたか」のラベル。`actor`/`source` を残し、`is_revoked` で取り消し履歴も保持。
 - `training_pairs` = 上記 2 テーブルを束ねた View。Phase 4 の Two-Tower 学習ではここから教師データを作る。
+- `run_date` = 全テーブルで Generated Column として定義。`(created_at AT TIME ZONE 'Asia/Tokyo')::date` で自動算出されるため、アプリ側で日付を渡す必要がない。
 
 ### フィードバック統一ENUM
 
@@ -279,6 +288,32 @@ export AUTO_MATCH_THRESHOLD=0.7               # MatchResponse 変換用の自動
 export TWO_TOWER_ENABLED=false
 ```
 
+### run_id（実行インスタンスID）の使い方
+
+各プロセスは起動時に ULID を自動生成し、`match_run_id` として使います。手動で UUID を生成する必要はありません。
+
+```rust
+use sr_common::run_id;
+
+// プロセス起動時に自動生成されるrun ID（全処理で共通）
+let run_id = run_id::get();  // "01HXYZ..." (26文字)
+
+// 必要なら個別のULIDも生成可能（サブタスク用など）
+let sub_id = run_id::generate();
+```
+
+**ULID の特徴**:
+- 時間順でソート可能（辞書順 = 時系列順）
+- 26文字、URL-safe
+- 衝突確率は実質ゼロ
+
+これにより:
+- **起動ごとに新しいrun_id** → 同日複数実行でも別レコードとして記録
+- **同一プロセス内は同じrun_id** → idempotency（二重INSERT防止）が保証
+- **ログやDBで追跡可能** → 「この結果はどの実行で生成されたか」が一目瞭然
+
+---
+
 ### プロバイダ別のデフォルト設定（sr-llm-worker が想定する前提）
 
 - **Mode A: Unified Gateway（推奨）**: `LLM_ENDPOINT` に自前ゲートウェイ（例: `/api/v1/extract` 互換）を立て、プロバイダ差分を吸収する。
@@ -350,7 +385,9 @@ crates/
 │   ├── two_tower/      # Two-Tower (HashTwoTower)
 │   ├── api/            # DTO (MatchResponse, FeedbackRequest)
 │   ├── queue/          # extraction_queue モデル
-│   └── db/             # DB操作ヘルパー
+│   ├── db/             # DB操作ヘルパー
+│   ├── run_id.rs       # プロセス起動時の ULID 自動生成
+│   └── schema.rs       # DDL定義（Generated Column含む）
 ├── sr-extractor/       # メール抽出 → キュー投入
 ├── sr-llm-worker/      # LLM処理ワーカー
 ├── sr-queue-recovery/  # 滞留ジョブ復旧

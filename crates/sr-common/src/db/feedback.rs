@@ -20,7 +20,7 @@ pub enum FeedbackStorageError {
 
 struct InteractionContext {
     interaction_id: i64,
-    match_result_id: Option<i32>,
+    match_result_id: Option<i64>,
     match_run_id: Option<String>,
     engine_version: Option<String>,
     config_version: Option<String>,

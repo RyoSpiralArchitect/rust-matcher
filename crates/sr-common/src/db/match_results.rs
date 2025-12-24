@@ -26,6 +26,8 @@ pub struct MatchResultInsert {
     pub score_breakdown: Option<Value>,
     pub engine_version: Option<String>,
     pub rule_version: Option<String>,
+    /// 実行インスタンスID（ULID/UUID、毎回生成）
+    pub match_run_id: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -33,7 +35,9 @@ fn normalize_json(value: &Option<Value>) -> Option<Json<&Value>> {
     value.as_ref().map(Json)
 }
 
-/// Insert a match result snapshot. Duplicates for the same day are ignored.
+/// Insert or update a match result snapshot.
+/// Same-day duplicates are updated with the latest values (UPSERT pattern).
+/// The `run_date` column is a generated column computed from `created_at` in JST timezone.
 #[instrument(skip(pool, result))]
 pub async fn insert_match_result(
     pool: &PgPool,
@@ -41,6 +45,10 @@ pub async fn insert_match_result(
 ) -> Result<u64, MatchResultStorageError> {
     let client = pool.get().await?;
 
+    // run_date is a GENERATED ALWAYS column computed from created_at in JST timezone.
+    // We don't pass it explicitly - PostgreSQL computes it automatically.
+    // ON CONFLICT updates the existing record with latest values (same JST day = same snapshot).
+    // Note: EXCLUDED.created_at is within the same JST day, so run_date won't change.
     let stmt = client
         .prepare_cached(
             "INSERT INTO ses.match_results (
@@ -53,15 +61,27 @@ pub async fn insert_match_result(
                 score_breakdown,
                 engine_version,
                 rule_version,
-                created_at
+                last_match_run_id,
+                created_at,
+                updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11
             )
-            ON CONFLICT DO NOTHING;",
+            ON CONFLICT (talent_id, project_id, run_date) DO UPDATE SET
+                is_knockout = EXCLUDED.is_knockout,
+                ko_reasons = EXCLUDED.ko_reasons,
+                needs_manual_review = EXCLUDED.needs_manual_review,
+                score_total = EXCLUDED.score_total,
+                score_breakdown = EXCLUDED.score_breakdown,
+                engine_version = EXCLUDED.engine_version,
+                rule_version = EXCLUDED.rule_version,
+                last_match_run_id = EXCLUDED.last_match_run_id,
+                updated_at = EXCLUDED.updated_at",
         )
         .await?;
 
-    let created_at = result.created_at.unwrap_or_else(Utc::now);
+    let now = Utc::now();
+    let created_at = result.created_at.unwrap_or(now);
     let rows = client
         .execute(
             &stmt,
@@ -75,6 +95,7 @@ pub async fn insert_match_result(
                 &normalize_json(&result.score_breakdown),
                 &result.engine_version,
                 &result.rule_version,
+                &result.match_run_id,
                 &created_at,
             ],
         )
@@ -108,5 +129,20 @@ mod tests {
         };
 
         assert!(insert.created_at.is_none());
+        assert!(insert.match_run_id.is_none());
+    }
+
+    #[test]
+    fn accepts_match_run_id() {
+        let insert = MatchResultInsert {
+            talent_id: 1,
+            project_id: 2,
+            is_knockout: false,
+            needs_manual_review: false,
+            match_run_id: Some("01HXYZ123456".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(insert.match_run_id.as_deref(), Some("01HXYZ123456"));
     }
 }

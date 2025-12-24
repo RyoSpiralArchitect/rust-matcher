@@ -85,33 +85,44 @@ CREATE INDEX idx_projects_enum_message_id ON ses.projects_enum(message_id);
 "#;
 
 /// Proposed schema for daily match results snapshots.
+/// run_date is a generated column based on created_at in JST timezone.
+/// Same-day updates overwrite the previous record (UPSERT pattern).
 pub const MATCH_RESULTS_DDL: &str = r#"
 CREATE TABLE ses.match_results (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     talent_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
-    run_date DATE NOT NULL, -- JST基準でアプリが決定する（UTC境界ずれ防止）
 
     is_knockout BOOLEAN NOT NULL,
     ko_reasons JSONB,
     needs_manual_review BOOLEAN NOT NULL DEFAULT false,
 
-    score_total FLOAT,
+    score_total DOUBLE PRECISION,
     score_breakdown JSONB,
 
     engine_version VARCHAR(20),
     rule_version VARCHAR(20),
 
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    -- 最後にこのスナップショットを更新した実行ID（ULID/UUID）
+    last_match_run_id VARCHAR(64),
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- JST基準の日付（自動算出 - アプリは触れない）
+    run_date DATE GENERATED ALWAYS AS (
+        (created_at AT TIME ZONE 'Asia/Tokyo')::date
+    ) STORED,
 
     UNIQUE(talent_id, project_id, run_date)
 );
 
-CREATE INDEX idx_match_results_talent ON ses.match_results(talent_id, created_at);
-CREATE INDEX idx_match_results_project ON ses.match_results(project_id, created_at);
+CREATE INDEX idx_match_results_talent_run_date ON ses.match_results(talent_id, run_date DESC);
+CREATE INDEX idx_match_results_project_run_date ON ses.match_results(project_id, run_date DESC);
 CREATE INDEX idx_match_results_project_score_created
   ON ses.match_results(project_id, score_total DESC, created_at DESC);
 CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
+CREATE INDEX idx_match_results_match_run ON ses.match_results(last_match_run_id) WHERE last_match_run_id IS NOT NULL;
 "#;
 
 /// 保存場所: `ses.llm_comparison_results` (LLM shadow/AB比較ログ)
@@ -141,7 +152,7 @@ CREATE TABLE ses.feedback_events (
 
     -- 紐付け（interaction_logs への FK を推奨）
     interaction_id BIGINT REFERENCES ses.interaction_logs(id),
-    match_result_id INTEGER REFERENCES ses.match_results(id),
+    match_result_id BIGINT REFERENCES ses.match_results(id),
     match_run_id VARCHAR(64),
     engine_version VARCHAR(20),
     config_version VARCHAR(20),
@@ -197,40 +208,48 @@ COMMENT ON TABLE ses.feedback_events IS '営業/GUIフィードバックの統�
 "#;
 
 /// Interaction logging for recommendations and downstream training views.
+/// run_date is a generated column based on created_at in JST timezone.
+/// UNIQUE is per (match_run_id, talent_id, project_id) to allow multiple runs per day.
 pub const INTERACTION_LOGS_DDL: &str = r#"
 CREATE TABLE ses.interaction_logs (
     id BIGSERIAL PRIMARY KEY,
 
     -- マッチング情報
-    match_result_id INTEGER REFERENCES ses.match_results(id),
+    match_result_id BIGINT REFERENCES ses.match_results(id),
     talent_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
-    run_date DATE NOT NULL, -- JST基準でアプリが決定する（UTC境界ずれ防止）
-    match_run_id VARCHAR(64),       -- engine_version + config_version を含む実行単位
+    match_run_id VARCHAR(64) NOT NULL,  -- 実行インスタンスID（ULID/UUID、毎回生成）
     engine_version VARCHAR(20),
     config_version VARCHAR(20),
 
     -- Two-Tower 予測
-    two_tower_score FLOAT,          -- 予測スコア
-    two_tower_embedder VARCHAR(50), -- hash / onnx / candle
-    two_tower_version VARCHAR(20),  -- モデルバージョン
+    two_tower_score DOUBLE PRECISION,  -- 予測スコア
+    two_tower_embedder VARCHAR(50),    -- hash / onnx / candle
+    two_tower_version VARCHAR(20),     -- モデルバージョン
 
     -- ビジネスルールスコア（比較用）
-    business_score FLOAT,
+    business_score DOUBLE PRECISION,
 
     -- 結果（後から更新）
     outcome VARCHAR(20),  -- accepted / rejected / no_response / NULL
     feedback_at TIMESTAMPTZ,
 
     -- メタデータ
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- インデックス
-    CONSTRAINT interaction_logs_unique UNIQUE (talent_id, project_id, run_date)
+    -- JST基準の日付（自動算出 - アプリは触れない、検索/集計用）
+    run_date DATE GENERATED ALWAYS AS (
+        (created_at AT TIME ZONE 'Asia/Tokyo')::date
+    ) STORED,
+
+    -- 同一 run 内の二重INSERT（リトライ/バグ）を抑止、別 run なら同日でも記録可
+    CONSTRAINT interaction_logs_unique_run_pair UNIQUE (match_run_id, talent_id, project_id)
 );
 
 CREATE INDEX idx_interaction_logs_match_run ON ses.interaction_logs(match_run_id, created_at DESC);
 CREATE INDEX idx_interaction_logs_match_result ON ses.interaction_logs(match_result_id);
+CREATE INDEX idx_interaction_logs_talent_run_date ON ses.interaction_logs(talent_id, run_date DESC, created_at DESC);
+CREATE INDEX idx_interaction_logs_project_run_date ON ses.interaction_logs(project_id, run_date DESC, created_at DESC);
 CREATE INDEX idx_interaction_logs_outcome ON ses.interaction_logs(outcome, created_at DESC)
     WHERE outcome IS NOT NULL;
 
@@ -314,12 +333,18 @@ mod tests {
             "talent_id",
             "project_id",
             "score_breakdown",
-            "run_date",
+            "last_match_run_id",
+            "updated_at",
+            "run_date DATE GENERATED ALWAYS",
+            "Asia/Tokyo",
             "UNIQUE(talent_id, project_id, run_date)",
+            "idx_match_results_talent_run_date",
+            "idx_match_results_project_run_date",
             "idx_match_results_project_score_created",
             "idx_match_results_score",
+            "idx_match_results_match_run",
         ] {
-            assert!(MATCH_RESULTS_DDL.contains(required));
+            assert!(MATCH_RESULTS_DDL.contains(required), "missing: {required}");
         }
     }
 
@@ -349,18 +374,22 @@ mod tests {
         for required in [
             "two_tower_score",
             "business_score",
-            "match_run_id",
+            "match_run_id VARCHAR(64) NOT NULL",
             "engine_version",
             "config_version",
-            "run_date",
-            "interaction_logs_unique",
+            "run_date DATE GENERATED ALWAYS",
+            "Asia/Tokyo",
+            "interaction_logs_unique_run_pair",
+            "UNIQUE (match_run_id, talent_id, project_id)",
             "idx_interaction_logs_match_run",
             "idx_interaction_logs_match_result",
+            "idx_interaction_logs_talent_run_date",
+            "idx_interaction_logs_project_run_date",
             "idx_interaction_logs_outcome",
             "CREATE OR REPLACE VIEW ses.training_pairs",
             "CREATE OR REPLACE VIEW ses.training_stats",
         ] {
-            assert!(INTERACTION_LOGS_DDL.contains(required));
+            assert!(INTERACTION_LOGS_DDL.contains(required), "missing: {required}");
         }
     }
 

@@ -210,7 +210,7 @@ pub struct MatchResultRow {
 #[derive(Debug, Clone, Serialize)]
 pub struct InteractionLogRow {
     pub id: i64,
-    pub match_result_id: Option<i32>,
+    pub match_result_id: Option<i64>,
     pub talent_id: i64,
     pub project_id: i64,
     pub match_run_id: Option<String>,
@@ -227,7 +227,7 @@ pub struct InteractionLogRow {
 pub struct FeedbackEventRow {
     pub id: i64,
     pub interaction_id: Option<i64>,
-    pub match_result_id: Option<i32>,
+    pub match_result_id: Option<i64>,
     pub match_run_id: Option<String>,
     pub engine_version: Option<String>,
     pub config_version: Option<String>,

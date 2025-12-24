@@ -635,15 +635,24 @@ async fn fetch_match_results(
         return Ok(Vec::new());
     }
 
+    // Use run_date for filtering to leverage idx_match_results_talent_run_date
+    // and idx_match_results_project_run_date composite indexes.
+    // run_date is a Generated Column computed as (created_at AT TIME ZONE 'Asia/Tokyo')::date.
     let stmt = client
         .prepare_cached(
-            "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, score_total, score_breakdown, engine_version, rule_version, created_at FROM ses.match_results WHERE created_at >= NOW() - ($3::bigint * INTERVAL '1 day') AND ( ($1::bigint IS NOT NULL AND talent_id = $1) OR ($2::bigint IS NOT NULL AND project_id = $2) ) ORDER BY created_at DESC LIMIT $4",
+            "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, \
+                    score_total, score_breakdown, engine_version, rule_version, created_at \
+             FROM ses.match_results \
+             WHERE run_date >= (NOW() AT TIME ZONE 'Asia/Tokyo')::date - $3 \
+               AND ( ($1::bigint IS NOT NULL AND talent_id = $1) \
+                  OR ($2::bigint IS NOT NULL AND project_id = $2) ) \
+             ORDER BY run_date DESC, created_at DESC \
+             LIMIT $4",
         )
         .await?;
 
-    let days_bigint = i64::from(days);
     let rows = client
-        .query(&stmt, &[&talent_id, &project_id, &days_bigint, &limit])
+        .query(&stmt, &[&talent_id, &project_id, &days, &limit])
         .await?;
 
     let mut results = Vec::new();
@@ -661,7 +670,7 @@ async fn fetch_match_results(
 
 async fn fetch_interactions(
     client: &impl GenericClient,
-    match_result_ids: &[i32],
+    match_result_ids: &[i64],
 ) -> Result<Vec<InteractionLogRow>, QueueStorageError> {
     if match_result_ids.is_empty() {
         return Ok(Vec::new());
@@ -669,7 +678,7 @@ async fn fetch_interactions(
 
     let stmt = client
         .prepare_cached(
-            "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::int[]) ORDER BY match_result_id, created_at DESC",
+            "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::bigint[]) ORDER BY match_result_id, created_at DESC",
         )
         .await?;
 
@@ -679,7 +688,7 @@ async fn fetch_interactions(
         .into_iter()
         .map(|row| InteractionLogRow {
             id: row.get::<_, i64>("id"),
-            match_result_id: row.get::<_, Option<i32>>("match_result_id"),
+            match_result_id: row.get::<_, Option<i64>>("match_result_id"),
             talent_id: row.get::<_, i64>("talent_id"),
             project_id: row.get::<_, i64>("project_id"),
             match_run_id: row.get("match_run_id"),
@@ -699,7 +708,7 @@ async fn fetch_interactions(
 async fn fetch_feedback_events(
     client: &impl GenericClient,
     interaction_ids: &[i64],
-    match_result_ids: &[i32],
+    match_result_ids: &[i64],
     limit: usize,
 ) -> Result<Vec<FeedbackEventRow>, QueueStorageError> {
     if interaction_ids.is_empty() && match_result_ids.is_empty() {
@@ -714,7 +723,7 @@ async fn fetch_feedback_events(
             "SELECT id, interaction_id, match_result_id, match_run_id, engine_version, config_version, project_id, talent_id, feedback_type, ng_reason_category, comment, actor, source, is_revoked, created_at
              FROM ses.feedback_events
              WHERE (interaction_id IS NOT NULL AND interaction_id = ANY($1::bigint[]))
-                OR (match_result_id IS NOT NULL AND match_result_id = ANY($2::int[]))
+                OR (match_result_id IS NOT NULL AND match_result_id = ANY($2::bigint[]))
              ORDER BY created_at DESC
              LIMIT $3",
         )
@@ -741,7 +750,7 @@ fn map_feedback_row(row: tokio_postgres::Row) -> FeedbackEventRow {
     FeedbackEventRow {
         id: row.get::<_, i64>("id"),
         interaction_id: row.get::<_, Option<i64>>("interaction_id"),
-        match_result_id: row.get::<_, Option<i32>>("match_result_id"),
+        match_result_id: row.get::<_, Option<i64>>("match_result_id"),
         match_run_id: row.get("match_run_id"),
         engine_version: row.get("engine_version"),
         config_version: row.get("config_version"),
@@ -759,8 +768,8 @@ fn map_feedback_row(row: tokio_postgres::Row) -> FeedbackEventRow {
 
 fn latest_interactions_by_match(
     interactions: Vec<InteractionLogRow>,
-) -> HashMap<i32, InteractionLogRow> {
-    let mut map: HashMap<i32, InteractionLogRow> = HashMap::new();
+) -> HashMap<i64, InteractionLogRow> {
+    let mut map: HashMap<i64, InteractionLogRow> = HashMap::new();
     for interaction in interactions {
         if let Some(match_id) = interaction.match_result_id {
             let should_replace = match map.get(&match_id) {
@@ -779,10 +788,10 @@ fn group_feedback_events(
     events: Vec<FeedbackEventRow>,
 ) -> (
     HashMap<i64, Vec<FeedbackEventRow>>,
-    HashMap<i32, Vec<FeedbackEventRow>>,
+    HashMap<i64, Vec<FeedbackEventRow>>,
 ) {
     let mut by_interaction: HashMap<i64, Vec<FeedbackEventRow>> = HashMap::new();
-    let mut by_match: HashMap<i32, Vec<FeedbackEventRow>> = HashMap::new();
+    let mut by_match: HashMap<i64, Vec<FeedbackEventRow>> = HashMap::new();
 
     for event in events {
         if let Some(interaction_id) = event.interaction_id {
@@ -918,22 +927,13 @@ async fn get_job_detail_with_client<C: GenericClient>(
         )
         .await?;
 
-        let match_ids_i32: Vec<i32> = matches
-            .iter()
-            .map(|m| {
-                i32::try_from(m.id).map_err(|e| {
-                    QueueStorageError::Mapping(format!(
-                        "match_result id {} exceeds i32 range: {e}",
-                        m.id
-                    ))
-                })
-            })
-            .collect::<Result<_, _>>()?;
+        // match_results.id is now BIGSERIAL (i64), no conversion needed
+        let match_ids: Vec<i64> = matches.iter().map(|m| m.id).collect();
         let mut pairs = Vec::new();
 
-        let interaction_map: HashMap<i32, InteractionLogRow> =
+        let interaction_map: HashMap<i64, InteractionLogRow> =
             if includes.include_interactions || includes.include_feedback {
-                let interactions = fetch_interactions(client, &match_ids_i32).await?;
+                let interactions = fetch_interactions(client, &match_ids).await?;
                 latest_interactions_by_match(interactions)
             } else {
                 HashMap::new()
@@ -941,7 +941,7 @@ async fn get_job_detail_with_client<C: GenericClient>(
 
         let feedback_maps: (
             HashMap<i64, Vec<FeedbackEventRow>>,
-            HashMap<i32, Vec<FeedbackEventRow>>,
+            HashMap<i64, Vec<FeedbackEventRow>>,
         ) = if includes.include_feedback {
             let interaction_ids: Vec<i64> = interaction_map.values().map(|i| i.id).collect();
             let base_limit = safe_limit.max(1);
@@ -955,15 +955,15 @@ async fn get_job_detail_with_client<C: GenericClient>(
                 })?;
 
             let events =
-                fetch_feedback_events(client, &interaction_ids, &match_ids_i32, feedback_limit)
+                fetch_feedback_events(client, &interaction_ids, &match_ids, feedback_limit)
                     .await?;
             group_feedback_events(events)
         } else {
             (HashMap::new(), HashMap::new())
         };
 
-        for (match_result, match_id_i32) in matches.into_iter().zip(match_ids_i32.into_iter()) {
-            let latest_interaction = interaction_map.get(&match_id_i32).cloned();
+        for (match_result, match_id) in matches.into_iter().zip(match_ids.into_iter()) {
+            let latest_interaction = interaction_map.get(&match_id).cloned();
             let mut feedback_events = Vec::new();
             let mut seen_feedback_ids = HashSet::new();
 
@@ -977,7 +977,7 @@ async fn get_job_detail_with_client<C: GenericClient>(
                 }
             }
 
-            if let Some(events) = feedback_maps.1.get(&match_id_i32) {
+            if let Some(events) = feedback_maps.1.get(&match_id) {
                 for event in events {
                     if seen_feedback_ids.insert(event.id) {
                         feedback_events.push(event.clone());
