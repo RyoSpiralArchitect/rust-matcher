@@ -1,7 +1,7 @@
 # SR Matcher - Monorepo Makefile
 # Rust (crates/) と GUI (gui/) の入口を提供
 
-.PHONY: help rust-build rust-test rust-check gui-dev gui-build gui-lint gui-install all
+.PHONY: help rust-build rust-test rust-check api-dev gui-dev gui-build gui-lint gui-install all dev
 
 help:
 	@echo "SR Matcher Commands"
@@ -11,14 +11,22 @@ help:
 	@echo "  make rust-test    - Run all Rust tests"
 	@echo "  make rust-check   - Run cargo check"
 	@echo ""
+	@echo "API:"
+	@echo "  make api-dev      - Start sr-api server (requires .env)"
+	@echo ""
 	@echo "GUI:"
 	@echo "  make gui-install  - Install npm dependencies"
-	@echo "  make gui-dev      - Start dev server"
+	@echo "  make gui-dev      - Start Vite dev server"
 	@echo "  make gui-build    - Production build"
 	@echo "  make gui-lint     - Run ESLint"
 	@echo ""
 	@echo "All:"
 	@echo "  make all          - Build everything"
+	@echo ""
+	@echo "Quickstart:"
+	@echo "  1. cp .env.example .env && edit DATABASE_URL/SR_API_KEY"
+	@echo "  2. Terminal 1: make api-dev"
+	@echo "  3. Terminal 2: make gui-dev"
 
 # ============================================================
 # Rust
@@ -32,6 +40,13 @@ rust-test:
 
 rust-check:
 	cargo check
+
+# ============================================================
+# API (sr-api)
+# ============================================================
+
+api-dev:
+	cargo run -p sr-api
 
 # ============================================================
 # GUI

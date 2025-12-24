@@ -27,3 +27,5 @@ target
 
 # Keep Cargo.lock under version control for reproducible builds
 # (explicitly not ignored)
+.DS_Store
+.env
