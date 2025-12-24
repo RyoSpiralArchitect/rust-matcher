@@ -10,7 +10,8 @@ use super::{
 };
 use crate::{
     Project, Talent,
-    db::interaction_logs::InteractionLogInsert,
+    db::{InteractionLogInsert, InteractionLogStorageError, PgPool, insert_interaction_log},
+    run_id,
     two_tower::{TwoTowerConfig, TwoTowerEmbedder, create_embedder, load_config_from_env},
 };
 
@@ -215,9 +216,140 @@ pub fn init_two_tower_from_env() -> (TwoTowerConfig, Option<Box<dyn TwoTowerEmbe
     (config, Some(embedder))
 }
 
+/// マッチングを実行し、Two-Tower スコアと business_score を interaction_logs へ保存するランナー
+pub struct MatchRunner {
+    engine: MatchingEngine,
+    two_tower_config: TwoTowerConfig,
+    two_tower: Option<Box<dyn TwoTowerEmbedder>>,
+    engine_version: Option<String>,
+    config_version: Option<String>,
+    variant: Option<String>,
+    match_run_id: String,
+}
+
+impl MatchRunner {
+    /// 環境変数を読み込んで初期化する。
+    /// - match_run_id: sr_common::run_id のプロセス固定 ULID
+    /// - Two-Tower: TWO_TOWER_ENABLED/TWO_TOWER_DIMENSION/TWO_TOWER_WEIGHT/TWO_TOWER_EMBEDDER で制御
+    pub fn from_env() -> Self {
+        let (two_tower_config, two_tower) = init_two_tower_from_env();
+
+        Self {
+            engine: MatchingEngine::default(),
+            two_tower_config,
+            two_tower,
+            engine_version: None,
+            config_version: None,
+            variant: None,
+            match_run_id: run_id::get().to_string(),
+        }
+    }
+
+    pub fn with_engine_version(mut self, value: impl Into<String>) -> Self {
+        self.engine_version = Some(value.into());
+        self
+    }
+
+    pub fn with_config_version(mut self, value: impl Into<String>) -> Self {
+        self.config_version = Some(value.into());
+        self
+    }
+
+    pub fn with_variant(mut self, value: impl Into<String>) -> Self {
+        self.variant = Some(value.into());
+        self
+    }
+
+    pub fn with_match_run_id(mut self, value: impl Into<String>) -> Self {
+        self.match_run_id = value.into();
+        self
+    }
+
+    /// ランキング結果を返す（永続化しない）
+    pub fn rank_talents(&self, project: &Project, talents: &[Talent]) -> Vec<RankedTalentMatch> {
+        self.engine.rank_talents_for_project(
+            project,
+            talents,
+            self.two_tower.as_deref(),
+            &self.two_tower_config,
+        )
+    }
+
+    /// interaction_logs へ INSERT するためのレコードを構築する
+    pub fn build_interaction_logs(
+        &self,
+        project: &Project,
+        talents: &[Talent],
+        match_result_ids: Option<&HashMap<i64, i64>>,
+    ) -> Vec<InteractionLogInsert> {
+        let ranked = self.rank_talents(project, talents);
+
+        ranked
+            .into_iter()
+            .filter_map(|r| {
+                let match_result_id = r
+                    .talent
+                    .id
+                    .and_then(|id| match_result_ids.and_then(|m| m.get(&id).copied()));
+
+                r.to_interaction_log(
+                    self.match_run_id.clone(),
+                    match_result_id,
+                    self.engine_version.clone(),
+                    self.config_version.clone(),
+                    self.variant.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// Two-Tower スコア・business_score を含む interaction_logs を保存する
+    pub async fn insert_interaction_logs(
+        &self,
+        pool: &PgPool,
+        project: &Project,
+        talents: &[Talent],
+        match_result_ids: Option<&HashMap<i64, i64>>,
+    ) -> Result<Vec<InteractionLogInsert>, InteractionLogStorageError> {
+        let logs = self.build_interaction_logs(project, talents, match_result_ids);
+        for log in &logs {
+            insert_interaction_log(pool, log).await?;
+        }
+        Ok(logs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = ENV_GUARD.lock().unwrap();
+
+        let previous: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(var, value)| {
+                let old = std::env::var(var).ok();
+                match value {
+                    Some(v) => unsafe { std::env::set_var(var, v) },
+                    None => unsafe { std::env::remove_var(var) },
+                }
+                (*var, old)
+            })
+            .collect();
+
+        f();
+
+        for (var, previous_value) in previous {
+            match previous_value {
+                Some(v) => unsafe { std::env::set_var(var, v) },
+                None => unsafe { std::env::remove_var(var) },
+            }
+        }
+    }
 
     fn base_project() -> Project {
         Project {
@@ -320,10 +452,16 @@ mod tests {
 
         assert_eq!(ranked.len(), 2);
         assert!(ranked.iter().all(|r| r.two_tower_score.is_some()));
-        assert!(ranked.windows(2).all(|w| w[0].total_score >= w[1].total_score));
-        assert!(ranked
-            .iter()
-            .all(|r| r.two_tower_embedder.as_deref() == Some("hash")));
+        assert!(
+            ranked
+                .windows(2)
+                .all(|w| w[0].total_score >= w[1].total_score)
+        );
+        assert!(
+            ranked
+                .iter()
+                .all(|r| r.two_tower_embedder.as_deref() == Some("hash"))
+        );
     }
 
     #[test]
@@ -360,5 +498,75 @@ mod tests {
         assert_eq!(log.two_tower_score, None);
         assert_eq!(log.business_score, Some(ranked[0].detailed_score.total));
         assert_eq!(log.variant.as_deref(), Some("two_tower_10pct"));
+    }
+
+    #[test]
+    fn build_interaction_logs_includes_two_tower_scores_and_metadata() {
+        with_env(
+            &[
+                ("TWO_TOWER_ENABLED", Some("1")),
+                ("TWO_TOWER_DIMENSION", Some("128")),
+                ("TWO_TOWER_WEIGHT", Some("0.2")),
+                ("TWO_TOWER_EMBEDDER", Some("hash")),
+            ],
+            || {
+                let mut project = base_project();
+                project.id = Some(42);
+
+                let mut talent_a = base_talent();
+                talent_a.id = Some(1001);
+
+                let mut talent_b = base_talent();
+                talent_b.id = Some(1002);
+
+                let runner = MatchRunner::from_env()
+                    .with_engine_version("engine_v1")
+                    .with_config_version("cfg_v1")
+                    .with_variant("two_tower_10pct");
+
+                let logs = runner.build_interaction_logs(&project, &[talent_a, talent_b], None);
+
+                assert_eq!(logs.len(), 2);
+                assert!(logs.iter().all(|l| l.two_tower_score.is_some()));
+                assert!(
+                    logs.iter()
+                        .all(|l| l.two_tower_embedder.as_deref() == Some("hash"))
+                );
+                assert!(logs.iter().all(|l| l.business_score.is_some()));
+                assert!(logs.iter().all(|l| l.match_run_id.len() >= 26));
+                assert!(
+                    logs.iter()
+                        .all(|l| l.engine_version.as_deref() == Some("engine_v1"))
+                );
+                assert!(
+                    logs.iter()
+                        .all(|l| l.config_version.as_deref() == Some("cfg_v1"))
+                );
+                assert!(
+                    logs.iter()
+                        .all(|l| l.variant.as_deref() == Some("two_tower_10pct"))
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn build_interaction_logs_uses_match_result_ids_when_provided() {
+        with_env(&[("TWO_TOWER_ENABLED", Some("1"))], || {
+            let mut project = base_project();
+            project.id = Some(77);
+
+            let mut talent = base_talent();
+            talent.id = Some(1234);
+
+            let mut map = HashMap::new();
+            map.insert(1234, 9999);
+
+            let runner = MatchRunner::from_env();
+            let logs = runner.build_interaction_logs(&project, &[talent], Some(&map));
+
+            assert_eq!(logs.len(), 1);
+            assert_eq!(logs[0].match_result_id, Some(9999));
+        });
     }
 }
