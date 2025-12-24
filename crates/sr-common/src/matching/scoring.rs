@@ -8,6 +8,7 @@ use super::{
 use crate::{
     Project, Talent,
     corrections::{nationality::is_japanese_nationality, normalize_contract_type_for_matching},
+    two_tower::TwoTowerConfig,
 };
 use chrono::{Datelike, Utc};
 
@@ -42,6 +43,44 @@ impl TotalScoreWeights {
             historical: historical / sum,
         }
     }
+}
+
+/// total_score_weights を用いた総合スコア計算（Two-Tower 無し）
+pub fn calculate_weighted_total_score(
+    business_score: f64,
+    semantic_score: f64,
+    historical_score: f64,
+    weights: &TotalScoreWeights,
+) -> f64 {
+    let w = weights.normalized();
+
+    let total =
+        business_score * w.business + semantic_score * w.semantic + historical_score * w.historical;
+
+    total.clamp(0.0, 1.0)
+}
+
+/// Two-Tower スコアを合成した総合スコア計算
+pub fn calculate_total_score_with_two_tower(
+    business_score: f64,
+    semantic_score: f64,
+    historical_score: f64,
+    two_tower_score: Option<f32>,
+    weights: &TotalScoreWeights,
+    two_tower_config: &TwoTowerConfig,
+) -> f64 {
+    let base_score =
+        calculate_weighted_total_score(business_score, semantic_score, historical_score, weights);
+
+    if !two_tower_config.enabled {
+        return base_score;
+    }
+
+    let tt_score = two_tower_score.unwrap_or(0.5) as f64;
+    let total_weight = 1.0 + two_tower_config.weight as f64;
+    let combined = (base_score + two_tower_config.weight as f64 * tt_score) / total_weight;
+
+    combined.clamp(0.0, 1.0)
 }
 
 #[derive(Debug, Clone)]
@@ -173,14 +212,12 @@ impl BusinessRulesEngine {
     }
 
     fn compute_total_score(&self, business_rules_score: f64) -> f64 {
-        let w = self.config.total_score_weights.normalized();
-        let semantic = self.config.semantic_score.unwrap_or(0.0);
-        let historical = self.config.historical_score.unwrap_or(0.0);
-
-        let total =
-            business_rules_score * w.business + semantic * w.semantic + historical * w.historical;
-
-        total.clamp(0.0, 1.0)
+        calculate_weighted_total_score(
+            business_rules_score,
+            self.config.semantic_score.unwrap_or(0.0),
+            self.config.historical_score.unwrap_or(0.0),
+            &self.config.total_score_weights,
+        )
     }
 
     fn score_tanka(&self, project: &Project, talent: &Talent) -> ScoringResult {
@@ -1035,5 +1072,75 @@ mod tests {
         let score = engine.calculate_match_score(&full_project(), &full_talent());
 
         assert_eq!(score.total, score.business_rules_score);
+    }
+
+    #[test]
+    fn two_tower_disabled_returns_base_score() {
+        let weights = TotalScoreWeights {
+            business: 1.0,
+            semantic: 0.0,
+            historical: 0.0,
+        };
+        let two_tower_config = TwoTowerConfig {
+            enabled: false,
+            weight: 1.5,
+            ..TwoTowerConfig::default()
+        };
+
+        let score = calculate_total_score_with_two_tower(
+            0.6,
+            0.0,
+            0.0,
+            Some(1.0),
+            &weights,
+            &two_tower_config,
+        );
+
+        assert!((score - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn two_tower_weighted_average_applies_when_enabled() {
+        let weights = TotalScoreWeights {
+            business: 1.0,
+            semantic: 0.0,
+            historical: 0.0,
+        };
+        let two_tower_config = TwoTowerConfig {
+            enabled: true,
+            weight: 1.0,
+            ..TwoTowerConfig::default()
+        };
+
+        let score = calculate_total_score_with_two_tower(
+            0.2,
+            0.0,
+            0.0,
+            Some(1.0),
+            &weights,
+            &two_tower_config,
+        );
+
+        assert!((score - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn missing_two_tower_score_defaults_to_neutral() {
+        let weights = TotalScoreWeights {
+            business: 1.0,
+            semantic: 0.0,
+            historical: 0.0,
+        };
+        let two_tower_config = TwoTowerConfig {
+            enabled: true,
+            weight: 2.0,
+            ..TwoTowerConfig::default()
+        };
+
+        let score =
+            calculate_total_score_with_two_tower(0.3, 0.0, 0.0, None, &weights, &two_tower_config);
+        let expected = (0.3 + 2.0 * 0.5) / 3.0;
+
+        assert!((score - expected).abs() < 1e-6);
     }
 }
