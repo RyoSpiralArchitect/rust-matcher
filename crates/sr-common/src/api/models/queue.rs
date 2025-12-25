@@ -200,7 +200,7 @@ pub struct MatchResultRow {
     pub is_knockout: bool,
     pub ko_reasons: Vec<String>,
     pub needs_manual_review: bool,
-    pub score_total: Option<f32>,
+    pub score_total: Option<f64>,
     pub score_breakdown: Option<serde_json::Value>,
     pub engine_version: Option<String>,
     pub rule_version: Option<String>,
@@ -217,9 +217,12 @@ pub struct InteractionLogRow {
     pub engine_version: Option<String>,
     pub config_version: Option<String>,
     pub two_tower_score: Option<f64>,
+    pub two_tower_embedder: Option<String>,
+    pub two_tower_version: Option<String>,
     pub business_score: Option<f64>,
     pub outcome: Option<String>,
     pub feedback_at: Option<DateTime<Utc>>,
+    pub variant: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

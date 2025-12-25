@@ -48,11 +48,8 @@ fn build_options() -> Option<String> {
         ));
     }
 
-    if let Some(app_name) = env::var("SR_DB_APPLICATION_NAME")
-        .ok()
-        .filter(|name| !name.trim().is_empty())
-    {
-        options.push(format!("-c application_name={}", app_name.trim()));
+    if let Some(app_name) = sanitized_app_name() {
+        options.push(format!("-c application_name={app_name}"));
     }
 
     if options.is_empty() {
@@ -60,6 +57,24 @@ fn build_options() -> Option<String> {
     } else {
         Some(options.join(" "))
     }
+}
+
+/// Allow only safe characters for application_name to avoid injection via -c options.
+fn sanitized_app_name() -> Option<String> {
+    env::var("SR_DB_APPLICATION_NAME")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .and_then(|name| {
+            if name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+            {
+                Some(name)
+            } else {
+                None
+            }
+        })
 }
 
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {

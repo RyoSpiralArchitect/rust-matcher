@@ -2,6 +2,7 @@ pub mod anken_emails;
 pub mod candidates;
 pub mod extraction_queue;
 pub mod feedback;
+pub mod interaction_logs;
 pub mod match_results;
 pub mod pool;
 pub mod queue_dashboard;
@@ -14,6 +15,9 @@ pub use extraction_queue::{
     lock_next_pending_job, pending_copy, recover_stuck_jobs, retry_job, upsert_extraction_job,
 };
 pub use feedback::{FeedbackStorageError, insert_feedback_event};
+pub use interaction_logs::{
+    InteractionLogInsert, InteractionLogStorageError, insert_interaction_log,
+};
 pub use match_results::{MatchResultInsert, MatchResultStorageError, insert_match_result};
 pub use pool::{DbPoolError, PgPool, create_pool_from_url, create_pool_from_url_checked};
 pub use queue_dashboard::{QueueDashboardError, fetch_dashboard};
