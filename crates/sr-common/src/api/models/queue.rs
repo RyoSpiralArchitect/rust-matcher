@@ -25,6 +25,9 @@ where
         }
 
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            if v > i64::MAX as u64 {
+                return Err(de::Error::custom("integer overflow"));
+            }
             Ok(v as i64)
         }
 

@@ -48,8 +48,18 @@ fn build_options() -> Option<String> {
         ));
     }
 
-    if let Some(app_name) = sanitized_app_name() {
-        options.push(format!("-c application_name={app_name}"));
+    if let Some(app_name) = env::var("SR_DB_APPLICATION_NAME")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+    {
+        let sanitized: String = app_name
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        if !sanitized.is_empty() {
+            options.push(format!("-c application_name={sanitized}"));
+        }
     }
 
     if options.is_empty() {

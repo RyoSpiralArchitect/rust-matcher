@@ -22,6 +22,7 @@ export interface MatchCandidate {
   twoTowerEmbedder: string | null;
   twoTowerVersion: string | null;
   koResult: KoResult;
+  interactionId: number;
 }
 
 export interface KoResult {

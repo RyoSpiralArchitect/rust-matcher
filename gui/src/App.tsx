@@ -1,19 +1,16 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "react-router-dom";
-import { queryClient, setApiKey } from "@/api";
+import { queryClient } from "@/api";
 import { router } from "./router";
 import { Toaster } from "@/components/ui/sonner";
-
-// Initialize API Key from environment (Phase 1)
-const apiKey = import.meta.env.VITE_API_KEY;
-if (apiKey) {
-  setApiKey(apiKey);
-}
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <ErrorBoundary>
+        <RouterProvider router={router} />
+      </ErrorBoundary>
       <Toaster position="top-right" richColors />
     </QueryClientProvider>
   );
