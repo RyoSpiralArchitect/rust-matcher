@@ -20,6 +20,7 @@ async fn livez_healthy_and_queue_requires_auth() {
     assert_eq!(livez_response.status(), StatusCode::OK);
 
     let unauthorized = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/queue/jobs")
@@ -30,4 +31,17 @@ async fn livez_healthy_and_queue_requires_auth() {
         .unwrap();
 
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let interaction_events = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/interactions/events")
+                .method("POST")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(interaction_events.status(), StatusCode::UNAUTHORIZED);
 }
