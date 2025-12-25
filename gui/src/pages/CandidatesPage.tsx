@@ -33,7 +33,7 @@ export function CandidatesPage() {
   }
 
   const handleFeedback = (interactionId: number, feedbackType: FeedbackType) => {
-    feedbackMutation.mutate({ interactionId, feedbackType });
+    feedbackMutation.mutate({ interactionId, feedbackType, source: "gui" });
   };
 
   return (

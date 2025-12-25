@@ -46,7 +46,10 @@ where
 /// Pagination parameters for queue job listings.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Pagination {
-    #[serde(default = "default_limit", deserialize_with = "deserialize_i64_lenient_default")]
+    #[serde(
+        default = "default_limit",
+        deserialize_with = "deserialize_i64_lenient_default"
+    )]
     pub limit: i64,
     #[serde(default, deserialize_with = "deserialize_i64_lenient_default")]
     pub offset: i64,
