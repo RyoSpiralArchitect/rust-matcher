@@ -65,7 +65,7 @@ pub fn calculate_total_score_with_two_tower(
     business_score: f64,
     semantic_score: f64,
     historical_score: f64,
-    two_tower_score: Option<f32>,
+    two_tower_score: Option<f64>,
     weights: &TotalScoreWeights,
     two_tower_config: &TwoTowerConfig,
 ) -> f64 {
@@ -76,7 +76,7 @@ pub fn calculate_total_score_with_two_tower(
         return base_score;
     }
 
-    let tt_score = two_tower_score.unwrap_or(0.5) as f64;
+    let tt_score = two_tower_score.unwrap_or(0.5);
     let total_weight = 1.0 + two_tower_config.weight as f64;
     let combined = (base_score + two_tower_config.weight as f64 * tt_score) / total_weight;
 

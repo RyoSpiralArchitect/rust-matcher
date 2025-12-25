@@ -610,13 +610,13 @@ fn map_match_result(row: &Row) -> MatchResultRow {
     };
 
     MatchResultRow {
-        id: row.get::<_, i32>("id") as i64,
+        id: row.get::<_, i64>("id"),
         talent_id: row.get::<_, i64>("talent_id"),
         project_id: row.get::<_, i64>("project_id"),
         is_knockout: row.get("is_knockout"),
         ko_reasons,
         needs_manual_review: row.get("needs_manual_review"),
-        score_total: row.get::<_, Option<f64>>("score_total").map(|v| v as f32),
+        score_total: row.get::<_, Option<f64>>("score_total"),
         score_breakdown: row.get("score_breakdown"),
         engine_version: row.get("engine_version"),
         rule_version: row.get("rule_version"),
@@ -678,7 +678,7 @@ async fn fetch_interactions(
 
     let stmt = client
         .prepare_cached(
-            "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, business_score, outcome, feedback_at, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::bigint[]) ORDER BY match_result_id, created_at DESC",
+            "SELECT DISTINCT ON (match_result_id) id, match_result_id, talent_id, project_id, match_run_id, engine_version, config_version, two_tower_score, two_tower_embedder, two_tower_version, business_score, outcome, feedback_at, variant, created_at FROM ses.interaction_logs WHERE match_result_id = ANY($1::bigint[]) ORDER BY match_result_id, created_at DESC",
         )
         .await?;
 
@@ -695,9 +695,12 @@ async fn fetch_interactions(
             engine_version: row.get("engine_version"),
             config_version: row.get("config_version"),
             two_tower_score: row.get("two_tower_score"),
+            two_tower_embedder: row.get("two_tower_embedder"),
+            two_tower_version: row.get("two_tower_version"),
             business_score: row.get("business_score"),
             outcome: row.get("outcome"),
             feedback_at: row.get("feedback_at"),
+            variant: row.get("variant"),
             created_at: row.get("created_at"),
         })
         .collect();
@@ -878,10 +881,10 @@ pub async fn get_job_detail_with_includes(
     if set_statement_timeout {
         let transaction = client.transaction().await?;
         transaction
-            .batch_execute(&format!(
-                "SET LOCAL statement_timeout = '{}ms'",
-                statement_timeout_ms
-            ))
+            .execute(
+                "SET LOCAL statement_timeout = $1::text",
+                &[&format!("{statement_timeout_ms}ms")],
+            )
             .await?;
 
         let result = get_job_detail_with_client(
@@ -1224,9 +1227,12 @@ mod tests {
             engine_version: None,
             config_version: None,
             two_tower_score: None,
+            two_tower_embedder: None,
+            two_tower_version: None,
             business_score: None,
             outcome: None,
             feedback_at: None,
+            variant: None,
             created_at: Utc.timestamp_opt(0, 0).single().unwrap(),
         };
 

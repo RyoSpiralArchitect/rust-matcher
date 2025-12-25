@@ -24,21 +24,31 @@ const fn default_limit() -> u32 {
     50
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct CandidateListResponse {
+    pub project_id: i64,
+    pub candidates: Vec<MatchResponse>,
+}
+
 pub async fn list_candidates(
     State(state): State<SharedState>,
     Path(project_id): Path<i64>,
     Query(query): Query<CandidateQuery>,
     _auth: AuthUser,
-) -> Result<Json<Vec<MatchResponse>>, ApiError> {
+) -> Result<Json<CandidateListResponse>, ApiError> {
+    let bounded_limit = query.limit.min(200);
     let candidates = fetch_candidates_for_project(
         &state.pool,
         project_id,
         query.include_softko,
-        query.limit,
+        bounded_limit,
         query.offset,
         &state.match_config,
     )
     .await?;
 
-    Ok(Json(candidates))
+    Ok(Json(CandidateListResponse {
+        project_id,
+        candidates,
+    }))
 }
