@@ -6,6 +6,7 @@ use axum::http::request::Parts;
 use clap::ValueEnum;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 
 use crate::error::ApiError;
 
@@ -133,7 +134,7 @@ fn authorize_api_key(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, Api
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| ApiError::Unauthorized("missing X-API-Key header".into()))?;
 
-    if provided != expected {
+    if !bool::from(provided.as_bytes().ct_eq(expected.as_bytes())) {
         return Err(ApiError::Unauthorized("invalid API key".into()));
     }
 

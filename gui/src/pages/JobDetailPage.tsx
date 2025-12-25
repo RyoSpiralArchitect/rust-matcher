@@ -64,7 +64,7 @@ export function JobDetailPage() {
 
   const handleFeedback = (interactionId: number, feedbackType: FeedbackType) => {
     feedbackMutation.mutate(
-      { interactionId, feedbackType },
+      { interactionId, feedbackType, source: "gui" },
       {
         onSuccess: () => {
           const label = feedbackType.replace("_", " ");

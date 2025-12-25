@@ -51,11 +51,14 @@ export type FeedbackType =
   | "accepted"
   | "rejected";
 
+export type FeedbackSource = "gui" | "crm" | "api" | "import";
+
 export interface FeedbackRequest {
   interactionId: number;
   feedbackType: FeedbackType;
   ngReasonCategory?: string;
   comment?: string;
+  source: FeedbackSource;
 }
 
 export interface FeedbackResponse {
@@ -73,11 +76,14 @@ export type InteractionEventType =
   | "clicked_contact"
   | "shortlisted";
 
+export type InteractionEventSource = "gui" | "crm" | "api" | "import";
+
 export interface InteractionEventRequest {
   interactionId: number;
   eventType: InteractionEventType;
   idempotencyKey: string;
   meta?: Record<string, unknown>;
+  source?: InteractionEventSource;
 }
 
 // ============================================================

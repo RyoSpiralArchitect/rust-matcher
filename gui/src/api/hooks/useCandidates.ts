@@ -42,7 +42,10 @@ export function useSendFeedback() {
  * UXをブロックしない
  */
 export function sendInteractionEvent(request: InteractionEventRequest): void {
-  postFireAndForget("/api/interactions/events", request);
+  postFireAndForget("/api/interactions/events", {
+    source: "gui",
+    ...request,
+  });
 }
 
 /**

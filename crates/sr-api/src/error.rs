@@ -5,8 +5,8 @@ use thiserror::Error;
 use tracing::error;
 
 use sr_common::db::{
-    CandidateFetchError, ConversionStorageError, FeedbackStorageError, QueueDashboardError,
-    QueueStorageError,
+    CandidateFetchError, ConversionStorageError, FeedbackStorageError,
+    InteractionEventStorageError, QueueDashboardError, QueueStorageError,
 };
 
 tokio::task_local! {
@@ -154,6 +154,17 @@ impl From<ConversionStorageError> for ApiError {
         match value {
             ConversionStorageError::MissingActor => {
                 ApiError::BadRequest("conversion actor is required".into())
+            }
+            other => ApiError::Database(other.to_string()),
+        }
+    }
+}
+
+impl From<InteractionEventStorageError> for ApiError {
+    fn from(value: InteractionEventStorageError) -> Self {
+        match value {
+            InteractionEventStorageError::MissingActor => {
+                ApiError::BadRequest("interaction event actor is required".into())
             }
             other => ApiError::Database(other.to_string()),
         }
