@@ -656,7 +656,7 @@ async fn fetch_match_results(
         .await?;
 
     let mut results = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(rows.len());
 
     for row in rows {
         let mapped = map_match_result(&row);
@@ -738,7 +738,7 @@ async fn fetch_feedback_events(
 
     let mut events: Vec<FeedbackEventRow> = rows.into_iter().map(map_feedback_row).collect();
 
-    let mut seen_ids = HashSet::new();
+    let mut seen_ids = HashSet::with_capacity(events.len());
     events.retain(|event| seen_ids.insert(event.id));
     events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
@@ -1033,7 +1033,16 @@ async fn get_job_detail_with_client<C: GenericClient>(
         for (match_result, match_id) in matches.into_iter().zip(match_ids.into_iter()) {
             let latest_interaction = interaction_map.get(&match_id).cloned();
             let mut feedback_events = Vec::new();
-            let mut seen_feedback_ids = HashSet::new();
+            let expected_feedback = latest_interaction
+                .as_ref()
+                .and_then(|interaction| feedback_maps.0.get(&interaction.id).map(|v| v.len()))
+                .unwrap_or(0)
+                + feedback_maps
+                    .1
+                    .get(&match_id)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+            let mut seen_feedback_ids = HashSet::with_capacity(expected_feedback);
 
             if let Some(interaction) = &latest_interaction {
                 if let Some(events) = feedback_maps.0.get(&interaction.id) {
