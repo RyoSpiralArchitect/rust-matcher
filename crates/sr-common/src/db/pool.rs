@@ -69,6 +69,24 @@ fn build_options() -> Option<String> {
     }
 }
 
+/// Allow only safe characters for application_name to avoid injection via -c options.
+fn sanitized_app_name() -> Option<String> {
+    env::var("SR_DB_APPLICATION_NAME")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .and_then(|name| {
+            if name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+            {
+                Some(name)
+            } else {
+                None
+            }
+        })
+}
+
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
     let _ = tokio_postgres::Config::from_str(db_url)
         .map_err(|e| DbPoolError::InvalidConfig(e.to_string()))?;

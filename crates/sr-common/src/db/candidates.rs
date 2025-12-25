@@ -134,11 +134,9 @@ pub async fn fetch_candidates_for_project(
                 project_id: row.get::<_, i64>("project_id"),
                 auto_match_eligible: false,
                 manual_review_required: row.get("needs_manual_review"),
-                score: row.get::<_, Option<f64>>("score_total").unwrap_or_default() as f32,
+                score: row.get::<_, Option<f64>>("score_total").unwrap_or_default(),
                 score_breakdown: parse_score_breakdown(row.get("score_breakdown")),
-                two_tower_score: row
-                    .get::<_, Option<f64>>("two_tower_score")
-                    .map(|v| v as f32),
+                two_tower_score: row.get::<_, Option<f64>>("two_tower_score").map(|v| v),
                 ko_decisions: derive_ko_decisions(is_knockout, &ko_reasons),
                 ko_reasons,
                 details: MatchDetails::default(),

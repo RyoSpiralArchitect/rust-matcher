@@ -23,11 +23,11 @@ pub struct MatchResponse {
 
     // === スコア ===
     /// 最終スコア（0.0〜1.0）
-    pub score: f32,
+    pub score: f64,
     /// スコア内訳
     pub score_breakdown: ScoreBreakdown,
     /// Two-Tower スコア（有効時のみ）
-    pub two_tower_score: Option<f32>,
+    pub two_tower_score: Option<f64>,
 
     // === KO判定 ===
     /// KO判定の詳細（チェック名 → KoDecision）
@@ -75,7 +75,7 @@ impl MatchResponse {
             interaction_id,
             auto_match_eligible: result.auto_match_eligible,
             manual_review_required: result.manual_review_required,
-            score: result.score as f32,
+            score: result.score,
             score_breakdown: ScoreBreakdown::from(&result.score_breakdown),
             two_tower_score: None,
             ko_decisions: result
@@ -103,29 +103,28 @@ impl MatchResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScoreBreakdown {
     /// 単価スコア（0.0〜1.0）
-    pub tanka: f32,
+    pub tanka: f64,
     /// ロケーションスコア（0.0〜1.0）
-    pub location: f32,
+    pub location: f64,
     /// スキルスコア（0.0〜1.0）
-    pub skills: f32,
+    pub skills: f64,
     /// 経験年数スコア（0.0〜1.0）
-    pub experience: f32,
+    pub experience: f64,
     /// 契約形態スコア（0.0〜1.0）
-    pub contract: f32,
+    pub contract: f64,
     /// ビジネスルール総合（prefilter用）
-    pub business_total: f32,
+    pub business_total: f64,
 }
 
 impl From<&CoreScoreBreakdown> for ScoreBreakdown {
     fn from(value: &CoreScoreBreakdown) -> Self {
-        let business_total = value.total() as f32;
         Self {
-            tanka: value.tanka as f32,
-            location: value.location as f32,
-            skills: value.skills as f32,
-            experience: value.experience as f32,
-            contract: value.contract as f32,
-            business_total,
+            tanka: value.tanka,
+            location: value.location,
+            skills: value.skills,
+            experience: value.experience,
+            contract: value.contract,
+            business_total: value.total(),
         }
     }
 }
@@ -194,9 +193,9 @@ pub struct MatchDetails {
 #[derive(Debug, Clone)]
 pub struct MatchConfig {
     /// 自動マッチ推奨の閾値（デフォルト: 0.7）
-    pub auto_match_threshold: f32,
+    pub auto_match_threshold: f64,
     /// 手動レビュー推奨のマージン（閾値±margin で manual_review_required = true）
-    pub manual_review_margin: f32,
+    pub manual_review_margin: f64,
 }
 
 impl Default for MatchConfig {
@@ -214,11 +213,11 @@ impl MatchConfig {
         Self {
             auto_match_threshold: std::env::var("AUTO_MATCH_THRESHOLD")
                 .ok()
-                .and_then(|s| s.parse().ok())
+                .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(0.7),
             manual_review_margin: std::env::var("MANUAL_REVIEW_MARGIN")
                 .ok()
-                .and_then(|s| s.parse().ok())
+                .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(0.1),
         }
     }
