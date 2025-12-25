@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ThumbsUp, ThumbsDown, Star, Mail, Copy } from "lucide-react";
+import { toast } from "sonner";
 import {
   useCandidates,
   useSendFeedback,
@@ -33,7 +34,17 @@ export function CandidatesPage() {
   }
 
   const handleFeedback = (interactionId: number, feedbackType: FeedbackType) => {
-    feedbackMutation.mutate({ interactionId, feedbackType });
+    feedbackMutation.mutate(
+      { interactionId, feedbackType, source: "gui" },
+      {
+        onSuccess: () => {
+          toast.success("Feedback sent");
+        },
+        onError: (err) => {
+          toast.error(`Failed to send feedback: ${err.message}`);
+        },
+      }
+    );
   };
 
   return (
@@ -74,8 +85,7 @@ interface CandidateCardProps {
 }
 
 function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardProps) {
-  // TODO: interactionId は API レスポンスから取得する必要あり
-  const interactionId = candidate.talentId; // 仮
+  const interactionId = candidate.interactionId;
 
   const handleViewDetail = () => {
     trackViewedDetail(interactionId);

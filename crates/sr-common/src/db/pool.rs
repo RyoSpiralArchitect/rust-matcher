@@ -52,7 +52,14 @@ fn build_options() -> Option<String> {
         .ok()
         .filter(|name| !name.trim().is_empty())
     {
-        options.push(format!("-c application_name={}", app_name.trim()));
+        let sanitized: String = app_name
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        if !sanitized.is_empty() {
+            options.push(format!("-c application_name={sanitized}"));
+        }
     }
 
     if options.is_empty() {
