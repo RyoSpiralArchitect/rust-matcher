@@ -327,7 +327,7 @@ fn row_to_job(row: &Row) -> Result<ExtractionJob, QueueStorageError> {
 
 fn row_to_list_item(row: &Row) -> QueueJobListItem {
     QueueJobListItem {
-        id: row.get("id"),
+        id: row.get::<_, i32>("id") as i64,
         message_id: row.get("message_id"),
         status: row.get("status"),
         priority: row.get("priority"),

@@ -4,6 +4,22 @@
  * 認証方式の切り替え（API Key → JWT）に対応できるよう wrapper で隠蔽
  */
 
+/**
+ * snake_case を camelCase に変換（再帰的）
+ */
+function snakeToCamel(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map(snakeToCamel);
+  if (typeof obj !== "object") return obj;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const camelKey = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    result[camelKey] = snakeToCamel(value);
+  }
+  return result;
+}
+
 // 開発時: Vite proxy が /api/* を sr-api に転送
 // 本番時: VITE_API_ORIGIN を設定するか、同一オリジンにデプロイ
 const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
@@ -73,7 +89,8 @@ export async function apiRequest<T>(
     throw new ApiError(response.status, error);
   }
 
-  return response.json();
+  const json = await response.json();
+  return snakeToCamel(json) as T;
 }
 
 /**

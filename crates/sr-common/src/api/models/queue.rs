@@ -1,16 +1,54 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 fn default_limit() -> i64 {
     50
 }
 
+/// Deserialize i64 from either a number or a string (for query params)
+fn deserialize_i64_lenient<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    struct I64Visitor;
+
+    impl<'de> Visitor<'de> for I64Visitor {
+        type Value = i64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an integer or a string containing an integer")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(v as i64)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            v.parse().map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(I64Visitor)
+}
+
+fn deserialize_i64_lenient_default<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_i64_lenient(deserializer)
+}
+
 /// Pagination parameters for queue job listings.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Pagination {
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", deserialize_with = "deserialize_i64_lenient_default")]
     pub limit: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_lenient_default")]
     pub offset: i64,
 }
 
