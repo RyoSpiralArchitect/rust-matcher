@@ -610,13 +610,13 @@ fn map_match_result(row: &Row) -> MatchResultRow {
     };
 
     MatchResultRow {
-        id: row.get::<_, i32>("id") as i64,
+        id: row.get::<_, i64>("id"),
         talent_id: row.get::<_, i64>("talent_id"),
         project_id: row.get::<_, i64>("project_id"),
         is_knockout: row.get("is_knockout"),
         ko_reasons,
         needs_manual_review: row.get("needs_manual_review"),
-        score_total: row.get::<_, Option<f64>>("score_total").map(|v| v as f32),
+        score_total: row.get::<_, Option<f64>>("score_total"),
         score_breakdown: row.get("score_breakdown"),
         engine_version: row.get("engine_version"),
         rule_version: row.get("rule_version"),
@@ -881,10 +881,10 @@ pub async fn get_job_detail_with_includes(
     if set_statement_timeout {
         let transaction = client.transaction().await?;
         transaction
-            .batch_execute(&format!(
-                "SET LOCAL statement_timeout = '{}ms'",
-                statement_timeout_ms
-            ))
+            .execute(
+                "SET LOCAL statement_timeout = $1::text",
+                &[&format!("{statement_timeout_ms}ms")],
+            )
             .await?;
 
         let result = get_job_detail_with_client(

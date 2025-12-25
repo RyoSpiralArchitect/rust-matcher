@@ -14,6 +14,7 @@ use crate::{
     run_id,
     two_tower::{TwoTowerConfig, TwoTowerEmbedder, create_embedder, load_config_from_env},
 };
+use serde_json::json;
 
 #[derive(Debug, Clone)]
 pub struct RankedMatch {
@@ -303,6 +304,61 @@ impl MatchRunner {
             .collect()
     }
 
+    /// match_results 用の INSERT レコードを構築する（永続化は行わない）
+    /// 戻り値: (talent_id, MatchResultInsert)
+    pub fn build_match_result_inserts(
+        &self,
+        project: &Project,
+        talents: &[Talent],
+        match_result_ids: Option<&HashMap<i64, i64>>,
+    ) -> Vec<(i64, crate::db::match_results::MatchResultInsert)> {
+        let ranked = self.rank_talents(project, talents);
+
+        ranked
+            .into_iter()
+            .filter_map(|r| {
+                let talent_id = r.talent.id?;
+                let project_id = r.project.id?;
+                let _match_result_id = r
+                    .talent
+                    .id
+                    .and_then(|id| match_result_ids.and_then(|m| m.get(&id).copied()));
+
+                let ko_reasons: Vec<String> =
+                    r.ko.decisions
+                        .iter()
+                        .filter_map(|(name, decision)| {
+                            decision.reason().map(|reason| format!("[{name}] {reason}"))
+                        })
+                        .collect();
+
+                let score_breakdown =
+                    build_score_breakdown_json(&r.detailed_score, r.total_score, r.two_tower_score);
+
+                Some((
+                    talent_id,
+                    crate::db::match_results::MatchResultInsert {
+                        talent_id,
+                        project_id,
+                        is_knockout: r.ko.is_hard_knockout,
+                        ko_reasons: if ko_reasons.is_empty() {
+                            None
+                        } else {
+                            Some(json!(ko_reasons))
+                        },
+                        needs_manual_review: r.ko.needs_manual_review,
+                        score_total: Some(r.total_score),
+                        score_breakdown: Some(score_breakdown),
+                        engine_version: self.engine_version.clone(),
+                        rule_version: self.config_version.clone(),
+                        match_run_id: Some(self.match_run_id.clone()),
+                        created_at: None,
+                    },
+                ))
+            })
+            .collect()
+    }
+
     /// Two-Tower スコア・business_score を含む interaction_logs を保存する
     pub async fn insert_interaction_logs(
         &self,
@@ -317,6 +373,27 @@ impl MatchRunner {
         }
         Ok(logs)
     }
+}
+
+fn build_score_breakdown_json(
+    score: &MatchScore,
+    total_score: f64,
+    two_tower_score: Option<f32>,
+) -> serde_json::Value {
+    json!({
+        "tanka": score.tanka.score,
+        "location": score.location.score,
+        "skills": score.skills.score,
+        "experience": score.experience.score,
+        "contract": score.contract.score,
+        "other": score.other.score,
+        "business_total": score.total,
+        "semantic_score": score.semantic_score,
+        "historical_score": score.historical_score,
+        "two_tower_score": two_tower_score,
+        "total": total_score,
+        "score_version": score.score_version,
+    })
 }
 
 #[cfg(test)]
@@ -567,6 +644,48 @@ mod tests {
 
             assert_eq!(logs.len(), 1);
             assert_eq!(logs[0].match_result_id, Some(9999));
+        });
+    }
+
+    #[test]
+    fn build_match_result_inserts_populates_two_tower_and_business_scores() {
+        with_env(&[("TWO_TOWER_ENABLED", Some("1"))], || {
+            let mut project = base_project();
+            project.id = Some(11);
+
+            let mut talent = base_talent();
+            talent.id = Some(22);
+
+            let runner = MatchRunner::from_env()
+                .with_engine_version("engine_v1")
+                .with_config_version("rule_v1");
+
+            let inserts = runner.build_match_result_inserts(&project, &[talent], None);
+            assert_eq!(inserts.len(), 1);
+
+            let (_, insert) = &inserts[0];
+            assert_eq!(insert.talent_id, 22);
+            assert_eq!(insert.project_id, 11);
+            assert_eq!(insert.engine_version.as_deref(), Some("engine_v1"));
+            assert_eq!(insert.rule_version.as_deref(), Some("rule_v1"));
+            assert_eq!(insert.match_run_id.as_ref().unwrap().len(), 26);
+            assert!(insert.score_total.is_some());
+            assert!(insert.score_breakdown.is_some());
+            let score_json = insert.score_breakdown.clone().unwrap();
+            assert!(
+                score_json
+                    .get("two_tower_score")
+                    .and_then(|v| v.as_f64())
+                    .is_some(),
+                "two_tower_score should be present"
+            );
+            assert!(
+                score_json
+                    .get("business_total")
+                    .and_then(|v| v.as_f64())
+                    .is_some(),
+                "business_total should be present"
+            );
         });
     }
 }
