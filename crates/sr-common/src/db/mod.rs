@@ -1,5 +1,6 @@
 pub mod anken_emails;
 pub mod candidates;
+pub mod conversion;
 pub mod extraction_queue;
 pub mod feedback;
 pub mod interaction_logs;
@@ -10,6 +11,7 @@ pub mod queue_dashboard;
 // Keep re-exports unique so downstream crates see a single symbol per helper.
 pub use anken_emails::{PendingEmail, PendingEmailError, fetch_email_body, fetch_pending_emails};
 pub use candidates::{CandidateFetchError, fetch_candidates_for_project};
+pub use conversion::{ConversionStorageError, insert_conversion_event};
 pub use extraction_queue::{
     QueueStorageError, get_job_by_id, get_job_detail_with_includes, list_jobs,
     lock_next_pending_job, pending_copy, recover_stuck_jobs, retry_job, upsert_extraction_job,

@@ -327,7 +327,7 @@ fn row_to_job(row: &Row) -> Result<ExtractionJob, QueueStorageError> {
 
 fn row_to_list_item(row: &Row) -> QueueJobListItem {
     QueueJobListItem {
-        id: row.get("id"),
+        id: row.get::<_, i64>("id"),
         message_id: row.get("message_id"),
         status: row.get("status"),
         priority: row.get("priority"),
@@ -643,7 +643,7 @@ async fn fetch_match_results(
             "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, \
                     score_total, score_breakdown, engine_version, rule_version, created_at \
              FROM ses.match_results \
-             WHERE run_date >= (NOW() AT TIME ZONE 'Asia/Tokyo')::date - $3 \
+             WHERE run_date >= (NOW() AT TIME ZONE 'Asia/Tokyo')::date - $3::int \
                AND ( ($1::bigint IS NOT NULL AND talent_id = $1) \
                   OR ($2::bigint IS NOT NULL AND project_id = $2) ) \
              ORDER BY run_date DESC, created_at DESC \
