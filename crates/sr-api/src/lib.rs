@@ -40,7 +40,7 @@ pub mod handlers;
 
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
-use handlers::{candidates, feedback, health, queue};
+use handlers::{candidates, conversion, feedback, health, queue};
 
 const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -351,7 +351,8 @@ pub fn create_router(state: SharedState) -> Router {
             "/projects/:project_id/candidates",
             get(candidates::list_candidates),
         )
-        .route("/feedback", post(feedback::submit_feedback));
+        .route("/feedback", post(feedback::submit_feedback))
+        .route("/conversions", post(conversion::submit_conversion));
 
     Router::new()
         .route("/health", get(health::readyz))

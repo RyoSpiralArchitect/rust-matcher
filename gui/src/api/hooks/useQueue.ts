@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
-import { get } from "../client";
-import type { QueueDashboard, QueueJobListResponse } from "../types";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { get, post } from "../client";
+import type { QueueDashboard, QueueJobListResponse, QueueJobDetailResponse } from "../types";
 
 /**
  * Queue Dashboard 取得
@@ -31,5 +31,33 @@ export function useQueueJobs(params?: {
   return useQuery({
     queryKey: ["queue", "jobs", params],
     queryFn: () => get<QueueJobListResponse>(path),
+  });
+}
+
+/**
+ * Job 詳細取得
+ */
+export function useJobDetail(jobId: number | string | undefined) {
+  const include = "entity,matches,feedback,events";
+  return useQuery({
+    queryKey: ["queue", "job", jobId],
+    queryFn: () => get<QueueJobDetailResponse>(`/api/queue/jobs/${jobId}?include=${include}`),
+    enabled: !!jobId,
+  });
+}
+
+/**
+ * Job リトライ
+ */
+export function useRetryJob() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: number | string) =>
+      post<{ success: boolean; status: string }>(`/api/queue/retry/${jobId}`, {}),
+    onSuccess: (_data, jobId) => {
+      queryClient.invalidateQueries({ queryKey: ["queue", "job", jobId] });
+      queryClient.invalidateQueries({ queryKey: ["queue", "jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["queue", "dashboard"] });
+    },
   });
 }

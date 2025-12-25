@@ -31,6 +31,8 @@ export function useSendFeedback() {
     onSuccess: () => {
       // 候補一覧をリフレッシュ
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
+      // Job詳細もリフレッシュ（JobDetailPageから使われる場合）
+      queryClient.invalidateQueries({ queryKey: ["queue", "job"] });
     },
   });
 }
