@@ -32,7 +32,7 @@ pub struct RankedTalentMatch {
     pub prefilter_score: MatchScore,
     pub detailed_score: MatchScore,
     pub total_score: f64,
-    pub two_tower_score: Option<f32>,
+    pub two_tower_score: Option<f64>,
     pub two_tower_embedder: Option<String>,
     pub two_tower_version: Option<String>,
 }
@@ -113,13 +113,13 @@ impl MatchingEngine {
         two_tower: Option<&dyn TwoTowerEmbedder>,
         two_tower_config: &TwoTowerConfig,
     ) -> Vec<RankedTalentMatch> {
-        let mut two_tower_scores: HashMap<i64, f32> = HashMap::new();
+        let mut two_tower_scores: HashMap<i64, f64> = HashMap::new();
         let mut embedder_meta: Option<(&'static str, String)> = None;
 
         if let Some(embedder) = two_tower {
             embedder_meta = Some((embedder.name(), embedder.version().to_string()));
             for (talent_id, score) in embedder.rank_talents(project, talents) {
-                two_tower_scores.insert(talent_id, score);
+                two_tower_scores.insert(talent_id, score as f64);
             }
         }
 
@@ -133,7 +133,7 @@ impl MatchingEngine {
 
             let detailed_score = calculate_detailed_score(project, talent);
             let business_score = detailed_score.total;
-            let tt_score = talent.id.and_then(|id| two_tower_scores.get(&id).cloned());
+            let tt_score = talent.id.and_then(|id| two_tower_scores.get(&id).copied());
 
             let total_score = calculate_total_score_with_two_tower(
                 business_score,
@@ -192,7 +192,7 @@ impl RankedTalentMatch {
             match_run_id: match_run_id.into(),
             engine_version,
             config_version,
-            two_tower_score: self.two_tower_score.map(|v| v as f64),
+            two_tower_score: self.two_tower_score,
             two_tower_embedder: self.two_tower_embedder.clone(),
             two_tower_version: self.two_tower_version.clone(),
             business_score: Some(self.detailed_score.total),
@@ -378,7 +378,7 @@ impl MatchRunner {
 fn build_score_breakdown_json(
     score: &MatchScore,
     total_score: f64,
-    two_tower_score: Option<f32>,
+    two_tower_score: Option<f64>,
 ) -> serde_json::Value {
     json!({
         "tanka": score.tanka.score,
