@@ -40,7 +40,7 @@ pub mod handlers;
 
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
-use handlers::{candidates, feedback, health, queue};
+use handlers::{candidates, conversion, feedback, health, interactions, queue};
 
 const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -351,7 +351,12 @@ pub fn create_router(state: SharedState) -> Router {
             "/projects/:project_id/candidates",
             get(candidates::list_candidates),
         )
-        .route("/feedback", post(feedback::submit_feedback));
+        .route("/feedback", post(feedback::submit_feedback))
+        .route(
+            "/interactions/events",
+            post(interactions::submit_interaction_event),
+        )
+        .route("/conversions", post(conversion::submit_conversion));
 
     Router::new()
         .route("/health", get(health::readyz))
@@ -510,14 +515,10 @@ pub async fn run() -> Result<(), ApiError> {
 
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
-    let server =
-        axum::serve(listener, service).with_graceful_shutdown(shutdown_signal(state.clone()));
-
-    let server_result = tokio::time::timeout(std::time::Duration::from_secs(30), server)
+    axum::serve(listener, service)
+        .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await
-        .map_err(|_| ApiError::Internal("server shutdown timed out".into()))?;
-
-    server_result.map_err(|err| ApiError::Internal(err.to_string()))?;
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
 
     Ok(())
 }
