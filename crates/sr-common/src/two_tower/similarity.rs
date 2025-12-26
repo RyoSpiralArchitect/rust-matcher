@@ -1,6 +1,13 @@
 /// コサイン類似度（0.0〜1.0）
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "embedding dimension mismatch");
+    if a.len() != b.len() {
+        tracing::warn!(
+            a_len = a.len(),
+            b_len = b.len(),
+            "embedding dimension mismatch; returning zero similarity"
+        );
+        return 0.0;
+    }
 
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -32,6 +39,16 @@ mod tests {
     fn cosine_similarity_handles_zero_vectors() {
         let a = vec![0.0, 0.0];
         let b = vec![0.0, 0.0];
+
+        let sim = cosine_similarity(&a, &b);
+
+        assert_eq!(sim, 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_returns_zero_on_dimension_mismatch() {
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![1.0, 0.0];
 
         let sim = cosine_similarity(&a, &b);
 
