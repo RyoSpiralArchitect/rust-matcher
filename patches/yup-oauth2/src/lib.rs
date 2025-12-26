@@ -71,6 +71,7 @@
 //!
 #![deny(missing_docs)]
 #![cfg_attr(yup_oauth2_docsrs, feature(doc_cfg))]
+#![allow(unexpected_cfgs)]
 
 pub mod access_token;
 mod application_default_credentials;
