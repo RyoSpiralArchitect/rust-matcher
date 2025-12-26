@@ -244,7 +244,7 @@ pub struct MatchResultRow {
     pub is_knockout: bool,
     pub ko_reasons: Vec<String>,
     pub needs_manual_review: bool,
-    pub score_total: Option<f32>,
+    pub score_total: Option<f64>,
     pub score_breakdown: Option<serde_json::Value>,
     pub engine_version: Option<String>,
     pub rule_version: Option<String>,

@@ -24,6 +24,12 @@ const fn default_limit() -> u32 {
     50
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct CandidateListResponse {
+    pub project_id: i64,
+    pub candidates: Vec<MatchResponse>,
+}
+
 pub async fn list_candidates(
     State(state): State<SharedState>,
     Path(project_id): Path<i64>,
@@ -43,5 +49,8 @@ pub async fn list_candidates(
     )
     .await?;
 
-    Ok(Json(candidates))
+    Ok(Json(CandidateListResponse {
+        project_id,
+        candidates,
+    }))
 }

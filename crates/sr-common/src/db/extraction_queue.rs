@@ -616,7 +616,7 @@ fn map_match_result(row: &Row) -> MatchResultRow {
         is_knockout: row.get("is_knockout"),
         ko_reasons,
         needs_manual_review: row.get("needs_manual_review"),
-        score_total: row.get::<_, Option<f64>>("score_total").map(|v| v as f32),
+        score_total: row.get::<_, Option<f64>>("score_total"),
         score_breakdown: row.get("score_breakdown"),
         engine_version: row.get("engine_version"),
         rule_version: row.get("rule_version"),
@@ -738,7 +738,7 @@ async fn fetch_feedback_events(
 
     let mut events: Vec<FeedbackEventRow> = rows.into_iter().map(map_feedback_row).collect();
 
-    let mut seen_ids = HashSet::new();
+    let mut seen_ids = HashSet::with_capacity(events.len());
     events.retain(|event| seen_ids.insert(event.id));
     events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
@@ -1033,7 +1033,16 @@ async fn get_job_detail_with_client<C: GenericClient>(
         for (match_result, match_id) in matches.into_iter().zip(match_ids.into_iter()) {
             let latest_interaction = interaction_map.get(&match_id).cloned();
             let mut feedback_events = Vec::new();
-            let mut seen_feedback_ids = HashSet::new();
+            let expected_feedback = latest_interaction
+                .as_ref()
+                .and_then(|interaction| feedback_maps.0.get(&interaction.id).map(|v| v.len()))
+                .unwrap_or(0)
+                + feedback_maps
+                    .1
+                    .get(&match_id)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+            let mut seen_feedback_ids = HashSet::with_capacity(expected_feedback);
 
             if let Some(interaction) = &latest_interaction {
                 if let Some(events) = feedback_maps.0.get(&interaction.id) {

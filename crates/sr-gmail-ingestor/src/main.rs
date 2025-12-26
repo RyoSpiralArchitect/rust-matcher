@@ -1,5 +1,5 @@
 use base64::prelude::{BASE64_URL_SAFE, Engine as _};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
 use google_gmail1::{
@@ -212,6 +212,13 @@ impl GmailIngestor {
 
                 let mut email = self.parse_message(message)?;
                 email.message_id = msg_id.clone();
+                if let Some(received_at) = email.received_at.as_ref() {
+                    debug!(
+                        message_id = %email.message_id,
+                        received_at_jp = %format_received_at_jp(received_at),
+                        "parsed Gmail message with localized timestamp"
+                    );
+                }
 
                 match email_type {
                     EmailType::Anken => self.store_anken_email(&email).await?,
@@ -421,6 +428,11 @@ impl GmailIngestor {
             .await?;
         Ok(())
     }
+}
+
+fn format_received_at_jp(ts: &DateTime<Utc>) -> String {
+    let jst = ts.with_timezone(&FixedOffset::east_opt(9 * 3600).unwrap());
+    jst.format("%Y年%m月%d日 %H:%M:%S %z").to_string()
 }
 
 fn parse_sender(header: &Option<String>) -> (Option<String>, Option<String>) {

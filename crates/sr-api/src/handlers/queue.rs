@@ -66,8 +66,9 @@ fn ensure_admin(auth: &AuthUser) -> Result<(), ApiError> {
 
 fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, ApiError> {
     const MAX_LOOKBACK_DAYS: i32 = 365;
+    const DEFAULT_DETAIL_LIMIT: i64 = 20;
     let mut includes = JobDetailIncludes {
-        limit: params.limit.unwrap_or(20),
+        limit: params.limit.unwrap_or(DEFAULT_DETAIL_LIMIT),
         days: params.days.unwrap_or(30),
         ..Default::default()
     };

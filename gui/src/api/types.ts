@@ -57,6 +57,8 @@ export type FeedbackType =
 
 export type FeedbackSource = "gui" | "crm" | "api" | "import";
 
+export type FeedbackSource = "gui" | "crm" | "api" | "import";
+
 export interface FeedbackRequest {
   interactionId: number;
   feedbackType: FeedbackType;
