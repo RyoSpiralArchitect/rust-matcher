@@ -37,6 +37,7 @@ export function QueueJobsPage() {
     status: status === "all" ? undefined : status,
     limit: PAGE_SIZE,
     offset,
+    requiresManualReview: requiresReview ? true : undefined,
   });
 
   const updateFilter = (key: string, value: string | null) => {

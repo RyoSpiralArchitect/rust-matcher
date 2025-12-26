@@ -19,11 +19,18 @@ export function useQueueJobs(params?: {
   limit?: number;
   offset?: number;
   status?: string;
+  requiresManualReview?: boolean;
 }) {
   const searchParams = new URLSearchParams();
   if (params?.limit) searchParams.set("limit", String(params.limit));
   if (params?.offset) searchParams.set("offset", String(params.offset));
   if (params?.status) searchParams.set("status", params.status);
+  if (params?.requiresManualReview !== undefined) {
+    searchParams.set(
+      "requires_manual_review",
+      String(params.requiresManualReview),
+    );
+  }
 
   const query = searchParams.toString();
   const path = query ? `/api/queue/jobs?${query}` : "/api/queue/jobs";
