@@ -36,6 +36,7 @@ function camelToSnake(obj: unknown): unknown {
 // 開発時: Vite proxy が /api/* を sr-api に転送
 // 本番時: VITE_API_ORIGIN を設定するか、同一オリジンにデプロイ
 const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+const REQUEST_ID_HEADER = "X-Request-Id";
 
 type AuthConfig =
   | { type: "api-key"; key: string }
@@ -63,6 +64,13 @@ export function setApiKey(key: string): void {
  */
 export function setJwtToken(token: string): void {
   authConfig = { type: "jwt", token };
+}
+
+function makeRequestId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
 }
 
 function readEnv(key: string): string {
@@ -109,13 +117,22 @@ export async function apiRequest<T>(
 ): Promise<T> {
   const url = `${API_ORIGIN}${path}`;
 
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...getAuthHeaders(),
+    ...(options.headers as Record<string, string>),
+  };
+
+  const hasRequestIdHeader = Object.keys(headers).some(
+    (key) => key.toLowerCase() === REQUEST_ID_HEADER.toLowerCase()
+  );
+  if (!hasRequestIdHeader) {
+    headers[REQUEST_ID_HEADER] = makeRequestId();
+  }
+
   const response = await fetch(url, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...getAuthHeaders(),
-      ...options.headers,
-    },
+    headers,
   });
 
   if (!response.ok) {
