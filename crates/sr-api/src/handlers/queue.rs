@@ -14,6 +14,7 @@ use sr_common::db::{
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::handlers::pagination::validate_pagination;
 use crate::SharedState;
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -135,17 +136,8 @@ pub async fn list_jobs(
     ensure_admin(&auth)?;
     validate_filter(&params.filter)?;
 
-    let pagination = params.pagination;
-    if pagination.limit <= 0 || pagination.limit > 200 {
-        return Err(ApiError::BadRequest(
-            "limit must be between 1 and 200".into(),
-        ));
-    }
-    if pagination.offset < 0 || pagination.offset > 10_000 {
-        return Err(ApiError::BadRequest(
-            "offset must be between 0 and 10000".into(),
-        ));
-    }
+    let (limit, offset) = validate_pagination(params.pagination.limit, params.pagination.offset)?;
+    let pagination = Pagination { limit, offset };
 
     let jobs = fetch_listed_jobs(&state.pool, &params.filter, &pagination).await?;
     Ok(Json(jobs))

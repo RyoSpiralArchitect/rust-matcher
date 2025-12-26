@@ -1,22 +1,15 @@
-use deadpool_postgres::PoolError;
-use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
 use crate::api::interaction_event::{
     InteractionEventRequest, InteractionEventResponse, InteractionEventSource,
     InteractionEventStatus, InteractionEventType,
 };
-use crate::db::PgPool;
+use crate::db::{db_error, validated_actor, PgPool};
 
-#[derive(Debug, thiserror::Error)]
-pub enum InteractionEventStorageError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
+db_error!(InteractionEventStorageError {
     #[error("interaction event actor is missing")]
     MissingActor,
-}
+});
 
 #[instrument(skip(pool, actor, request))]
 pub async fn insert_interaction_event(
@@ -24,16 +17,13 @@ pub async fn insert_interaction_event(
     actor: &str,
     request: &InteractionEventRequest,
 ) -> Result<InteractionEventResponse, InteractionEventStorageError> {
-    let actor = actor.trim();
-    if actor.is_empty() {
-        return Err(InteractionEventStorageError::MissingActor);
-    }
+    let actor = validated_actor(actor).ok_or(InteractionEventStorageError::MissingActor)?;
 
     let source = request
         .source
         .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or(InteractionEventSource::Gui.as_str());
+        .map(AsRef::as_ref)
+        .unwrap_or(InteractionEventSource::Gui.as_ref());
 
     let client = pool.get().await?;
 
@@ -92,7 +82,7 @@ pub async fn insert_interaction_event(
             &insert_stmt,
             &[
                 &request.interaction_id,
-                &request.event_type.as_str(),
+                &request.event_type.as_ref(),
                 &actor,
                 &source,
                 &request.idempotency_key,

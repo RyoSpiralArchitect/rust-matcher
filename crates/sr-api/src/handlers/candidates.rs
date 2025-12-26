@@ -8,6 +8,7 @@ use sr_common::db::fetch_candidates_for_project;
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::handlers::pagination::validate_pagination;
 use crate::SharedState;
 
 #[derive(Debug, Deserialize, Default)]
@@ -36,8 +37,9 @@ pub async fn list_candidates(
     Query(query): Query<CandidateQuery>,
     _auth: AuthUser,
 ) -> Result<Json<CandidateListResponse>, ApiError> {
-    let limit = query.limit.clamp(1, 200);
-    let offset = query.offset.min(10_000);
+    let (limit, offset) = validate_pagination(i64::from(query.limit), i64::from(query.offset))?;
+    let limit = limit as u32;
+    let offset = offset as u32;
 
     let candidates = fetch_candidates_for_project(
         &state.pool,

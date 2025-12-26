@@ -1,19 +1,10 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::PoolError;
 use serde_json::Value;
-use tokio_postgres::types::Json;
-use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
-use crate::db::PgPool;
+use crate::db::{db_error, normalize_json, PgPool};
 
-#[derive(Debug, thiserror::Error)]
-pub enum MatchResultStorageError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
-}
+db_error!(MatchResultStorageError {});
 
 #[derive(Debug, Clone, Default)]
 pub struct MatchResultInsert {
@@ -29,10 +20,6 @@ pub struct MatchResultInsert {
     /// 実行インスタンスID（ULID/UUID、毎回生成）
     pub match_run_id: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
-}
-
-fn normalize_json(value: &Option<Value>) -> Option<Json<&Value>> {
-    value.as_ref().map(Json)
 }
 
 /// Insert or update a match result snapshot.

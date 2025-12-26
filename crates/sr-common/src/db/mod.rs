@@ -1,3 +1,27 @@
+macro_rules! db_error {
+    ($name:ident { $($extra:tt)* }) => {
+        #[derive(Debug, thiserror::Error)]
+        pub enum $name {
+            #[error("failed to get postgres connection: {0}")]
+            Pool(#[from] deadpool_postgres::PoolError),
+            #[error("postgres error: {0}")]
+            Postgres(#[from] tokio_postgres::Error),
+            $($extra)*
+        }
+    };
+}
+
+pub(crate) use db_error;
+
+pub fn validated_actor(actor: &str) -> Option<&str> {
+    let actor = actor.trim();
+    if actor.is_empty() {
+        None
+    } else {
+        Some(actor)
+    }
+}
+
 pub mod anken_emails;
 pub mod candidates;
 pub mod conversion;
@@ -10,6 +34,7 @@ pub mod match_results;
 pub mod migrations;
 pub mod pool;
 pub mod queue_dashboard;
+pub mod util;
 
 // Keep re-exports unique so downstream crates see a single symbol per helper.
 pub use anken_emails::{fetch_email_body, fetch_pending_emails, PendingEmail, PendingEmailError};
@@ -29,3 +54,4 @@ pub use match_results::{insert_match_result, MatchResultInsert, MatchResultStora
 pub use migrations::{run_migrations, MigrationError};
 pub use pool::{create_pool_from_url, create_pool_from_url_checked, DbPoolError, PgPool};
 pub use queue_dashboard::{fetch_dashboard, QueueDashboardError};
+pub use util::normalize_json;

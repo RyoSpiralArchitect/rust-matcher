@@ -1,8 +1,6 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::PoolError;
-use tokio_postgres::Error as PgError;
 
-use crate::db::PgPool;
+use crate::db::{db_error, PgPool};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingEmail {
@@ -12,13 +10,7 @@ pub struct PendingEmail {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum PendingEmailError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
-}
+db_error!(PendingEmailError {});
 
 /// Fetch the raw body text for a specific message_id from `ses.anken_emails`.
 pub async fn fetch_email_body(
