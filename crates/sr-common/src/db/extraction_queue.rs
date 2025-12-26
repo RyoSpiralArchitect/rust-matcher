@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
-use deadpool_postgres::{GenericClient, PoolError};
+use deadpool_postgres::GenericClient;
 use serde_json::Value;
 use tokio_postgres::types::Json;
 use tokio_postgres::types::ToSql;
-use tokio_postgres::Error as PgError;
 use tokio_postgres::Row;
 use tracing::instrument;
 
@@ -14,22 +13,17 @@ use crate::api::models::queue::{
     MatchResultRow, Pagination, PairDetail, ProjectSnapshot, QueueJobDetail,
     QueueJobDetailResponse, QueueJobFilter, QueueJobListItem, QueueJobListResponse, TalentSnapshot,
 };
-use crate::db::PgPool;
+use crate::db::{db_error, PgPool};
 use crate::queue::{ExtractionJob, QueueStatus};
 
-#[derive(Debug, thiserror::Error)]
-pub enum QueueStorageError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
+db_error!(QueueStorageError {
     #[error("failed to map queue row: {0}")]
     Mapping(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("conflict: {0}")]
     Conflict(String),
-}
+});
 
 const DEFAULT_DETAIL_STATEMENT_TIMEOUT_MS: i32 = 5000;
 
