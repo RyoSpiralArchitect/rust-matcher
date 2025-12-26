@@ -36,23 +36,30 @@ fn build_options() -> Option<String> {
     let mut options = Vec::new();
 
     if let Some(timeout_ms) = parse_env::<u64>(&["SR_DB_STATEMENT_TIMEOUT_MS"]) {
-        options.push(format!("-c statement_timeout={timeout_ms}"));
+        let bounded = timeout_ms.min(120_000);
+        options.push(format!("-c statement_timeout={bounded}"));
     }
 
     if let Some(timeout_ms) = parse_env::<u64>(&[
         "SR_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS",
         "SR_DB_IDLE_IN_TX_TIMEOUT_MS",
     ]) {
-        options.push(format!(
-            "-c idle_in_transaction_session_timeout={timeout_ms}"
-        ));
+        let bounded = timeout_ms.min(300_000);
+        options.push(format!("-c idle_in_transaction_session_timeout={bounded}"));
     }
 
     if let Some(app_name) = env::var("SR_DB_APPLICATION_NAME")
         .ok()
         .filter(|name| !name.trim().is_empty())
     {
-        options.push(format!("-c application_name={}", app_name.trim()));
+        let sanitized: String = app_name
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        if !sanitized.is_empty() {
+            options.push(format!("-c application_name={sanitized}"));
+        }
     }
 
     if options.is_empty() {

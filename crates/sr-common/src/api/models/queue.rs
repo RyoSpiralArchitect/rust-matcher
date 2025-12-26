@@ -25,6 +25,9 @@ where
         }
 
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            if v > i64::MAX as u64 {
+                return Err(de::Error::custom("integer overflow"));
+            }
             Ok(v as i64)
         }
 
@@ -46,7 +49,10 @@ where
 /// Pagination parameters for queue job listings.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Pagination {
-    #[serde(default = "default_limit", deserialize_with = "deserialize_i64_lenient_default")]
+    #[serde(
+        default = "default_limit",
+        deserialize_with = "deserialize_i64_lenient_default"
+    )]
     pub limit: i64,
     #[serde(default, deserialize_with = "deserialize_i64_lenient_default")]
     pub offset: i64,

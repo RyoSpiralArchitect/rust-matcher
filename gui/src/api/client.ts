@@ -20,6 +20,19 @@ function snakeToCamel(obj: unknown): unknown {
   return result;
 }
 
+function camelToSnake(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map(camelToSnake);
+  if (typeof obj !== "object") return obj;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const snakeKey = key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+    result[snakeKey] = camelToSnake(value);
+  }
+  return result;
+}
+
 // 開発時: Vite proxy が /api/* を sr-api に転送
 // 本番時: VITE_API_ORIGIN を設定するか、同一オリジンにデプロイ
 const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
@@ -85,6 +98,16 @@ export async function apiRequest<T>(
   });
 
   if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const payload = await response.json().catch(() => null);
+      throw new ApiError(
+        response.status,
+        payload?.message ?? "request failed",
+        payload?.code,
+        payload?.request_id ?? payload?.requestId
+      );
+    }
     const error = await response.text();
     throw new ApiError(response.status, error);
   }
@@ -106,7 +129,7 @@ export function get<T>(path: string): Promise<T> {
 export function post<T>(path: string, body: unknown): Promise<T> {
   return apiRequest<T>(path, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify(camelToSnake(body)),
   });
 }
 
@@ -116,7 +139,7 @@ export function post<T>(path: string, body: unknown): Promise<T> {
 export function postFireAndForget(path: string, body: unknown): void {
   apiRequest(path, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify(camelToSnake(body)),
   }).catch((error) => {
     console.warn("[API] Fire-and-forget failed:", error);
   });
@@ -128,11 +151,15 @@ export function postFireAndForget(path: string, body: unknown): void {
 export class ApiError extends Error {
   status: number;
   body: string;
+  code?: string;
+  requestId?: string;
 
-  constructor(status: number, body: string) {
+  constructor(status: number, body: string, code?: string, requestId?: string) {
     super(`API Error ${status}: ${body}`);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    this.code = code;
+    this.requestId = requestId;
   }
 }

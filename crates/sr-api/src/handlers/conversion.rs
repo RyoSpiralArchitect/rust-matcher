@@ -1,10 +1,10 @@
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use sr_common::api::conversion::{ConversionRequest, ConversionResponse};
 use sr_common::db::insert_conversion_event;
 
+use crate::SharedState;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
-use crate::SharedState;
 
 pub async fn submit_conversion(
     State(state): State<SharedState>,

@@ -3,6 +3,7 @@ pub mod candidates;
 pub mod conversion;
 pub mod extraction_queue;
 pub mod feedback;
+pub mod interaction_events;
 pub mod interaction_logs;
 pub mod match_results;
 pub mod pool;
@@ -17,6 +18,7 @@ pub use extraction_queue::{
     lock_next_pending_job, pending_copy, recover_stuck_jobs, retry_job, upsert_extraction_job,
 };
 pub use feedback::{FeedbackStorageError, insert_feedback_event};
+pub use interaction_events::{InteractionEventStorageError, insert_interaction_event};
 pub use interaction_logs::{
     InteractionLogInsert, InteractionLogStorageError, insert_interaction_log,
 };

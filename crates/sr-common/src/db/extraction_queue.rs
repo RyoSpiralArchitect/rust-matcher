@@ -610,7 +610,7 @@ fn map_match_result(row: &Row) -> MatchResultRow {
     };
 
     MatchResultRow {
-        id: row.get::<_, i32>("id") as i64,
+        id: row.get::<_, i64>("id"),
         talent_id: row.get::<_, i64>("talent_id"),
         project_id: row.get::<_, i64>("project_id"),
         is_knockout: row.get("is_knockout"),
@@ -655,8 +655,8 @@ async fn fetch_match_results(
         .query(&stmt, &[&talent_id, &project_id, &days, &limit])
         .await?;
 
-    let mut results = Vec::new();
-    let mut seen = HashSet::new();
+    let mut results = Vec::with_capacity(rows.len());
+    let mut seen = HashSet::with_capacity(limit as usize);
 
     for row in rows {
         let mapped = map_match_result(&row);
@@ -881,10 +881,10 @@ pub async fn get_job_detail_with_includes(
     if set_statement_timeout {
         let transaction = client.transaction().await?;
         transaction
-            .batch_execute(&format!(
-                "SET LOCAL statement_timeout = '{}ms'",
-                statement_timeout_ms
-            ))
+            .execute(
+                "SET LOCAL statement_timeout = $1::text",
+                &[&format!("{statement_timeout_ms}ms")],
+            )
             .await?;
 
         let result = get_job_detail_with_client(

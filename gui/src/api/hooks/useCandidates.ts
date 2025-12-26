@@ -5,7 +5,53 @@ import type {
   FeedbackRequest,
   FeedbackResponse,
   InteractionEventRequest,
+  MatchCandidate,
+  KoResult,
 } from "../types";
+
+type RawMatchResponse = {
+  talent_id: number;
+  project_id: number;
+  interaction_id: number;
+  score: number;
+  score_breakdown?: { business_total?: number };
+  two_tower_score?: number | null;
+  ko_decisions?: Record<string, { ko_type?: string }>;
+  ko_reasons?: string[];
+  manual_review_required: boolean;
+  matched_at: string;
+};
+
+function toKoResult(raw: RawMatchResponse): KoResult {
+  const decisions = Object.values(raw.ko_decisions ?? {});
+  const isHardKo = decisions.some((d) => d.ko_type === "hard_ko");
+  const isSoftKo = !isHardKo && decisions.some((d) => d.ko_type === "soft_ko");
+
+  return {
+    isHardKo,
+    isSoftKo,
+    needsManualReview: raw.manual_review_required,
+    reasons: raw.ko_reasons ?? [],
+  };
+}
+
+function mapCandidate(raw: RawMatchResponse): MatchCandidate {
+  return {
+    talentId: raw.talent_id,
+    talentName: null,
+    skills: [],
+    desiredPriceMin: null,
+    residentialTodofuken: null,
+    availabilityDate: null,
+    totalScore: raw.score ?? 0,
+    businessScore: raw.score_breakdown?.business_total ?? raw.score ?? 0,
+    twoTowerScore: raw.two_tower_score ?? null,
+    twoTowerEmbedder: null,
+    twoTowerVersion: null,
+    koResult: toKoResult(raw),
+    interactionId: raw.interaction_id,
+  };
+}
 
 /**
  * プロジェクトの候補一覧取得
@@ -14,7 +60,19 @@ export function useCandidates(projectId: number) {
   return useQuery({
     queryKey: ["candidates", projectId],
     queryFn: () =>
-      get<MatchCandidatesResponse>(`/api/projects/${projectId}/candidates`),
+      get<RawMatchResponse[]>(`/api/projects/${projectId}/candidates`).then(
+        (raw) => {
+          const candidates = raw.map(mapCandidate);
+          const createdAt = raw[0]?.matched_at ?? new Date().toISOString();
+          return {
+            projectId,
+            projectName: `Project ${projectId}`,
+            candidates,
+            matchRunId: "",
+            createdAt,
+          } satisfies MatchCandidatesResponse;
+        }
+      ),
     enabled: projectId > 0,
   });
 }
@@ -42,7 +100,10 @@ export function useSendFeedback() {
  * UXをブロックしない
  */
 export function sendInteractionEvent(request: InteractionEventRequest): void {
-  postFireAndForget("/api/interactions/events", request);
+  postFireAndForget("/api/interactions/events", {
+    source: "gui",
+    ...request,
+  });
 }
 
 /**
