@@ -1,3 +1,7 @@
+#![allow(unexpected_cfgs)]
+#![deny(missing_docs)]
+#![cfg_attr(yup_oauth2_docsrs, feature(doc_cfg))]
+
 //! This library can be used to acquire oauth2.0 authentication for services.
 //!
 //! For your application to use this library, you will have to obtain an application
@@ -69,10 +73,6 @@
 //! }
 //! ```
 //!
-#![deny(missing_docs)]
-#![cfg_attr(yup_oauth2_docsrs, feature(doc_cfg))]
-#![allow(unexpected_cfgs)]
-
 pub mod access_token;
 mod application_default_credentials;
 pub mod authenticator;
