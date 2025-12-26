@@ -1,7 +1,7 @@
 use tracing::instrument;
 
 use crate::api::conversion::{ConversionRequest, ConversionResponse, ConversionSource};
-use crate::db::{db_error, PgPool};
+use crate::db::{db_error, validated_actor, PgPool};
 
 db_error!(ConversionStorageError {
     #[error("conversion actor is missing")]
@@ -14,10 +14,7 @@ pub async fn insert_conversion_event(
     actor: &str,
     request: &ConversionRequest,
 ) -> Result<ConversionResponse, ConversionStorageError> {
-    let actor = actor.trim();
-    if actor.is_empty() {
-        return Err(ConversionStorageError::MissingActor);
-    }
+    let actor = validated_actor(actor).ok_or(ConversionStorageError::MissingActor)?;
 
     let source = request
         .source

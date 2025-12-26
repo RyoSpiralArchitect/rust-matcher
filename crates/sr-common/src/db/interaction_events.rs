@@ -4,7 +4,7 @@ use crate::api::interaction_event::{
     InteractionEventRequest, InteractionEventResponse, InteractionEventSource,
     InteractionEventStatus, InteractionEventType,
 };
-use crate::db::{db_error, PgPool};
+use crate::db::{db_error, validated_actor, PgPool};
 
 db_error!(InteractionEventStorageError {
     #[error("interaction event actor is missing")]
@@ -17,10 +17,7 @@ pub async fn insert_interaction_event(
     actor: &str,
     request: &InteractionEventRequest,
 ) -> Result<InteractionEventResponse, InteractionEventStorageError> {
-    let actor = actor.trim();
-    if actor.is_empty() {
-        return Err(InteractionEventStorageError::MissingActor);
-    }
+    let actor = validated_actor(actor).ok_or(InteractionEventStorageError::MissingActor)?;
 
     let source = request
         .source

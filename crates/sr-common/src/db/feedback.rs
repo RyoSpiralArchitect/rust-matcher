@@ -5,7 +5,7 @@ use tracing::instrument;
 
 use crate::api::feedback_request::{FeedbackRequest, NgReasonCategory};
 use crate::api::feedback_response::{FeedbackResponse, FeedbackStatus};
-use crate::db::{db_error, PgPool};
+use crate::db::{db_error, validated_actor, PgPool};
 
 db_error!(FeedbackStorageError {
     #[error("interaction not found: {0}")]
@@ -114,10 +114,7 @@ pub async fn insert_feedback_event(
     actor: &str,
     request: &FeedbackRequest,
 ) -> Result<FeedbackResponse, FeedbackStorageError> {
-    let actor = actor.trim();
-    if actor.is_empty() {
-        return Err(FeedbackStorageError::MissingActor);
-    }
+    let actor = validated_actor(actor).ok_or(FeedbackStorageError::MissingActor)?;
 
     let mut client = pool.get().await?;
     let tx = client.transaction().await?;

@@ -13,6 +13,15 @@ macro_rules! db_error {
 
 pub(crate) use db_error;
 
+pub fn validated_actor(actor: &str) -> Option<&str> {
+    let actor = actor.trim();
+    if actor.is_empty() {
+        None
+    } else {
+        Some(actor)
+    }
+}
+
 pub mod anken_emails;
 pub mod candidates;
 pub mod conversion;
