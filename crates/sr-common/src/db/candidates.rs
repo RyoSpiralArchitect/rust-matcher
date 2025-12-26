@@ -1,26 +1,19 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use deadpool_postgres::PoolError;
 use serde_json::Value;
-use tokio_postgres::Error as PgError;
 use tokio_postgres::Row;
 use tracing::instrument;
 
 use crate::api::match_response::{
     KoDecisionDto, MatchConfig, MatchDetails, MatchResponse, ScoreBreakdown,
 };
-use crate::db::PgPool;
+use crate::db::{db_error, PgPool};
 
-#[derive(Debug, thiserror::Error)]
-pub enum MatchFetchError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
+db_error!(MatchFetchError {
     #[error("failed to map candidate row: {0}")]
     Mapping(String),
-}
+});
 
 fn parse_score_breakdown(value: Option<Value>) -> ScoreBreakdown {
     value
