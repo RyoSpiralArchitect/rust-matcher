@@ -14,7 +14,7 @@ use html2text::from_read;
 use sr_common::db::{DbPoolError, PgPool, create_pool_from_url_checked, run_migrations};
 use sr_common::logging::install_tracing_panic_hook;
 use std::collections::HashSet;
-use tokio::time::{Duration, interval};
+use tokio::time::{Duration, interval, timeout};
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Parser)]
@@ -81,6 +81,8 @@ struct EmailData {
     received_at: Option<DateTime<Utc>>,
 }
 
+const GMAIL_API_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Debug, thiserror::Error)]
 enum IngestError {
     #[error("failed to load service account key: {0}")]
@@ -103,6 +105,8 @@ enum IngestError {
     Utf8(#[from] std::string::FromUtf8Error),
     #[error("html to text conversion failed: {0}")]
     HtmlToText(#[from] html2text::Error),
+    #[error("gmail api call timed out: {0}")]
+    GmailTimeout(&'static str),
 }
 
 struct GmailIngestor {
@@ -142,24 +146,20 @@ impl GmailIngestor {
         })
     }
 
-    async fn poll_once(&mut self) -> Result<u32, IngestError> {
-        let mut processed = 0;
-
+    async fn poll_once(&self) -> Result<u32, IngestError> {
         let anken_query = self.anken_query.clone();
-        processed += self
-            .fetch_and_store_emails(&anken_query, EmailType::Anken)
-            .await?;
-
         let jinzai_query = self.jinzai_query.clone();
-        processed += self
-            .fetch_and_store_emails(&jinzai_query, EmailType::Jinzai)
-            .await?;
 
-        Ok(processed)
+        let (anken_processed, jinzai_processed) = tokio::try_join!(
+            self.fetch_and_store_emails(&anken_query, EmailType::Anken),
+            self.fetch_and_store_emails(&jinzai_query, EmailType::Jinzai)
+        )?;
+
+        Ok(anken_processed + jinzai_processed)
     }
 
     async fn fetch_and_store_emails(
-        &mut self,
+        &self,
         query: &str,
         email_type: EmailType,
     ) -> Result<u32, IngestError> {
@@ -182,7 +182,9 @@ impl GmailIngestor {
                 list_call = list_call.page_token(token);
             }
 
-            let (_, list_response) = list_call.doit().await?;
+            let (_, list_response) = timeout(GMAIL_API_TIMEOUT, list_call.doit())
+                .await
+                .map_err(|_| IngestError::GmailTimeout("list messages"))??;
             page_count += 1;
 
             let messages = list_response.messages.unwrap_or_default();
@@ -202,14 +204,17 @@ impl GmailIngestor {
                     continue;
                 }
 
-                let (_, message) = self
-                    .gmail
-                    .users()
-                    .messages_get(user_id, &msg_id)
-                    .format("full")
-                    .add_scope(Scope::Readonly)
-                    .doit()
-                    .await?;
+                let (_, message) = timeout(
+                    GMAIL_API_TIMEOUT,
+                    self.gmail
+                        .users()
+                        .messages_get(user_id, &msg_id)
+                        .format("full")
+                        .add_scope(Scope::Readonly)
+                        .doit(),
+                )
+                .await
+                .map_err(|_| IngestError::GmailTimeout("get message"))??;
 
                 let mut email = self.parse_message(message)?;
                 email.message_id = msg_id.clone();
