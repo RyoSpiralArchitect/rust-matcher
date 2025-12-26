@@ -14,7 +14,9 @@ use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
     RecommendedMethod,
 };
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
+use tokio::sync::Semaphore;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
@@ -213,6 +215,27 @@ struct ShadowCompareConfig {
     sample_percent: u8,
     shadow_provider: String,
     primary_provider: String,
+    max_in_flight: usize,
+}
+
+#[derive(Clone)]
+struct ShadowCompareRuntime {
+    config: ShadowCompareConfig,
+    in_flight: Arc<Semaphore>,
+}
+
+impl ShadowCompareRuntime {
+    fn new(config: ShadowCompareConfig) -> Self {
+        let max_in_flight = config.max_in_flight.max(1);
+        Self {
+            in_flight: Arc::new(Semaphore::new(max_in_flight)),
+            config,
+        }
+    }
+
+    fn config(&self) -> &ShadowCompareConfig {
+        &self.config
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -275,6 +298,7 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
     let mut queue = ExtractionQueue::default();
     let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
+    let shadow_runtime = ShadowCompareRuntime::new(shadow_config);
     let rt = tokio::runtime::Runtime::new().expect("failed to build runtime for sample flow");
 
     let mut job = ExtractionJob::new(
@@ -298,7 +322,7 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
                 processed.clone(),
                 sample_body.to_string(),
                 &llm_config,
-                &shadow_config,
+                &shadow_runtime,
             );
         }
     }
@@ -311,11 +335,20 @@ pub fn run_sample_flow() -> ExtractionQueue {
 }
 
 fn shadow_config_from_env(config: &LlmRuntimeConfig) -> ShadowCompareConfig {
+    fn parse_shadow_limit() -> usize {
+        std::env::var("LLM_SHADOW_MAX_IN_FLIGHT")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|limit| *limit > 0)
+            .unwrap_or(5)
+    }
+
     ShadowCompareConfig {
         mode: config.compare_mode.clone(),
         sample_percent: config.shadow_sample_percent,
         shadow_provider: config.shadow_provider.clone(),
         primary_provider: config.primary_provider.clone(),
+        max_in_flight: parse_shadow_limit(),
     }
 }
 
@@ -493,11 +526,25 @@ fn spawn_shadow_compare(
     job: ExtractionJob,
     body_text: String,
     config: &LlmRuntimeConfig,
-    shadow: &ShadowCompareConfig,
+    shadow: &ShadowCompareRuntime,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    if shadow.mode != CompareMode::Shadow || !job.canary_target {
+    let shadow_config = shadow.config();
+
+    if shadow_config.mode != CompareMode::Shadow || !job.canary_target {
         return None;
     }
+
+    let permit = match shadow.in_flight.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            info!(
+                message_id = %job.message_id,
+                max_in_flight = shadow_config.max_in_flight,
+                "skipping shadow comparison because in-flight limit has been reached",
+            );
+            return None;
+        }
+    };
 
     let (shadow_endpoint, shadow_model) = shadow_endpoint_and_model(config);
     let shadow_api_key = if config.shadow_api_key.is_empty() {
@@ -515,12 +562,13 @@ fn spawn_shadow_compare(
         );
         return None;
     }
-    let shadow_provider = shadow.shadow_provider.clone();
-    let primary_provider = shadow.primary_provider.clone();
+    let shadow_provider = shadow_config.shadow_provider.clone();
+    let primary_provider = shadow_config.primary_provider.clone();
     let mut shadow_config = config.clone();
     shadow_config.model = shadow_model;
 
     Some(tokio::spawn(async move {
+        let _permit = permit;
         let request = build_llm_request(&job, &body_text, &shadow_config);
         match perform_llm_request(&shadow_config, &shadow_endpoint, &shadow_api_key, &request).await
         {
@@ -709,12 +757,23 @@ async fn process_locked_job(
     worker_id: &str,
     mut locked: ExtractionJob,
     llm_config: &LlmRuntimeConfig,
-    shadow_config: &ShadowCompareConfig,
+    shadow_config: &ShadowCompareRuntime,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let shadow_selected = mark_shadow_canary(&mut locked, shadow_config);
+    info!(
+        worker_id = %worker_id,
+        message_id = %locked.message_id,
+        "starting locked job processing"
+    );
+
+    let shadow_selected = mark_shadow_canary(&mut locked, shadow_config.config());
     let body_text = match fetch_email_body(pool, &locked.message_id).await {
         Ok(Some(body)) => body,
         Ok(None) => {
+            warn!(
+                worker_id = %worker_id,
+                message_id = %locked.message_id,
+                "missing source_text in anken_emails; skipping job"
+            );
             let (processed, _) = apply_outcome(
                 locked.clone(),
                 Err(JobError::Permanent {
@@ -725,6 +784,12 @@ async fn process_locked_job(
             return Ok(());
         }
         Err(err) => {
+            warn!(
+                worker_id = %worker_id,
+                message_id = %locked.message_id,
+                error = %err,
+                "failed to fetch email body"
+            );
             let (processed, _) = apply_outcome(
                 locked.clone(),
                 Err(JobError::Retryable {
@@ -737,21 +802,46 @@ async fn process_locked_job(
         }
     };
 
-    let (processed, _status) = apply_outcome(
-        locked.clone(),
-        handle_llm_job(&locked, &body_text, llm_config).await,
-    );
+    let outcome = handle_llm_job(&locked, &body_text, llm_config).await;
+    if let Err(err) = &outcome {
+        let err_message = match err {
+            JobError::Retryable { message, .. } => message.as_str(),
+            JobError::Permanent { message } => message.as_str(),
+        };
+        warn!(
+            worker_id = %worker_id,
+            message_id = %locked.message_id,
+            error = %err_message,
+            "llm job finished with error"
+        );
+    } else {
+        info!(
+            worker_id = %worker_id,
+            message_id = %locked.message_id,
+            "llm job finished successfully"
+        );
+    }
+
+    let (processed, status) = apply_outcome(locked.clone(), outcome);
     let rows = upsert_extraction_job(pool, &processed).await?;
     info!(
         rows,
         worker_id = %worker_id,
         message_id = %processed.message_id,
+        status = %status.as_str(),
         "persisted processed job",
     );
 
     if shadow_selected {
         let _ = spawn_shadow_compare(processed.clone(), body_text, llm_config, shadow_config);
     }
+
+    info!(
+        worker_id = %worker_id,
+        message_id = %processed.message_id,
+        status = %processed.status.as_str(),
+        "finished locked job processing"
+    );
 
     Ok(())
 }
@@ -764,6 +854,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
     let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
+    let shadow_runtime = ShadowCompareRuntime::new(shadow_config);
     let pool = create_pool_from_url_checked(&args.db_url).await?;
     run_migrations(&pool).await?;
     let status = pool.status();
@@ -775,8 +866,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         llm_provider = %llm_config.provider,
         llm_model = %llm_config.model,
         llm_endpoint = %llm_config.endpoint,
-        shadow_mode = ?shadow_config.mode,
-        shadow_sample_percent = shadow_config.sample_percent,
+        shadow_mode = ?shadow_runtime.config().mode,
+        shadow_sample_percent = shadow_runtime.config().sample_percent,
+        shadow_max_in_flight = shadow_runtime.config().max_in_flight,
         "created postgres connection pool for llm worker",
     );
 
@@ -798,7 +890,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
 
-        process_locked_job(&pool, &args.worker_id, job, &llm_config, &shadow_config).await?;
+        process_locked_job(&pool, &args.worker_id, job, &llm_config, &shadow_runtime).await?;
         processed_jobs += 1;
     }
 
@@ -1101,6 +1193,7 @@ mod tests {
             sample_percent: 100,
             shadow_provider: "shadow_stub".into(),
             primary_provider: "primary_stub".into(),
+            max_in_flight: 5,
         };
 
         assert!(mark_shadow_canary(&mut job, &cfg));
@@ -1115,6 +1208,7 @@ mod tests {
             sample_percent: 100,
             shadow_provider: "shadow_stub".into(),
             primary_provider: "primary_stub".into(),
+            max_in_flight: 5,
         };
 
         assert!(!mark_shadow_canary(&mut job, &cfg));
@@ -1161,6 +1255,7 @@ mod tests {
                 assert_eq!(shadow.primary_provider, "anthropic");
                 assert_eq!(shadow.shadow_provider, "openai");
                 assert_eq!(shadow.sample_percent, 25);
+                assert_eq!(shadow.max_in_flight, 5);
             },
         );
     }
@@ -1299,9 +1394,12 @@ mod tests {
             sample_percent: 100,
             shadow_provider: "shadow-provider".into(),
             primary_provider: "primary-provider".into(),
+            max_in_flight: 2,
         };
 
-        let handle = spawn_shadow_compare(job, "body".into(), &config, &shadow_cfg)
+        let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
+
+        let handle = spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime)
             .expect("shadow compare spawned");
         handle.await.expect("shadow join ok");
 
@@ -1323,9 +1421,61 @@ mod tests {
             sample_percent: 100,
             shadow_provider: "shadow-provider".into(),
             primary_provider: "primary-provider".into(),
+            max_in_flight: 2,
         };
 
-        let handle = spawn_shadow_compare(job, "body".into(), &config, &shadow_cfg);
+        let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
+
+        let handle = spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime);
         assert!(handle.is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn shadow_compare_respects_in_flight_limit() {
+        let mut server = Server::new_async().await;
+        let _shadow_hit = server
+            .mock("POST", "/shadow")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "extracted": {"project_name": "shadow"},
+                    "latency_ms": 50,
+                    "model_used": "shadow-model",
+                })
+                .to_string(),
+            )
+            .create();
+
+        let mut job1 = ExtractionJob::new("shadow-1", "subject", Utc::now(), "hash");
+        job1.recommended_method = Some(RecommendedMethod::LlmRecommended);
+        job1.canary_target = true;
+
+        let mut job2 = ExtractionJob::new("shadow-2", "subject", Utc::now(), "hash");
+        job2.recommended_method = Some(RecommendedMethod::LlmRecommended);
+        job2.canary_target = true;
+
+        let mut config = LlmRuntimeConfig::from_env();
+        config.shadow_endpoint = Some(format!("{}/shadow", server.url()));
+        config.shadow_model = Some("shadow-model".into());
+        config.shadow_api_key = "shadow-key".into();
+
+        let shadow_cfg = ShadowCompareConfig {
+            mode: CompareMode::Shadow,
+            sample_percent: 100,
+            shadow_provider: "shadow-provider".into(),
+            primary_provider: "primary-provider".into(),
+            max_in_flight: 1,
+        };
+
+        let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
+
+        let handle1 =
+            spawn_shadow_compare(job1, "body".into(), &config, &shadow_runtime).expect("first");
+        let handle2 = spawn_shadow_compare(job2, "body".into(), &config, &shadow_runtime);
+        assert!(handle2.is_none(), "second shadow compare should be limited");
+
+        handle1.await.expect("shadow join ok");
     }
 }

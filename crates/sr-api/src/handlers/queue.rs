@@ -11,6 +11,7 @@ use sr_common::db::{
     fetch_dashboard, get_job_detail_with_includes, list_jobs as fetch_listed_jobs,
     retry_job as retry_queue_job,
 };
+use tracing::info;
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
@@ -123,6 +124,7 @@ pub async fn dashboard(
     auth: AuthUser,
 ) -> Result<Json<QueueDashboard>, ApiError> {
     ensure_admin(&auth)?;
+    info!(user = %auth.subject, "fetching queue dashboard");
     let dashboard = fetch_dashboard(&state.pool).await?;
     Ok(Json(dashboard))
 }
@@ -138,6 +140,14 @@ pub async fn list_jobs(
 
     let (limit, offset) = validate_pagination(params.pagination.limit, params.pagination.offset)?;
     let pagination = Pagination { limit, offset };
+    info!(
+        user = %auth.subject,
+        limit = pagination.limit,
+        offset = pagination.offset,
+        status_filter = ?params.filter.status,
+        final_method_filter = ?params.filter.final_method,
+        "listing queue jobs"
+    );
 
     let jobs = fetch_listed_jobs(&state.pool, &params.filter, &pagination).await?;
     Ok(Json(jobs))
@@ -152,6 +162,12 @@ pub async fn get_job(
 ) -> Result<Json<QueueJobDetailResponse>, ApiError> {
     ensure_admin(&auth)?;
     let includes = build_detail_includes(&params)?;
+    info!(
+        user = %auth.subject,
+        job_id = id,
+        include_source_text = includes.include_source_text,
+        "fetching queue job details"
+    );
 
     if includes.include_source_text {
         if !state.config.allow_source_text {
@@ -184,6 +200,7 @@ pub async fn retry_job(
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     ensure_admin(&auth)?;
+    info!(user = %auth.subject, job_id = id, "retrying queue job");
 
     retry_queue_job(&state.pool, id).await?;
     Ok(Json(

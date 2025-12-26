@@ -5,6 +5,7 @@ use axum::{
 use serde::Deserialize;
 use sr_common::api::match_response::MatchResponse;
 use sr_common::db::fetch_candidates_for_project;
+use tracing::info;
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
@@ -35,11 +36,19 @@ pub async fn list_candidates(
     State(state): State<SharedState>,
     Path(project_id): Path<i64>,
     Query(query): Query<CandidateQuery>,
-    _auth: AuthUser,
+    auth: AuthUser,
 ) -> Result<Json<CandidateListResponse>, ApiError> {
     let (limit, offset) = validate_pagination(i64::from(query.limit), i64::from(query.offset))?;
     let limit = limit as u32;
     let offset = offset as u32;
+    info!(
+        user = %auth.subject,
+        project_id,
+        include_softko = query.include_softko,
+        limit,
+        offset,
+        "listing candidates"
+    );
 
     let candidates = fetch_candidates_for_project(
         &state.pool,
