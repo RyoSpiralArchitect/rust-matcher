@@ -65,6 +65,27 @@ export function setJwtToken(token: string): void {
   authConfig = { type: "jwt", token };
 }
 
+function readEnv(key: string): string {
+  const raw = (import.meta.env as Record<string, string | undefined>)[key];
+  return (raw ?? "").trim();
+}
+
+/**
+ * 環境変数から初期認証情報をセット（VITE_JWT_TOKEN が優先）
+ */
+export function initializeAuthFromEnv(): void {
+  const jwtToken = readEnv("VITE_JWT_TOKEN");
+  if (jwtToken) {
+    setJwtToken(jwtToken);
+    return;
+  }
+
+  const apiKey = readEnv("VITE_API_KEY");
+  if (apiKey && apiKey !== "your-api-key-here") {
+    setApiKey(apiKey);
+  }
+}
+
 /**
  * 認証ヘッダーを取得
  */

@@ -3,6 +3,7 @@ export {
   setAuth,
   setApiKey,
   setJwtToken,
+  initializeAuthFromEnv,
   get,
   post,
   postFireAndForget,
