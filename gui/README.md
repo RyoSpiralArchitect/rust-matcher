@@ -36,6 +36,7 @@ npm run dev
 |----------|-------------|---------|
 | `VITE_API_ORIGIN` | sr-api base URL | `http://localhost:3000` |
 | `VITE_API_KEY` | API Key (Phase 1) | `your-api-key` |
+| `VITE_JWT_TOKEN` | JWT for AUTH_MODE=jwt (set to prefer JWT over API key) | `eyJhbGciOiJIUzUxMiIs...` |
 
 ---
 
