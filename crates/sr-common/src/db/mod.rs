@@ -11,19 +11,19 @@ pub mod pool;
 pub mod queue_dashboard;
 
 // Keep re-exports unique so downstream crates see a single symbol per helper.
-pub use anken_emails::{PendingEmail, PendingEmailError, fetch_email_body, fetch_pending_emails};
-pub use candidates::{CandidateFetchError, fetch_candidates_for_project};
-pub use conversion::{ConversionStorageError, insert_conversion_event};
+pub use anken_emails::{fetch_email_body, fetch_pending_emails, PendingEmail, PendingEmailError};
+pub use candidates::{fetch_candidates_for_project, CandidateFetchError};
+pub use conversion::{insert_conversion_event, ConversionStorageError};
 pub use extraction_queue::{
-    QueueStorageError, get_job_by_id, get_job_detail_with_includes, list_jobs,
-    lock_next_pending_job, pending_copy, recover_stuck_jobs, retry_job, upsert_extraction_job,
+    get_job_by_id, get_job_detail_with_includes, list_jobs, lock_next_pending_job, pending_copy,
+    recover_stuck_jobs, retry_job, upsert_extraction_job, QueueStorageError,
 };
-pub use feedback::{FeedbackStorageError, insert_feedback_event};
-pub use interaction_events::{InteractionEventStorageError, insert_interaction_event};
+pub use feedback::{insert_feedback_event, FeedbackStorageError};
+pub use interaction_events::{insert_interaction_event, InteractionEventStorageError};
 pub use interaction_logs::{
-    InteractionLogInsert, InteractionLogStorageError, insert_interaction_log,
+    insert_interaction_log, InteractionLogInsert, InteractionLogStorageError,
 };
-pub use match_results::{MatchResultInsert, MatchResultStorageError, insert_match_result};
-pub use migrations::{MigrationError, run_migrations};
-pub use pool::{DbPoolError, PgPool, create_pool_from_url, create_pool_from_url_checked};
-pub use queue_dashboard::{QueueDashboardError, fetch_dashboard};
+pub use match_results::{insert_match_result, MatchResultInsert, MatchResultStorageError};
+pub use migrations::{run_migrations, MigrationError};
+pub use pool::{create_pool_from_url, create_pool_from_url_checked, DbPoolError, PgPool};
+pub use queue_dashboard::{fetch_dashboard, QueueDashboardError};

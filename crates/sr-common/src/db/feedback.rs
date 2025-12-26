@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use deadpool_postgres::{GenericClient, PoolError};
 use tokio_postgres::Error as PgError;
 use tracing::instrument;
@@ -30,6 +31,53 @@ struct InteractionContext {
 
 fn map_ng_reason(value: &Option<NgReasonCategory>) -> Option<&str> {
     value.as_ref().map(|reason| reason.as_str())
+}
+
+/// Recompute the canonical outcome / feedback_at on interaction_logs based on
+/// non-revoked feedback_events using the priority rules from
+/// TwoTower_SalesFBアルゴ概観.md.
+async fn recompute_interaction_outcome(
+    client: &impl GenericClient,
+    interaction_id: i64,
+) -> Result<(), PgError> {
+    let row = client
+        .query_opt(
+            "SELECT feedback_type, created_at
+             FROM ses.feedback_events
+             WHERE interaction_id = $1 AND is_revoked = false
+             ORDER BY
+               CASE feedback_type
+                 WHEN 'accepted' THEN 1
+                 WHEN 'rejected' THEN 2
+                 WHEN 'interview_scheduled' THEN 3
+                 WHEN 'review_ok' THEN 4
+                 WHEN 'review_ng' THEN 4
+                 WHEN 'thumbs_up' THEN 5
+                 WHEN 'thumbs_down' THEN 5
+                 WHEN 'no_response' THEN 6
+                 ELSE 100
+               END ASC,
+               created_at DESC
+             LIMIT 1",
+            &[&interaction_id],
+        )
+        .await?;
+
+    let (outcome, feedback_at): (Option<String>, Option<DateTime<Utc>>) = match row {
+        Some(row) => (Some(row.get("feedback_type")), Some(row.get("created_at"))),
+        None => (None, None),
+    };
+
+    client
+        .execute(
+            "UPDATE ses.interaction_logs
+             SET outcome = $1, feedback_at = $2
+             WHERE id = $3",
+            &[&outcome, &feedback_at, &interaction_id],
+        )
+        .await?;
+
+    Ok(())
 }
 
 #[instrument(skip(client, interaction_id))]
@@ -133,6 +181,9 @@ pub async fn insert_feedback_event(
             status: FeedbackStatus::AlreadyExists,
         },
     };
+
+    // Keep interaction_logs outcome in sync with the highest-priority, latest feedback.
+    recompute_interaction_outcome(&tx, interaction.interaction_id).await?;
 
     tx.commit().await?;
 
