@@ -15,7 +15,7 @@ use sr_common::queue::{
 use std::thread::sleep as std_sleep;
 use std::time::Duration as StdDuration;
 use tokio::time::{Duration, sleep};
-use tracing::info;
+use tracing::{error, info};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompareMode {
@@ -798,7 +798,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("sr-llm-worker failed: {err}");
+        error!(error = %err, "sr-llm-worker failed");
         std::process::exit(1);
     }
 }
