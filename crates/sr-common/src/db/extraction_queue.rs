@@ -449,7 +449,7 @@ pub async fn list_jobs(
 ) -> Result<QueueJobListResponse, QueueStorageError> {
     let client = pool.get().await?;
 
-    let fetch_limit = pagination.limit + 1;
+    let fetch_limit = pagination.limit.saturating_add(1);
 
     // Guardrail: dynamic fragments must only append "AND column OP $n" clauses so that
     // the placeholder numbering stays correct and no raw user data is interpolated.
@@ -1085,35 +1085,35 @@ async fn get_job_detail_with_client<C: GenericClient>(
 
 #[instrument(skip(pool))]
 pub async fn retry_job(pool: &PgPool, id: i64) -> Result<(), QueueStorageError> {
-    let client = pool.get().await?;
+    let mut client = pool.get().await?;
+    let tx = client.transaction().await?;
 
-    let updated = client
-        .execute(
-            "UPDATE ses.extraction_queue SET status = 'pending', locked_by = NULL, processing_started_at = NULL, completed_at = NULL, next_retry_at = NULL, retry_count = 0, requires_manual_review = false, manual_review_reason = NULL, updated_at = NOW() WHERE id = $1 AND status = 'completed'",
-            &[&id],
-        )
-        .await?;
-
-    if updated == 1 {
-        return Ok(());
-    }
-
-    let status_row = client
+    let status_row = tx
         .query_opt(
-            "SELECT status FROM ses.extraction_queue WHERE id = $1",
+            "SELECT status FROM ses.extraction_queue WHERE id = $1 FOR UPDATE",
             &[&id],
         )
         .await?;
 
-    match status_row {
-        None => Err(QueueStorageError::NotFound(format!("job {id} not found"))),
-        Some(row) => {
-            let status: String = row.get("status");
-            Err(QueueStorageError::Conflict(format!(
-                "job {id} is {status} and cannot be retried"
-            )))
-        }
+    let Some(row) = status_row else {
+        return Err(QueueStorageError::NotFound(format!("job {id} not found")));
+    };
+
+    let status: String = row.get("status");
+    if status != "completed" {
+        return Err(QueueStorageError::Conflict(format!(
+            "job {id} is {status} and cannot be retried"
+        )));
     }
+
+    tx.execute(
+        "UPDATE ses.extraction_queue SET status = 'pending', locked_by = NULL, processing_started_at = NULL, completed_at = NULL, next_retry_at = NULL, retry_count = 0, requires_manual_review = false, manual_review_reason = NULL, updated_at = NOW() WHERE id = $1",
+        &[&id],
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
 }
 
 #[cfg(test)]

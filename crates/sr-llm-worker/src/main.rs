@@ -175,8 +175,13 @@ impl LlmRuntimeConfig {
             })
             .unwrap_or_default();
 
+        let enabled = parse_bool("LLM_ENABLED", true);
+        if enabled && api_key.is_empty() {
+            panic!("LLM_API_KEY is required when LLM_ENABLED=true");
+        }
+
         Self {
-            enabled: parse_bool("LLM_ENABLED", true),
+            enabled,
             provider: provider.clone(),
             model: std::env::var("LLM_MODEL").unwrap_or_else(|_| default_model),
             endpoint: std::env::var("LLM_ENDPOINT").unwrap_or_else(|_| default_endpoint),
