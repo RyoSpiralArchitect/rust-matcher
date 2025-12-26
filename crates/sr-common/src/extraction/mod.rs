@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::corrections::{
     flow_depth::correct_flow_dept,
     remote_onsite::correct_remote_onsite,
-    todofuken::{TODOFUKEN_TO_AREA, correct_todofuken},
+    todofuken::{correct_todofuken, TODOFUKEN_TO_AREA},
 };
 use crate::queue::RecommendedMethod;
 use crate::skill_normalizer::normalize_skill_set;
@@ -356,6 +356,7 @@ pub fn evaluate_quality(partial: &PartialFields) -> (ExtractionQuality, Recommen
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     #[test]
     fn tanka_extracts_range_min_max_and_single() {
@@ -368,6 +369,7 @@ mod tests {
 
     #[test]
     fn start_date_raw_matches_common_patterns() {
+        let year = chrono::Utc::now().year() + 1;
         assert_eq!(
             extract_start_date_raw("即日で参画可能です"),
             Some("即日".to_string())
@@ -381,14 +383,18 @@ mod tests {
             Some("1月上旬".to_string())
         );
         assert_eq!(
-            extract_start_date_raw("開始日は2025/02/15を予定"),
-            Some("2025/02/15".to_string())
+            extract_start_date_raw(&format!("開始日は{year}/02/15を予定")),
+            Some(format!("{year}/02/15"))
         );
         assert_eq!(
             extract_start_date_raw("12月開始を希望しています"),
             Some("12月".to_string())
         );
         assert_eq!(extract_start_date_raw("未定です"), None);
+        assert_eq!(
+            extract_start_date_raw(&format!("Start date is {year}/03/10 for the project")),
+            Some(format!("{year}/03/10"))
+        );
     }
 
     #[test]
