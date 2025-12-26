@@ -15,8 +15,8 @@ use sr_common::queue::{
     RecommendedMethod,
 };
 use std::time::Duration as StdDuration;
-use tokio::time::{Duration, sleep};
-use tracing::{error, info};
+use tokio::time::{sleep, Duration};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompareMode {
@@ -178,7 +178,10 @@ impl LlmRuntimeConfig {
 
         let enabled = parse_bool("LLM_ENABLED", true);
         if enabled && api_key.is_empty() {
-            panic!("LLM_API_KEY is required when LLM_ENABLED=true");
+            warn!(
+                provider = %provider,
+                "LLM_API_KEY is empty while LLM_ENABLED=true; requests will fall back to manual review"
+            );
         }
 
         Self {
@@ -813,10 +816,11 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use httpmock::prelude::*;
+    use mockito::Server;
+    use serial_test::serial;
+    use std::{panic, sync::Mutex};
 
     fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
-        use std::sync::Mutex;
         static ENV_GUARD: Mutex<()> = Mutex::new(());
         let _guard = ENV_GUARD.lock().unwrap();
 
@@ -825,39 +829,54 @@ mod tests {
             .map(|(key, value)| {
                 let previous = std::env::var(key).ok();
                 match value {
-                    Some(v) => unsafe { std::env::set_var(key, v) },
-                    None => unsafe { std::env::remove_var(key) },
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
                 }
                 (key.to_string(), previous)
             })
             .collect();
 
-        f();
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(f));
 
         for (key, previous) in prev {
             if let Some(v) = previous {
-                unsafe { std::env::set_var(&key, v) };
+                std::env::set_var(&key, v);
             } else {
-                unsafe { std::env::remove_var(&key) };
+                std::env::remove_var(&key);
             }
+        }
+
+        if let Err(panic) = result {
+            panic::resume_unwind(panic);
         }
     }
 
+    fn mock_llm_extract(server: &mut Server, body: serde_json::Value) -> mockito::Mock {
+        server
+            .mock("POST", "/api/v1/extract")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body.to_string())
+            .create()
+    }
+
     #[test]
+    #[serial]
     fn llm_job_is_marked_completed() {
-        let server = MockServer::start();
-        let _mock = server.mock(|when, then| {
-            when.method(POST).path("/api/v1/extract");
-            then.status(200).json_body(json!({
+        let mut server = Server::new();
+        let mock = mock_llm_extract(
+            &mut server,
+            json!({
                 "extracted": {"project_name": "from-llm"},
                 "latency_ms": 222,
                 "reason": "llm ok",
-            }));
-        });
+            }),
+        );
 
+        let endpoint = format!("{}/api/v1/extract", server.url());
         with_env(
             &[
-                ("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))),
+                ("LLM_ENDPOINT", Some(&endpoint)),
                 ("LLM_API_KEY", Some("token")),
             ],
             || {
@@ -873,34 +892,36 @@ mod tests {
                     json!("from-llm")
                 );
                 assert_eq!(job.llm_latency_ms, Some(222));
-                assert!(
-                    job.decision_reason
-                        .as_ref()
-                        .map(|r| r.contains("llm ok"))
-                        .unwrap_or(false)
-                );
+                assert!(job
+                    .decision_reason
+                    .as_ref()
+                    .map(|r| r.contains("llm ok"))
+                    .unwrap_or(false));
             },
         );
+        mock.assert();
     }
 
     #[test]
+    #[serial]
     fn llm_missing_fields_trigger_manual_review() {
-        let server = MockServer::start();
-        let _mock = server.mock(|when, then| {
-            when.method(POST).path("/api/v1/extract");
-            then.status(200).json_body(json!({
+        let mut server = Server::new();
+        let mock = mock_llm_extract(
+            &mut server,
+            json!({
                 "message_id": "llm-message-1",
                 "extracted": {"project_name": "from-llm"},
                 "latency_ms": 120,
                 "reason": "partial extraction",
                 "missing_fields": ["skills", "years_of_experience"],
                 "status": "partial",
-            }));
-        });
+            }),
+        );
 
+        let endpoint = format!("{}/api/v1/extract", server.url());
         with_env(
             &[
-                ("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))),
+                ("LLM_ENDPOINT", Some(&endpoint)),
                 ("LLM_API_KEY", Some("token")),
             ],
             || {
@@ -917,24 +938,27 @@ mod tests {
                 assert!(reason.contains("status=partial"));
             },
         );
+        mock.assert();
     }
 
     #[test]
+    #[serial]
     fn llm_message_id_mismatch_forces_manual_review() {
-        let server = MockServer::start();
-        let _mock = server.mock(|when, then| {
-            when.method(POST).path("/api/v1/extract");
-            then.status(200).json_body(json!({
+        let mut server = Server::new();
+        let mock = mock_llm_extract(
+            &mut server,
+            json!({
                 "message_id": "unexpected",
                 "extracted": {"project_name": "from-llm"},
                 "latency_ms": 80,
                 "status": "ok",
-            }));
-        });
+            }),
+        );
 
+        let endpoint = format!("{}/api/v1/extract", server.url());
         with_env(
             &[
-                ("LLM_ENDPOINT", Some(&server.url("/api/v1/extract"))),
+                ("LLM_ENDPOINT", Some(&endpoint)),
                 ("LLM_API_KEY", Some("token")),
             ],
             || {
@@ -949,6 +973,7 @@ mod tests {
                 assert!(reason.contains("unexpected"));
             },
         );
+        mock.assert();
     }
 
     #[test]
@@ -1006,16 +1031,15 @@ mod tests {
         assert!(updated.locked_by.is_none());
         assert!(updated.retry_count > 0);
         assert!(updated.next_retry_at.is_some());
-        assert!(
-            updated
-                .last_error
-                .as_ref()
-                .map(|e| e.contains("temporary"))
-                .unwrap_or(false)
-        );
+        assert!(updated
+            .last_error
+            .as_ref()
+            .map(|e| e.contains("temporary"))
+            .unwrap_or(false));
     }
 
     #[test]
+    #[serial]
     fn provider_specific_api_keys_fill_default() {
         with_env(
             &[
@@ -1032,6 +1056,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn shadow_defaults_can_use_provider_specific_keys() {
         with_env(
             &[
@@ -1051,6 +1076,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn shadow_key_falls_back_to_primary_when_same_provider() {
         with_env(
             &[
@@ -1096,6 +1122,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn llm_config_reads_env_overrides() {
         with_env(
             &[
@@ -1139,6 +1166,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn llm_provider_defaults_follow_live_endpoints() {
         with_env(
             &[
@@ -1187,6 +1215,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn llm_disabled_routes_to_manual_review() {
         with_env(&[("LLM_ENABLED", Some("0"))], || {
             let llm_config = LlmRuntimeConfig::from_env();
@@ -1205,16 +1234,16 @@ mod tests {
             assert_eq!(job.status, QueueStatus::Completed);
             assert_eq!(job.final_method, Some(FinalMethod::ManualReview));
             assert!(job.requires_manual_review);
-            assert!(
-                job.decision_reason
-                    .as_ref()
-                    .map(|r| r.contains("LLM_DISABLED"))
-                    .unwrap_or(false)
-            );
+            assert!(job
+                .decision_reason
+                .as_ref()
+                .map(|r| r.contains("LLM_DISABLED"))
+                .unwrap_or(false));
         });
     }
 
     #[test]
+    #[serial]
     fn missing_api_key_is_manual_review() {
         with_env(&[("LLM_API_KEY", None), ("OPENAI_API_KEY", None)], || {
             let llm_config = LlmRuntimeConfig::from_env();
@@ -1239,25 +1268,29 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn shadow_compare_executes_request() {
-        let server = MockServer::start_async().await;
+        let mut server = Server::new_async().await;
         let shadow_hit = server
-            .mock_async(|when, then| {
-                when.method(POST).path("/shadow");
-                then.status(200).json_body(json!({
+            .mock("POST", "/shadow")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
                     "extracted": {"project_name": "shadow"},
                     "latency_ms": 50,
                     "model_used": "shadow-model",
-                }));
-            })
-            .await;
+                })
+                .to_string(),
+            )
+            .create();
 
         let mut job = ExtractionJob::new("shadow", "subject", Utc::now(), "hash");
         job.recommended_method = Some(RecommendedMethod::LlmRecommended);
         job.canary_target = true;
 
         let mut config = LlmRuntimeConfig::from_env();
-        config.shadow_endpoint = Some(server.url("/shadow"));
+        config.shadow_endpoint = Some(format!("{}/shadow", server.url()));
         config.shadow_model = Some("shadow-model".into());
         config.shadow_api_key = "shadow-key".into();
 
@@ -1272,7 +1305,7 @@ mod tests {
             .expect("shadow compare spawned");
         handle.await.expect("shadow join ok");
 
-        shadow_hit.assert_async().await;
+        shadow_hit.assert();
     }
 
     #[test]

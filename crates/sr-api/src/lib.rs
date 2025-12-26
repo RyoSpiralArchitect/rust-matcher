@@ -5,28 +5,28 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    Router,
     body::Body,
+    extract::connect_info::ConnectInfo,
     extract::DefaultBodyLimit,
     extract::State,
-    extract::connect_info::ConnectInfo,
+    http::header::{HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
     http::Method,
     http::Request,
-    http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue},
     middleware,
     middleware::Next,
     response::Response,
     routing::{get, post},
+    Router,
 };
 use clap::Parser;
 use dotenvy::dotenv;
 use governor::{
-    Quota, RateLimiter, clock::DefaultClock, middleware::NoOpMiddleware,
-    state::keyed::DashMapStateStore,
+    clock::DefaultClock, middleware::NoOpMiddleware, state::keyed::DashMapStateStore, Quota,
+    RateLimiter,
 };
 use sr_common::api::match_response::MatchConfig;
 use sr_common::db::create_pool_from_url_checked;
-use sr_common::db::{PgPool, run_migrations};
+use sr_common::db::{run_migrations, PgPool};
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -408,6 +408,7 @@ mod tests {
         http::{Request, StatusCode},
         routing::get,
     };
+    use serial_test::serial;
     use std::sync::Mutex;
     use tower::ServiceExt;
 
@@ -421,20 +422,24 @@ mod tests {
             .map(|(var, value)| {
                 let old = env::var(var).ok();
                 match value {
-                    Some(v) => unsafe { env::set_var(var, v) },
-                    None => unsafe { env::remove_var(var) },
+                    Some(v) => env::set_var(var, v),
+                    None => env::remove_var(var),
                 }
                 (*var, old)
             })
             .collect();
 
-        f();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 
         for (var, previous_value) in previous {
             match previous_value {
-                Some(v) => unsafe { env::set_var(var, v) },
-                None => unsafe { env::remove_var(var) },
+                Some(v) => env::set_var(var, v),
+                None => env::remove_var(var),
             }
+        }
+
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
         }
     }
 
@@ -461,6 +466,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn rate_limit_config_respects_env_overrides() {
         with_envs(
             &[
@@ -535,7 +541,7 @@ async fn shutdown_signal(state: SharedState) {
 
     #[cfg(unix)]
     let terminate = async {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
         if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
             let _ = sigterm.recv().await;
         }
