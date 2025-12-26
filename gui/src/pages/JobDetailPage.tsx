@@ -27,6 +27,8 @@ import type {
   FeedbackType,
   ConversionStage,
 } from "@/api";
+import { ErrorDisplay } from "@/components/ErrorDisplay";
+import { StatusBadge } from "@/components/StatusBadge";
 import { LoadingState } from "@/components/LoadingState";
 
 export function JobDetailPage() {
@@ -37,11 +39,7 @@ export function JobDetailPage() {
   const conversionMutation = useSendConversion();
 
   if (error) {
-    return (
-      <div className="text-destructive">
-        Error: {error instanceof Error ? error.message : "Unknown error"}
-      </div>
-    );
+    return <ErrorDisplay error={error} />;
   }
 
   if (isLoading || !data) {

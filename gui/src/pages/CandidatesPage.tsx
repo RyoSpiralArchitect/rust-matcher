@@ -13,6 +13,7 @@ import {
   trackShortlisted,
 } from "@/api";
 import type { MatchCandidate, FeedbackType } from "@/api";
+import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
 
 export function CandidatesPage() {
@@ -27,11 +28,7 @@ export function CandidatesPage() {
   }
 
   if (error) {
-    return (
-      <div className="text-destructive">
-        Error: {error instanceof Error ? error.message : "Unknown error"}
-      </div>
-    );
+    return <ErrorDisplay error={error} />;
   }
 
   const handleFeedback = (interactionId: number, feedbackType: FeedbackType) => {

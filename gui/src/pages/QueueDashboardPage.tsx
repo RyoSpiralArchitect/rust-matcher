@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useQueueDashboard } from "@/api";
 import { LoadingState } from "@/components/LoadingState";
+import { ErrorDisplay } from "@/components/ErrorDisplay";
 
 export function QueueDashboardPage() {
   const { data, isLoading, error } = useQueueDashboard();
@@ -11,11 +12,7 @@ export function QueueDashboardPage() {
   }
 
   if (error) {
-    return (
-      <div className="text-destructive">
-        Error: {error instanceof Error ? error.message : "Unknown error"}
-      </div>
-    );
+    return <ErrorDisplay error={error} />;
   }
 
   return (
