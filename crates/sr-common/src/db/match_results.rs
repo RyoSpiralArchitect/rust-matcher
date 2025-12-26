@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tracing::instrument;
 
-use crate::db::{db_error, normalize_json, PgPool};
+use crate::db::{normalize_json, PgPool};
 
 db_error!(MatchResultStorageError {});
 

@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use tracing::info;
 
 use sr_common::api::match_request::MatchRequest;
 use sr_common::api::match_response::MatchResponse;
@@ -15,7 +16,7 @@ const DEFAULT_MATCH_LIMIT: usize = 50;
 
 pub async fn run_match(
     State(state): State<SharedState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Json(request): Json<MatchRequest>,
 ) -> Result<Json<Vec<MatchResponse>>, ApiError> {
     let project_id = request
@@ -26,6 +27,14 @@ pub async fn run_match(
     let limit = request.limit.unwrap_or(DEFAULT_MATCH_LIMIT).clamp(1, 200) as u32;
 
     let talent_filter: Option<Vec<i64>> = request.talent_ids;
+    info!(
+        user = %auth.subject,
+        project_id,
+        limit,
+        include_softko = request.include_softko,
+        talent_filter_len = talent_filter.as_ref().map(Vec::len).unwrap_or(0),
+        "running match request"
+    );
     let responses = fetch_candidates_for_project(
         &state.pool,
         project_id,
@@ -43,8 +52,9 @@ pub async fn run_match(
 pub async fn get_match(
     State(state): State<SharedState>,
     Path(match_id): Path<i64>,
-    _auth: AuthUser,
+    auth: AuthUser,
 ) -> Result<Json<MatchResponse>, ApiError> {
+    info!(user = %auth.subject, match_id, "fetching match result");
     let response = fetch_match_by_id(&state.pool, match_id, &state.match_config)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("match {match_id} not found")))?;

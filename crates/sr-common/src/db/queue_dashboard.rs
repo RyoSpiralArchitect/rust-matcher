@@ -1,7 +1,7 @@
 use tracing::instrument;
 
 use crate::api::models::queue::{QueueDashboard, StatusCounts};
-use crate::db::{db_error, PgPool};
+use crate::db::PgPool;
 
 db_error!(QueueDashboardError {});
 
