@@ -1,9 +1,9 @@
-use axum::{Json, extract::State};
+use axum::{extract::State, Json};
 use serde_json::json;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
-use crate::SharedState;
 use crate::error::ApiError;
+use crate::SharedState;
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -48,12 +48,12 @@ pub async fn readyz(State(state): State<SharedState>) -> Result<Json<serde_json:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, atomic::AtomicBool};
+    use std::sync::{atomic::AtomicBool, Arc};
 
     use sr_common::db::create_pool_from_url;
 
     use crate::auth::{AuthConfig, AuthMode, JwtAlgorithm};
-    use crate::{AppConfig, AppState, MatchConfig, default_rate_limits};
+    use crate::{default_rate_limits, AppConfig, AppState, MatchConfig};
 
     fn state_with_readiness(readiness: bool) -> SharedState {
         let pool = create_pool_from_url("postgres://user:pass@localhost:5432/example").unwrap();
@@ -67,6 +67,7 @@ mod tests {
                 jwt_secret: None,
                 jwt_public_key: None,
                 jwt_algorithm: JwtAlgorithm::Hs256,
+                use_cookie_auth: false,
             },
             allow_source_text: false,
             job_detail_statement_timeout_ms: 5000,

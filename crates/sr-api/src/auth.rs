@@ -1,11 +1,11 @@
 use axum::async_trait;
 use axum::extract::FromRef;
 use axum::extract::FromRequestParts;
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::request::Parts;
 use clap::ValueEnum;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
-use serde::Deserialize;
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use crate::error::ApiError;
@@ -73,6 +73,7 @@ pub struct AuthConfig {
     pub jwt_secret: Option<String>,
     pub jwt_public_key: Option<String>,
     pub jwt_algorithm: JwtAlgorithm,
+    pub use_cookie_auth: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +97,7 @@ impl UserRole {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Claims {
     sub: String,
     #[serde(rename = "exp")]
@@ -145,15 +146,7 @@ fn authorize_api_key(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, Api
 }
 
 fn authorize_jwt(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, ApiError> {
-    let header = parts
-        .headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| ApiError::Unauthorized("missing Authorization header".into()))?;
-
-    let token = header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| ApiError::Unauthorized("expected Bearer token".into()))?;
+    let token = extract_jwt_token(parts, config)?;
 
     let algorithm = config.jwt_algorithm.algorithm();
     let validation = Validation::new(algorithm);
@@ -192,7 +185,7 @@ fn authorize_jwt(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, ApiErro
         .map_err(|err| ApiError::Unauthorized(format!("invalid EdDSA public key: {err}")))?,
     };
 
-    let data = decode::<Claims>(token, &decoding_key, &validation)
+    let data = decode::<Claims>(token.as_str(), &decoding_key, &validation)
         .map_err(|err| ApiError::Unauthorized(format!("invalid token: {err}")))?;
 
     Ok(AuthUser {
@@ -201,8 +194,154 @@ fn authorize_jwt(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, ApiErro
     })
 }
 
+fn extract_jwt_token(parts: &Parts, config: &AuthConfig) -> Result<String, ApiError> {
+    if config.use_cookie_auth {
+        if let Some(token) = extract_cookie_token(parts) {
+            return Ok(token);
+        }
+    }
+
+    let header = parts
+        .headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::Unauthorized("missing Authorization header and __Host-sr-token cookie".into())
+        })?;
+
+    header
+        .strip_prefix("Bearer ")
+        .map(|token| token.to_string())
+        .ok_or_else(|| ApiError::Unauthorized("expected Bearer token".into()))
+}
+
+fn extract_cookie_token(parts: &Parts) -> Option<String> {
+    let cookie_header = parts.headers.get(COOKIE)?.to_str().ok()?;
+    for cookie in cookie_header.split(';') {
+        let trimmed = cookie.trim();
+        if let Some(value) = trimmed.strip_prefix("__Host-sr-token=") {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
 impl AuthUser {
     pub fn is_admin(&self) -> bool {
         self.role == UserRole::Admin
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{header::COOKIE, HeaderValue, Request};
+    use chrono::{Duration, Utc};
+    use jsonwebtoken::{encode, EncodingKey, Header};
+
+    fn signed_token(sub: &str, secret: &str) -> String {
+        let claims = Claims {
+            sub: sub.to_string(),
+            _exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+            role: Some("admin".into()),
+        };
+
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("token should sign")
+    }
+
+    #[test]
+    fn jwt_can_be_extracted_from_cookie_when_enabled() {
+        let secret = "cookie-secret";
+        let token = signed_token("cookie-user", secret);
+
+        let parts = Request::builder()
+            .uri("/")
+            .header(
+                COOKIE,
+                HeaderValue::from_str(&format!("__Host-sr-token={token}")).unwrap(),
+            )
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let config = AuthConfig {
+            mode: AuthMode::Jwt,
+            api_key: None,
+            jwt_secret: Some(secret.into()),
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs256,
+            use_cookie_auth: true,
+        };
+
+        let user = authorize_jwt(&parts, &config).expect("cookie token should be accepted");
+        assert_eq!(user.subject, "cookie-user");
+        assert!(user.is_admin());
+    }
+
+    #[test]
+    fn cookie_is_rejected_when_flag_disabled_and_header_missing() {
+        let secret = "cookie-secret";
+        let token = signed_token("cookie-user", secret);
+
+        let parts = Request::builder()
+            .uri("/")
+            .header(
+                COOKIE,
+                HeaderValue::from_str(&format!("__Host-sr-token={token}")).unwrap(),
+            )
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let config = AuthConfig {
+            mode: AuthMode::Jwt,
+            api_key: None,
+            jwt_secret: Some(secret.into()),
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs256,
+            use_cookie_auth: false,
+        };
+
+        let err = authorize_jwt(&parts, &config).unwrap_err();
+        assert!(matches!(err, ApiError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn bearer_header_is_accepted_when_cookie_auth_disabled() {
+        let secret = "header-secret";
+        let token = signed_token("header-user", secret);
+
+        let parts = Request::builder()
+            .uri("/")
+            .header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+            )
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let config = AuthConfig {
+            mode: AuthMode::Jwt,
+            api_key: None,
+            jwt_secret: Some(secret.into()),
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs256,
+            use_cookie_auth: false,
+        };
+
+        let user = authorize_jwt(&parts, &config).expect("bearer token should be accepted");
+        assert_eq!(user.subject, "header-user");
+        assert!(user.is_admin());
     }
 }
