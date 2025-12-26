@@ -2,7 +2,7 @@ use chrono::Utc;
 use clap::Parser;
 use dotenvy::dotenv;
 use rand::Rng;
-use reqwest::{StatusCode, blocking::Client};
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sr_common::db::{
@@ -14,7 +14,6 @@ use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
     RecommendedMethod,
 };
-use std::thread::sleep as std_sleep;
 use std::time::Duration as StdDuration;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
@@ -273,6 +272,7 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
     let mut queue = ExtractionQueue::default();
     let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
+    let rt = tokio::runtime::Runtime::new().expect("failed to build runtime for sample flow");
 
     let mut job = ExtractionJob::new(
         "llm-message-1",
@@ -286,7 +286,7 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
 
     let sample_body = "sample body";
     queue.process_next_with_worker(worker_id, |job| {
-        handle_llm_job(job, sample_body, &llm_config)
+        rt.block_on(handle_llm_job(job, sample_body, &llm_config))
     });
 
     if let Some(processed) = queue.jobs.first() {
@@ -389,7 +389,7 @@ fn is_retryable_status(status: StatusCode) -> bool {
     )
 }
 
-fn perform_llm_request(
+async fn perform_llm_request(
     config: &LlmRuntimeConfig,
     endpoint: &str,
     api_key: &str,
@@ -411,7 +411,8 @@ fn perform_llm_request(
             .post(endpoint)
             .bearer_auth(api_key)
             .json(request)
-            .send();
+            .send()
+            .await;
 
         match response {
             Ok(resp) => {
@@ -419,17 +420,18 @@ fn perform_llm_request(
                 if status.is_success() {
                     return resp
                         .json::<LlmResponse>()
+                        .await
                         .map_err(|err| JobError::Permanent {
                             message: format!("invalid llm response body: {err}"),
                         });
                 }
 
                 if is_retryable_status(status) && attempt < config.max_retries {
-                    std_sleep(StdDuration::from_secs(config.retry_backoff_secs));
+                    sleep(Duration::from_secs(config.retry_backoff_secs)).await;
                     continue;
                 }
 
-                let body = resp.text().unwrap_or_default();
+                let body = resp.text().await.unwrap_or_default();
                 let message = format!("llm call failed with status {status}: {body}");
                 if is_retryable_status(status) {
                     return Err(JobError::Retryable {
@@ -444,7 +446,7 @@ fn perform_llm_request(
             }
             Err(err) => {
                 if attempt < config.max_retries {
-                    std_sleep(StdDuration::from_secs(config.retry_backoff_secs));
+                    sleep(Duration::from_secs(config.retry_backoff_secs)).await;
                     continue;
                 }
 
@@ -515,9 +517,10 @@ fn spawn_shadow_compare(
     let mut shadow_config = config.clone();
     shadow_config.model = shadow_model;
 
-    Some(tokio::task::spawn_blocking(move || {
+    Some(tokio::spawn(async move {
         let request = build_llm_request(&job, &body_text, &shadow_config);
-        match perform_llm_request(&shadow_config, &shadow_endpoint, &shadow_api_key, &request) {
+        match perform_llm_request(&shadow_config, &shadow_endpoint, &shadow_api_key, &request).await
+        {
             Ok(shadow_resp) => {
                 let diff =
                     if shadow_resp.extracted == job.partial_fields.clone().unwrap_or_default() {
@@ -552,7 +555,7 @@ fn spawn_shadow_compare(
     }))
 }
 
-fn handle_llm_job(
+async fn handle_llm_job(
     job: &ExtractionJob,
     body_text: &str,
     config: &LlmRuntimeConfig,
@@ -580,7 +583,7 @@ fn handle_llm_job(
 
     let request = build_llm_request(job, body_text, config);
     let started = Utc::now();
-    let response = perform_llm_request(config, &config.endpoint, &config.api_key, &request)?;
+    let response = perform_llm_request(config, &config.endpoint, &config.api_key, &request).await?;
     let latency = response
         .latency_ms
         .or_else(|| (Utc::now() - started).num_milliseconds().try_into().ok());
@@ -733,7 +736,7 @@ async fn process_locked_job(
 
     let (processed, _status) = apply_outcome(
         locked.clone(),
-        handle_llm_job(&locked, &body_text, llm_config),
+        handle_llm_job(&locked, &body_text, llm_config).await,
     );
     let rows = upsert_extraction_job(pool, &processed).await?;
     info!(
@@ -957,7 +960,11 @@ mod tests {
 
         queue.enqueue(job);
 
-        queue.process_next_with_worker("sr-llm-worker", |j| handle_llm_job(j, "body", &llm_config));
+        queue.process_next_with_worker("sr-llm-worker", |j| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(handle_llm_job(j, "body", &llm_config))
+        });
 
         let job = &queue.jobs[0];
         assert_eq!(job.status, QueueStatus::Completed);
@@ -1189,7 +1196,9 @@ mod tests {
 
             queue.enqueue(job);
             queue.process_next_with_worker("sr-llm-worker", |j| {
-                handle_llm_job(j, "body", &llm_config)
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(handle_llm_job(j, "body", &llm_config))
             });
 
             let job = &queue.jobs[0];
@@ -1215,7 +1224,9 @@ mod tests {
 
             queue.enqueue(job);
             queue.process_next_with_worker("sr-llm-worker", |j| {
-                handle_llm_job(j, "body", &llm_config)
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(handle_llm_job(j, "body", &llm_config))
             });
 
             let job = &queue.jobs[0];
