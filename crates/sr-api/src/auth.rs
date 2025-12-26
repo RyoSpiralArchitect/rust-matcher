@@ -5,7 +5,7 @@ use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::request::Parts;
 use clap::ValueEnum;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use crate::error::ApiError;
@@ -97,7 +97,7 @@ impl UserRole {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Claims {
     sub: String,
     #[serde(rename = "exp")]
@@ -231,5 +231,117 @@ fn extract_cookie_token(parts: &Parts) -> Option<String> {
 impl AuthUser {
     pub fn is_admin(&self) -> bool {
         self.role == UserRole::Admin
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{header::COOKIE, HeaderValue, Request};
+    use chrono::{Duration, Utc};
+    use jsonwebtoken::{encode, EncodingKey, Header};
+
+    fn signed_token(sub: &str, secret: &str) -> String {
+        let claims = Claims {
+            sub: sub.to_string(),
+            _exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+            role: Some("admin".into()),
+        };
+
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("token should sign")
+    }
+
+    #[test]
+    fn jwt_can_be_extracted_from_cookie_when_enabled() {
+        let secret = "cookie-secret";
+        let token = signed_token("cookie-user", secret);
+
+        let parts = Request::builder()
+            .uri("/")
+            .header(
+                COOKIE,
+                HeaderValue::from_str(&format!("__Host-sr-token={token}")).unwrap(),
+            )
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let config = AuthConfig {
+            mode: AuthMode::Jwt,
+            api_key: None,
+            jwt_secret: Some(secret.into()),
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs256,
+            use_cookie_auth: true,
+        };
+
+        let user = authorize_jwt(&parts, &config).expect("cookie token should be accepted");
+        assert_eq!(user.subject, "cookie-user");
+        assert!(user.is_admin());
+    }
+
+    #[test]
+    fn cookie_is_rejected_when_flag_disabled_and_header_missing() {
+        let secret = "cookie-secret";
+        let token = signed_token("cookie-user", secret);
+
+        let parts = Request::builder()
+            .uri("/")
+            .header(
+                COOKIE,
+                HeaderValue::from_str(&format!("__Host-sr-token={token}")).unwrap(),
+            )
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let config = AuthConfig {
+            mode: AuthMode::Jwt,
+            api_key: None,
+            jwt_secret: Some(secret.into()),
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs256,
+            use_cookie_auth: false,
+        };
+
+        let err = authorize_jwt(&parts, &config).unwrap_err();
+        assert!(matches!(err, ApiError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn bearer_header_is_accepted_when_cookie_auth_disabled() {
+        let secret = "header-secret";
+        let token = signed_token("header-user", secret);
+
+        let parts = Request::builder()
+            .uri("/")
+            .header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+            )
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let config = AuthConfig {
+            mode: AuthMode::Jwt,
+            api_key: None,
+            jwt_secret: Some(secret.into()),
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs256,
+            use_cookie_auth: false,
+        };
+
+        let user = authorize_jwt(&parts, &config).expect("bearer token should be accepted");
+        assert_eq!(user.subject, "header-user");
+        assert!(user.is_admin());
     }
 }
