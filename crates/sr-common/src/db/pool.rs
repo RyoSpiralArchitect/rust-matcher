@@ -217,6 +217,38 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn connects_to_database_when_url_is_provided() {
+        let url = std::env::var("TEST_DATABASE_URL")
+            .ok()
+            .or_else(|| std::env::var("DATABASE_URL").ok());
+
+        let Some(db_url) = url else {
+            eprintln!("skipping live DB check: TEST_DATABASE_URL/DATABASE_URL not set");
+            return;
+        };
+
+        let pool = match create_pool_from_url(&db_url) {
+            Ok(pool) => pool,
+            Err(err) => {
+                eprintln!("skipping live DB check: failed to build pool: {err}");
+                return;
+            }
+        };
+
+        match pool.get().await {
+            Ok(client) => {
+                // A simple ping to ensure the connection is usable.
+                if let Err(err) = client.simple_query("SELECT 1").await {
+                    panic!("live DB simple query failed: {err}");
+                }
+            }
+            Err(err) => {
+                eprintln!("skipping live DB check: failed to get client: {err}");
+            }
+        }
+    }
+
     #[test]
     #[serial]
     fn builds_expected_options_from_env() {

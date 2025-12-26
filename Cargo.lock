@@ -2446,6 +2446,7 @@ dependencies = [
  "jsonwebtoken",
  "serde",
  "serde_json",
+ "serial_test",
  "sr-common",
  "subtle",
  "thiserror 1.0.69",
