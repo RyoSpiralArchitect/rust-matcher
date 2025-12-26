@@ -1,22 +1,15 @@
-use deadpool_postgres::PoolError;
-use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
 use crate::api::interaction_event::{
     InteractionEventRequest, InteractionEventResponse, InteractionEventSource,
     InteractionEventStatus, InteractionEventType,
 };
-use crate::db::PgPool;
+use crate::db::{db_error, PgPool};
 
-#[derive(Debug, thiserror::Error)]
-pub enum InteractionEventStorageError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
+db_error!(InteractionEventStorageError {
     #[error("interaction event actor is missing")]
     MissingActor,
-}
+});
 
 #[instrument(skip(pool, actor, request))]
 pub async fn insert_interaction_event(

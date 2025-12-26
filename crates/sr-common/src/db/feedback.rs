@@ -1,23 +1,18 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::{GenericClient, PoolError};
+use deadpool_postgres::GenericClient;
 use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
 use crate::api::feedback_request::{FeedbackRequest, NgReasonCategory};
 use crate::api::feedback_response::{FeedbackResponse, FeedbackStatus};
-use crate::db::PgPool;
+use crate::db::{db_error, PgPool};
 
-#[derive(Debug, thiserror::Error)]
-pub enum FeedbackStorageError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
+db_error!(FeedbackStorageError {
     #[error("interaction not found: {0}")]
     InteractionNotFound(i64),
     #[error("feedback actor is missing")]
     MissingActor,
-}
+});
 
 struct InteractionContext {
     interaction_id: i64,
