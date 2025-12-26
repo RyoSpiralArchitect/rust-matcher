@@ -1,4 +1,4 @@
-use deadpool_postgres::PoolError;
+use deadpool_postgres::{GenericClient, PoolError};
 use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
@@ -34,7 +34,7 @@ fn map_ng_reason(value: &Option<NgReasonCategory>) -> Option<&str> {
 
 #[instrument(skip(client, interaction_id))]
 async fn fetch_interaction_context(
-    client: &tokio_postgres::Client,
+    client: &impl GenericClient,
     interaction_id: i64,
 ) -> Result<InteractionContext, FeedbackStorageError> {
     let row = client
@@ -76,10 +76,11 @@ pub async fn insert_feedback_event(
         return Err(FeedbackStorageError::MissingActor);
     }
 
-    let client = pool.get().await?;
-    let interaction = fetch_interaction_context(&client, request.interaction_id).await?;
+    let mut client = pool.get().await?;
+    let tx = client.transaction().await?;
+    let interaction = fetch_interaction_context(&tx, request.interaction_id).await?;
 
-    let stmt = client
+    let stmt = tx
         .prepare_cached(
             "INSERT INTO ses.feedback_events (\
                 interaction_id,\
@@ -102,7 +103,7 @@ pub async fn insert_feedback_event(
         )
         .await?;
 
-    let row = client
+    let row = tx
         .query_opt(
             &stmt,
             &[
@@ -122,7 +123,7 @@ pub async fn insert_feedback_event(
         )
         .await?;
 
-    Ok(match row {
+    let response = match row {
         Some(row) => FeedbackResponse {
             id: Some(row.get("id")),
             status: FeedbackStatus::Created,
@@ -131,5 +132,9 @@ pub async fn insert_feedback_event(
             id: None,
             status: FeedbackStatus::AlreadyExists,
         },
-    })
+    };
+
+    tx.commit().await?;
+
+    Ok(response)
 }

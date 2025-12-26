@@ -20,4 +20,4 @@ tokio-postgres.workspace = true
 base64 = "0.22"
 html2text = "0.15"
 mailparse = "0.14"
-google-gmail1 = "5"
+google-gmail1 = "6"

@@ -4,6 +4,7 @@ pub mod corrections;
 pub mod date;
 pub mod db;
 pub mod extraction;
+pub mod logging;
 pub mod matching;
 pub mod normalize;
 pub mod queue;

@@ -40,10 +40,12 @@ CREATE TABLE ses.extraction_queue (
     CONSTRAINT chk_status CHECK (status IN ('pending', 'processing', 'completed')),
     CONSTRAINT chk_recommended_method CHECK (recommended_method IN ('rust_recommended', 'llm_recommended')),
     CONSTRAINT chk_final_method CHECK (final_method IS NULL OR final_method IN ('rust_completed', 'llm_completed', 'manual_review')),
-    CONSTRAINT chk_priority CHECK (priority >= 0 AND priority <= 100)
+    CONSTRAINT chk_priority CHECK (priority >= 0 AND priority <= 100),
+    CONSTRAINT chk_retry_count CHECK (retry_count >= 0 AND retry_count <= 100)
 );
 
 CREATE INDEX idx_extraction_queue_status_priority ON ses.extraction_queue(status, priority DESC, next_retry_at);
+CREATE INDEX idx_extraction_queue_pending ON ses.extraction_queue(created_at, id) WHERE status = 'pending';
 CREATE INDEX idx_extraction_queue_message_id ON ses.extraction_queue(message_id);
 CREATE INDEX idx_extraction_queue_subject_hash ON ses.extraction_queue(subject_hash, created_at);
 CREATE INDEX idx_extraction_queue_canary ON ses.extraction_queue(canary_target, created_at);
