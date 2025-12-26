@@ -22,3 +22,6 @@ unicode-normalization = "0.1"
 strsim = "0.10"
 ulid = "1"
 siphasher.workspace = true
+
+[dev-dependencies]
+serial_test.workspace = true

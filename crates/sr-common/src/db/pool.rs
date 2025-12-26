@@ -146,22 +146,28 @@ pub async fn create_pool_from_url_checked(db_url: &str) -> Result<PgPool, DbPool
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::sync::Mutex;
 
     #[test]
+    #[serial]
     fn builds_pool_without_connecting() {
         // Ensure env-driven overrides don't break pool creation when set.
-        unsafe {
-            std::env::set_var("SR_DB_MAX_SIZE", "8");
-            std::env::set_var("SR_DB_TIMEOUT_WAIT_SECS", "1");
-            std::env::set_var("SR_DB_TIMEOUT_CREATE_SECS", "1");
-            std::env::set_var("SR_DB_TIMEOUT_RECYCLE_SECS", "1");
-            std::env::set_var("SR_DB_APPLICATION_NAME", "sr-api");
-        }
-        let result = create_pool_from_url("postgres://user:pass@localhost:5432/example");
-        assert!(result.is_ok());
+        with_envs(
+            &[
+                ("SR_DB_MAX_SIZE", Some("8")),
+                ("SR_DB_TIMEOUT_WAIT_SECS", Some("1")),
+                ("SR_DB_TIMEOUT_CREATE_SECS", Some("1")),
+                ("SR_DB_TIMEOUT_RECYCLE_SECS", Some("1")),
+                ("SR_DB_APPLICATION_NAME", Some("sr-api")),
+            ],
+            || {
+                let result = create_pool_from_url("postgres://user:pass@localhost:5432/example");
+                assert!(result.is_ok());
+            },
+        );
     }
 
-    use std::sync::Mutex;
     static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     fn with_env(var: &str, value: Option<&str>, f: impl FnOnce()) {
@@ -176,8 +182,8 @@ mod tests {
             .map(|(var, value)| {
                 let old = std::env::var(var).ok();
                 match value {
-                    Some(v) => unsafe { std::env::set_var(var, v) },
-                    None => unsafe { std::env::remove_var(var) },
+                    Some(v) => std::env::set_var(var, v),
+                    None => std::env::remove_var(var),
                 }
                 (*var, old)
             })
@@ -187,13 +193,14 @@ mod tests {
 
         for (var, previous_value) in previous {
             match previous_value {
-                Some(v) => unsafe { std::env::set_var(var, v) },
-                None => unsafe { std::env::remove_var(var) },
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
             }
         }
     }
 
     #[test]
+    #[serial]
     fn fail_fast_default_is_disabled() {
         with_env("SR_DB_FAIL_FAST", None, || {
             assert!(!fail_fast_enabled());
@@ -201,6 +208,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn fail_fast_accepts_truthy_values() {
         for value in ["1", "true", "TRUE", "yes", "on"] {
             with_env("SR_DB_FAIL_FAST", Some(value), || {
@@ -210,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn builds_expected_options_from_env() {
         with_envs(
             &[
