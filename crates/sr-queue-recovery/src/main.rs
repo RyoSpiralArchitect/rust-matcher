@@ -135,13 +135,14 @@ mod tests {
     #[test]
     fn non_processing_jobs_are_left_untouched() {
         let mut queue = ExtractionQueue::default();
+        let created_at = Utc.with_ymd_and_hms(2023, 12, 31, 0, 0, 0).unwrap();
         let mut pending = ExtractionJob::new(
             "pending-message-1",
             "pending subject",
-            Utc::now(),
+            created_at,
             "pending-subject-hash",
         );
-        pending.updated_at = Utc.with_ymd_and_hms(2023, 12, 31, 0, 0, 0).unwrap();
+        pending.updated_at = created_at;
         queue.enqueue(pending);
 
         let now = Utc.with_ymd_and_hms(2024, 1, 2, 12, 0, 0).unwrap();

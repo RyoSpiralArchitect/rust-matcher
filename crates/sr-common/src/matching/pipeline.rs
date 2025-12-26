@@ -5,14 +5,14 @@ use super::{
     ko_unified::KnockoutResultV2,
     prefilter::{EnhancedPreFilter, PreFilterConfig, PrefilterCandidate},
     scoring::{
-        MatchScore, MatchingConfig, calculate_detailed_score, calculate_total_score_with_two_tower,
+        calculate_detailed_score, calculate_total_score_with_two_tower, MatchScore, MatchingConfig,
     },
 };
 use crate::{
-    Project, Talent,
-    db::{InteractionLogInsert, InteractionLogStorageError, PgPool, insert_interaction_log},
+    db::{insert_interaction_log, InteractionLogInsert, InteractionLogStorageError, PgPool},
     run_id,
-    two_tower::{TwoTowerConfig, TwoTowerEmbedder, create_embedder, load_config_from_env},
+    two_tower::{create_embedder, load_config_from_env, TwoTowerConfig, TwoTowerEmbedder},
+    Project, Talent,
 };
 use serde_json::json;
 
@@ -399,6 +399,7 @@ fn build_score_breakdown_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::Mutex;
 
     static ENV_GUARD: Mutex<()> = Mutex::new(());
@@ -411,8 +412,8 @@ mod tests {
             .map(|(var, value)| {
                 let old = std::env::var(var).ok();
                 match value {
-                    Some(v) => unsafe { std::env::set_var(var, v) },
-                    None => unsafe { std::env::remove_var(var) },
+                    Some(v) => std::env::set_var(var, v),
+                    None => std::env::remove_var(var),
                 }
                 (*var, old)
             })
@@ -422,8 +423,8 @@ mod tests {
 
         for (var, previous_value) in previous {
             match previous_value {
-                Some(v) => unsafe { std::env::set_var(var, v) },
-                None => unsafe { std::env::remove_var(var) },
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
             }
         }
     }
@@ -529,16 +530,12 @@ mod tests {
 
         assert_eq!(ranked.len(), 2);
         assert!(ranked.iter().all(|r| r.two_tower_score.is_some()));
-        assert!(
-            ranked
-                .windows(2)
-                .all(|w| w[0].total_score >= w[1].total_score)
-        );
-        assert!(
-            ranked
-                .iter()
-                .all(|r| r.two_tower_embedder.as_deref() == Some("hash"))
-        );
+        assert!(ranked
+            .windows(2)
+            .all(|w| w[0].total_score >= w[1].total_score));
+        assert!(ranked
+            .iter()
+            .all(|r| r.two_tower_embedder.as_deref() == Some("hash")));
     }
 
     #[test]
@@ -578,6 +575,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn build_interaction_logs_includes_two_tower_scores_and_metadata() {
         with_env(
             &[
@@ -605,29 +603,26 @@ mod tests {
 
                 assert_eq!(logs.len(), 2);
                 assert!(logs.iter().all(|l| l.two_tower_score.is_some()));
-                assert!(
-                    logs.iter()
-                        .all(|l| l.two_tower_embedder.as_deref() == Some("hash"))
-                );
+                assert!(logs
+                    .iter()
+                    .all(|l| l.two_tower_embedder.as_deref() == Some("hash")));
                 assert!(logs.iter().all(|l| l.business_score.is_some()));
                 assert!(logs.iter().all(|l| l.match_run_id.len() >= 26));
-                assert!(
-                    logs.iter()
-                        .all(|l| l.engine_version.as_deref() == Some("engine_v1"))
-                );
-                assert!(
-                    logs.iter()
-                        .all(|l| l.config_version.as_deref() == Some("cfg_v1"))
-                );
-                assert!(
-                    logs.iter()
-                        .all(|l| l.variant.as_deref() == Some("two_tower_10pct"))
-                );
+                assert!(logs
+                    .iter()
+                    .all(|l| l.engine_version.as_deref() == Some("engine_v1")));
+                assert!(logs
+                    .iter()
+                    .all(|l| l.config_version.as_deref() == Some("cfg_v1")));
+                assert!(logs
+                    .iter()
+                    .all(|l| l.variant.as_deref() == Some("two_tower_10pct")));
             },
         );
     }
 
     #[test]
+    #[serial]
     fn build_interaction_logs_uses_match_result_ids_when_provided() {
         with_env(&[("TWO_TOWER_ENABLED", Some("1"))], || {
             let mut project = base_project();
@@ -648,6 +643,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn build_match_result_inserts_populates_two_tower_and_business_scores() {
         with_env(&[("TWO_TOWER_ENABLED", Some("1"))], || {
             let mut project = base_project();

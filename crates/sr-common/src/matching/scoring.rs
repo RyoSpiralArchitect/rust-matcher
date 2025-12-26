@@ -6,9 +6,9 @@ use super::{
     weights::Weights,
 };
 use crate::{
-    Project, Talent,
     corrections::{nationality::is_japanese_nationality, normalize_contract_type_for_matching},
     two_tower::TwoTowerConfig,
+    Project, Talent,
 };
 use chrono::{Datelike, Utc};
 
@@ -656,7 +656,12 @@ mod tests {
     use crate::date::{NormalizedStartDate, StartDatePrecision};
     use chrono::NaiveDate;
 
+    fn future_year() -> i32 {
+        Utc::now().year() + 1
+    }
+
     fn full_project() -> Project {
+        let year = future_year();
         Project {
             monthly_tanka_max: Some(120),
             work_todofuken: Some("東京都".into()),
@@ -668,7 +673,7 @@ mod tests {
             age_limit_upper: Some(60),
             jinzai_flow_limit: Some("商流制限なし".into()),
             start_date: Some(NormalizedStartDate {
-                date: NaiveDate::from_ymd_opt(2025, 1, 1),
+                date: NaiveDate::from_ymd_opt(year, 1, 1),
                 precision: StartDatePrecision::ExactDay,
                 interpretation_note: None,
             }),
@@ -677,6 +682,7 @@ mod tests {
     }
 
     fn full_talent() -> Talent {
+        let year = future_year();
         Talent {
             desired_price_min: Some(80),
             residential_todofuken: Some("東京都".into()),
@@ -687,7 +693,7 @@ mod tests {
             birth_year: Some(Utc::now().year() - 35),
             flow_depth: Some("1社先".into()),
             availability_date: Some(NormalizedStartDate {
-                date: NaiveDate::from_ymd_opt(2025, 1, 1),
+                date: NaiveDate::from_ymd_opt(year, 1, 1),
                 precision: StartDatePrecision::ExactDay,
                 interpretation_note: None,
             }),
