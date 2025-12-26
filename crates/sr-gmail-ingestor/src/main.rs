@@ -3,15 +3,17 @@ use chrono::{DateTime, FixedOffset, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
 use google_gmail1::{
-    Gmail,
+    common::Body,
     api::{MessagePart, Scope},
-    hyper,
-    hyper::client::HttpConnector,
     hyper_rustls,
-    oauth2::{self, ServiceAccountKey},
+    hyper_util::{self, client::legacy::connect::HttpConnector, rt::TokioExecutor},
+    yup_oauth2::{self, ServiceAccountKey},
+    Gmail,
 };
 use html2text::from_read;
-use sr_common::db::{DbPoolError, PgPool, create_pool_from_url_checked, run_migrations};
+use sr_common::db::{
+    DbPoolError, MigrationError, PgPool, create_pool_from_url_checked, run_migrations,
+};
 use sr_common::logging::install_tracing_panic_hook;
 use std::collections::HashSet;
 use tokio::time::{Duration, interval, timeout};
@@ -90,7 +92,7 @@ enum IngestError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("oauth error: {0}")]
-    Oauth(#[from] oauth2::Error),
+    Oauth(#[from] yup_oauth2::Error),
     #[error("gmail api error: {0}")]
     Gmail(#[from] google_gmail1::Error),
     #[error("database pool error: {0}")]
@@ -99,6 +101,8 @@ enum IngestError {
     Pool(#[from] deadpool_postgres::PoolError),
     #[error("postgres error: {0}")]
     Postgres(#[from] tokio_postgres::Error),
+    #[error("migration error: {0}")]
+    Migration(#[from] MigrationError),
     #[error("base64 decode error: {0}")]
     Base64(#[from] base64::DecodeError),
     #[error("utf8 decode error: {0}")]
@@ -119,10 +123,10 @@ struct GmailIngestor {
 
 impl GmailIngestor {
     async fn new(cli: &Cli, pool: PgPool) -> Result<Self, IngestError> {
-        let key: ServiceAccountKey = oauth2::read_service_account_key(&cli.sa_key_path)
+        let key: ServiceAccountKey = yup_oauth2::read_service_account_key(&cli.sa_key_path)
             .await
             .map_err(IngestError::ServiceAccountLoad)?;
-        let auth = oauth2::ServiceAccountAuthenticator::builder(key)
+        let auth = yup_oauth2::ServiceAccountAuthenticator::builder(key)
             .subject(cli.impersonate_user.clone())
             .build()
             .await?;
@@ -133,7 +137,8 @@ impl GmailIngestor {
             .enable_http1()
             .enable_http2()
             .build();
-        let client = hyper::Client::builder().build::<_, hyper::Body>(https);
+        let client = hyper_util::client::legacy::Client::builder(TokioExecutor::new())
+            .build::<_, Body>(https);
 
         let gmail = Gmail::new(client, auth);
 
@@ -482,7 +487,7 @@ async fn run() -> Result<(), IngestError> {
     let pool = create_pool_from_url_checked(&cli.db_url).await?;
     run_migrations(&pool).await?;
 
-    let mut ingestor = GmailIngestor::new(&cli, pool).await?;
+    let ingestor = GmailIngestor::new(&cli, pool).await?;
 
     info!(poll_interval = cli.poll_interval, "starting Gmail ingestor");
     let mut ticker = interval(Duration::from_secs(cli.poll_interval));

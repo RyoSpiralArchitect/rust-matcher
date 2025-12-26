@@ -4,7 +4,6 @@ use super::{
     skills::check_required_skills,
 };
 use crate::{
-    Project, Talent,
     corrections::{
         english_skill::is_english_ko,
         flow_depth::{
@@ -14,6 +13,7 @@ use crate::{
         nationality::is_japanese_nationality,
         normalize_contract_type_for_matching,
     },
+    Project, Talent,
 };
 use chrono::Datelike;
 use std::collections::HashSet;
@@ -377,8 +377,9 @@ mod tests {
     }
 
     fn start_date(day: u32) -> NormalizedStartDate {
+        let year = chrono::Utc::now().year() + 1;
         NormalizedStartDate {
-            date: NaiveDate::from_ymd_opt(2025, 1, day),
+            date: NaiveDate::from_ymd_opt(year, 1, day),
             precision: StartDatePrecision::ExactDay,
             interpretation_note: None,
         }

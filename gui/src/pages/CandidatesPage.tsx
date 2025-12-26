@@ -13,6 +13,8 @@ import {
   trackShortlisted,
 } from "@/api";
 import type { MatchCandidate, FeedbackType } from "@/api";
+import { ErrorDisplay } from "@/components/ErrorDisplay";
+import { LoadingState } from "@/components/LoadingState";
 
 export function CandidatesPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -22,15 +24,11 @@ export function CandidatesPage() {
   const feedbackMutation = useSendFeedback();
 
   if (isLoading) {
-    return <div className="text-muted-foreground">Loading candidates...</div>;
+    return <LoadingState message="Loading candidates..." />;
   }
 
   if (error) {
-    return (
-      <div className="text-destructive">
-        Error: {error instanceof Error ? error.message : "Unknown error"}
-      </div>
-    );
+    return <ErrorDisplay error={error} />;
   }
 
   const handleFeedback = (interactionId: number, feedbackType: FeedbackType) => {
