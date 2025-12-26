@@ -34,6 +34,7 @@ pub mod match_results;
 pub mod migrations;
 pub mod pool;
 pub mod queue_dashboard;
+pub mod util;
 
 // Keep re-exports unique so downstream crates see a single symbol per helper.
 pub use anken_emails::{fetch_email_body, fetch_pending_emails, PendingEmail, PendingEmailError};
@@ -53,3 +54,4 @@ pub use match_results::{insert_match_result, MatchResultInsert, MatchResultStora
 pub use migrations::{run_migrations, MigrationError};
 pub use pool::{create_pool_from_url, create_pool_from_url_checked, DbPoolError, PgPool};
 pub use queue_dashboard::{fetch_dashboard, QueueDashboardError};
+pub use util::normalize_json;

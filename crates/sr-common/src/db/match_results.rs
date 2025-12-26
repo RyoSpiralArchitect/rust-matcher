@@ -1,9 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use tokio_postgres::types::Json;
 use tracing::instrument;
 
-use crate::db::{db_error, PgPool};
+use crate::db::{db_error, normalize_json, PgPool};
 
 db_error!(MatchResultStorageError {});
 
@@ -21,10 +20,6 @@ pub struct MatchResultInsert {
     /// 実行インスタンスID（ULID/UUID、毎回生成）
     pub match_run_id: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
-}
-
-fn normalize_json(value: &Option<Value>) -> Option<Json<&Value>> {
-    value.as_ref().map(Json)
 }
 
 /// Insert or update a match result snapshot.

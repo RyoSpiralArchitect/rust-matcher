@@ -4,4 +4,5 @@ pub mod feedback;
 pub mod health;
 pub mod interactions;
 pub mod matches;
+pub mod pagination;
 pub mod queue;
