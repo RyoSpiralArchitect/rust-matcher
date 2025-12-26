@@ -50,7 +50,12 @@ export type FeedbackType =
   | "review_ok"
   | "review_ng"
   | "accepted"
-  | "rejected";
+  | "rejected"
+  | "review_pending"
+  | "interview_scheduled"
+  | "no_response";
+
+export type FeedbackSource = "gui" | "crm" | "api" | "import";
 
 export type FeedbackSource = "gui" | "crm" | "api" | "import";
 

@@ -36,16 +36,16 @@ fn build_options() -> Option<String> {
     let mut options = Vec::new();
 
     if let Some(timeout_ms) = parse_env::<u64>(&["SR_DB_STATEMENT_TIMEOUT_MS"]) {
-        options.push(format!("-c statement_timeout={timeout_ms}"));
+        let bounded = timeout_ms.min(120_000);
+        options.push(format!("-c statement_timeout={bounded}"));
     }
 
     if let Some(timeout_ms) = parse_env::<u64>(&[
         "SR_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS",
         "SR_DB_IDLE_IN_TX_TIMEOUT_MS",
     ]) {
-        options.push(format!(
-            "-c idle_in_transaction_session_timeout={timeout_ms}"
-        ));
+        let bounded = timeout_ms.min(300_000);
+        options.push(format!("-c idle_in_transaction_session_timeout={bounded}"));
     }
 
     if let Some(app_name) = env::var("SR_DB_APPLICATION_NAME")

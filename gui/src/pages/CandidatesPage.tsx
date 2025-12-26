@@ -148,6 +148,7 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               size="sm"
               onClick={handleShortlist}
               title="Shortlist"
+              aria-label="Shortlist"
             >
               <Star className="h-4 w-4" />
             </Button>
@@ -156,6 +157,7 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               size="sm"
               onClick={handleCopy}
               title="Copy Template"
+              aria-label="Copy Template"
             >
               <Copy className="h-4 w-4" />
             </Button>
@@ -164,6 +166,7 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               size="sm"
               onClick={handleContact}
               title="Contact"
+              aria-label="Contact"
             >
               <Mail className="h-4 w-4" />
             </Button>

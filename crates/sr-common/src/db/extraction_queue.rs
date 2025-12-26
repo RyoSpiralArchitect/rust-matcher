@@ -655,8 +655,8 @@ async fn fetch_match_results(
         .query(&stmt, &[&talent_id, &project_id, &days, &limit])
         .await?;
 
-    let mut results = Vec::new();
-    let mut seen = HashSet::with_capacity(rows.len());
+    let mut results = Vec::with_capacity(rows.len());
+    let mut seen = HashSet::with_capacity(limit as usize);
 
     for row in rows {
         let mapped = map_match_result(&row);

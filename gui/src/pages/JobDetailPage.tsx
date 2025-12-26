@@ -518,6 +518,7 @@ function FeedbackBadge({ feedback }: { feedback: FeedbackEventRow }) {
 
 interface TimelineItem {
   type: "feedback" | "event";
+  id: number;
   date: string;
   actor: string;
   label: string;
@@ -532,6 +533,7 @@ function TimelineCard({ pairs }: { pairs: PairDetail[] }) {
     for (const fb of pair.feedbackEvents) {
       items.push({
         type: "feedback",
+        id: fb.id,
         date: fb.createdAt,
         actor: fb.actor,
         label: fb.feedbackType,
@@ -542,6 +544,7 @@ function TimelineCard({ pairs }: { pairs: PairDetail[] }) {
     for (const ev of pair.interactionEvents) {
       items.push({
         type: "event",
+        id: ev.id,
         date: ev.createdAt,
         actor: ev.actor,
         label: ev.eventType,
@@ -564,8 +567,8 @@ function TimelineCard({ pairs }: { pairs: PairDetail[] }) {
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
-          {items.slice(0, 20).map((item, idx) => (
-            <TimelineRow key={idx} item={item} />
+          {items.slice(0, 20).map((item) => (
+            <TimelineRow key={`${item.type}-${item.id}-${item.date}`} item={item} />
           ))}
           {items.length > 20 && (
             <div className="text-sm text-muted-foreground">
