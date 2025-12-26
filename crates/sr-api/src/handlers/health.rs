@@ -8,7 +8,11 @@ use crate::error::ApiError;
 const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub async fn livez() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
+    Json(json!({
+        "status": "ok",
+        "application": env!("CARGO_PKG_NAME"),
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 pub async fn readyz(State(state): State<SharedState>) -> Result<Json<serde_json::Value>, ApiError> {
@@ -37,6 +41,7 @@ pub async fn readyz(State(state): State<SharedState>) -> Result<Json<serde_json:
         "status": "ok",
         "database": "ok",
         "application": env!("CARGO_PKG_NAME"),
+        "version": env!("CARGO_PKG_VERSION"),
     })))
 }
 

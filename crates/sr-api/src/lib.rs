@@ -41,6 +41,7 @@ pub mod handlers;
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
 use handlers::{candidates, conversion, feedback, health, interactions, queue};
+use sr_common::logging::install_tracing_panic_hook;
 
 const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -487,6 +488,7 @@ mod tests {
 pub async fn run() -> Result<(), ApiError> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
+    install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
 
     let cli = Cli::parse();
     let config = AppConfig::from_cli(cli)?;

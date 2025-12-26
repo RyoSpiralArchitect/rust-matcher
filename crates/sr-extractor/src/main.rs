@@ -11,6 +11,7 @@ use sr_common::extraction::{
     extract_flow_dept, extract_remote_onsite, extract_start_date_raw, extract_tanka,
     extract_work_todofuken,
 };
+use sr_common::logging::install_tracing_panic_hook;
 use sr_common::normalize::{calculate_subject_hash, normalize_subject};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod,
@@ -114,6 +115,7 @@ pub fn run_sample_flow() -> ExtractionQueue {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
+    install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
 
     let args = Cli::parse();
     let pool = create_pool_from_url_checked(&args.db_url).await?;

@@ -9,6 +9,7 @@ use sr_common::db::{
     create_pool_from_url_checked, fetch_email_body, lock_next_pending_job, run_migrations,
     upsert_extraction_job,
 };
+use sr_common::logging::install_tracing_panic_hook;
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
     RecommendedMethod,
@@ -752,6 +753,7 @@ async fn process_locked_job(
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
+    install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
 
     let args = Cli::parse();
     let llm_config = LlmRuntimeConfig::from_env();

@@ -12,6 +12,7 @@ use google_gmail1::{
 };
 use html2text::from_read;
 use sr_common::db::{DbPoolError, PgPool, create_pool_from_url_checked, run_migrations};
+use sr_common::logging::install_tracing_panic_hook;
 use std::collections::HashSet;
 use tokio::time::{Duration, interval};
 use tracing::{debug, error, info, warn};
@@ -470,6 +471,7 @@ fn decode_part_body(part: &MessagePart) -> Result<Option<String>, IngestError> {
 async fn run() -> Result<(), IngestError> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
+    install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
 
     let cli = Cli::parse();
     let pool = create_pool_from_url_checked(&cli.db_url).await?;
