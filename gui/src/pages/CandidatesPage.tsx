@@ -13,6 +13,7 @@ import {
   trackShortlisted,
 } from "@/api";
 import type { MatchCandidate, FeedbackType } from "@/api";
+import { LoadingState } from "@/components/LoadingState";
 
 export function CandidatesPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -22,7 +23,7 @@ export function CandidatesPage() {
   const feedbackMutation = useSendFeedback();
 
   if (isLoading) {
-    return <div className="text-muted-foreground">Loading candidates...</div>;
+    return <LoadingState message="Loading candidates..." />;
   }
 
   if (error) {
