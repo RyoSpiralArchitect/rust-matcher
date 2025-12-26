@@ -30,12 +30,15 @@ pub async fn list_candidates(
     Query(query): Query<CandidateQuery>,
     _auth: AuthUser,
 ) -> Result<Json<Vec<MatchResponse>>, ApiError> {
+    let limit = query.limit.clamp(1, 200);
+    let offset = query.offset.min(10_000);
+
     let candidates = fetch_candidates_for_project(
         &state.pool,
         project_id,
         query.include_softko,
-        query.limit,
-        query.offset,
+        limit,
+        offset,
         &state.match_config,
     )
     .await?;

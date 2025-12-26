@@ -51,6 +51,43 @@ CREATE INDEX idx_extraction_queue_reprocess ON ses.extraction_queue(reprocess_af
 CREATE INDEX idx_extraction_queue_review_reason ON ses.extraction_queue(manual_review_reason) WHERE manual_review_reason IS NOT NULL;
 "#;
 
+/// Gmail案件メールの生データ（唯一の真実）
+pub const ANKEN_EMAILS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS ses.anken_emails (
+    id BIGSERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL UNIQUE,
+    sender_address TEXT,
+    sender_name TEXT,
+    subject TEXT NOT NULL,
+    body_text TEXT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    thread_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_anken_emails_received_at ON ses.anken_emails (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_anken_emails_message_id ON ses.anken_emails (message_id);
+"#;
+
+/// Gmail人材メールの生データ
+pub const JINZAI_EMAILS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS ses.jinzai_emails (
+    id BIGSERIAL PRIMARY KEY,
+    message_id VARCHAR(255) NOT NULL UNIQUE,
+    sender_address TEXT,
+    sender_name TEXT,
+    subject TEXT NOT NULL,
+    body_text TEXT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    thread_id TEXT,
+    skillsheet_url TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_jinzai_emails_received_at ON ses.jinzai_emails (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jinzai_emails_message_id ON ses.jinzai_emails (message_id);
+"#;
+
 /// Snapshot of parsed talent payloads keyed by message_id.
 pub const TALENTS_ENUM_DDL: &str = r#"
 CREATE TABLE ses.talents_enum (
@@ -221,8 +258,8 @@ CREATE TABLE ses.feedback_events (
     id BIGSERIAL PRIMARY KEY,
 
     -- 紐付け（interaction_logs への FK を推奨）
-    interaction_id BIGINT REFERENCES ses.interaction_logs(id),
-    match_result_id BIGINT REFERENCES ses.match_results(id),
+    interaction_id BIGINT REFERENCES ses.interaction_logs(id) ON DELETE CASCADE,
+    match_result_id BIGINT REFERENCES ses.match_results(id) ON DELETE CASCADE,
     match_run_id VARCHAR(64),
     engine_version VARCHAR(20),
     config_version VARCHAR(20),
@@ -289,7 +326,7 @@ COMMENT ON TABLE ses.feedback_events IS '営業/GUIフィードバックの統�
 pub const INTERACTION_EVENTS_DDL: &str = r#"
 CREATE TABLE ses.interaction_events (
     id BIGSERIAL PRIMARY KEY,
-    interaction_id BIGINT NOT NULL REFERENCES ses.interaction_logs(id),
+    interaction_id BIGINT NOT NULL REFERENCES ses.interaction_logs(id) ON DELETE CASCADE,
 
     -- イベント種別
     -- Phase 1: viewed_candidate_detail, copied_template, clicked_contact, shortlisted
@@ -333,7 +370,7 @@ CREATE TABLE ses.conversion_events (
     id BIGSERIAL PRIMARY KEY,
 
     -- 紐づけ（interaction_id が取れれば最高、取れなければ talent/project で）
-    interaction_id BIGINT REFERENCES ses.interaction_logs(id),
+    interaction_id BIGINT REFERENCES ses.interaction_logs(id) ON DELETE CASCADE,
     talent_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
 

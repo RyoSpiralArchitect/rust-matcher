@@ -56,6 +56,14 @@ pub struct JobDetailParams {
     pub days: Option<i32>,
 }
 
+fn ensure_admin(auth: &AuthUser) -> Result<(), ApiError> {
+    if auth.is_admin() {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden("admin role required".into()))
+    }
+}
+
 fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, ApiError> {
     const MAX_LOOKBACK_DAYS: i32 = 365;
     let mut includes = JobDetailIncludes {
@@ -109,8 +117,9 @@ fn build_detail_includes(params: &JobDetailParams) -> Result<JobDetailIncludes, 
 
 pub async fn dashboard(
     State(state): State<SharedState>,
-    _auth: AuthUser,
+    auth: AuthUser,
 ) -> Result<Json<QueueDashboard>, ApiError> {
+    ensure_admin(&auth)?;
     let dashboard = fetch_dashboard(&state.pool).await?;
     Ok(Json(dashboard))
 }
@@ -119,8 +128,9 @@ pub async fn dashboard(
 pub async fn list_jobs(
     State(state): State<SharedState>,
     Query(params): Query<ListJobsParams>,
-    _auth: AuthUser,
+    auth: AuthUser,
 ) -> Result<Json<QueueJobListResponse>, ApiError> {
+    ensure_admin(&auth)?;
     validate_filter(&params.filter)?;
 
     let pagination = params.pagination;
@@ -129,8 +139,10 @@ pub async fn list_jobs(
             "limit must be between 1 and 200".into(),
         ));
     }
-    if pagination.offset < 0 {
-        return Err(ApiError::BadRequest("offset must be >= 0".into()));
+    if pagination.offset < 0 || pagination.offset > 10_000 {
+        return Err(ApiError::BadRequest(
+            "offset must be between 0 and 10000".into(),
+        ));
     }
 
     let jobs = fetch_listed_jobs(&state.pool, &params.filter, &pagination).await?;
@@ -144,6 +156,7 @@ pub async fn get_job(
 
     Query(params): Query<JobDetailParams>,
 ) -> Result<Json<QueueJobDetailResponse>, ApiError> {
+    ensure_admin(&auth)?;
     let includes = build_detail_includes(&params)?;
 
     if includes.include_source_text {
@@ -176,11 +189,7 @@ pub async fn retry_job(
     auth: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !auth.is_admin() {
-        return Err(ApiError::Forbidden(
-            "retrying jobs requires admin permissions".into(),
-        ));
-    }
+    ensure_admin(&auth)?;
 
     retry_queue_job(&state.pool, id).await?;
     Ok(Json(

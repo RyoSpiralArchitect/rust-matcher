@@ -22,6 +22,7 @@ export interface MatchCandidate {
   twoTowerEmbedder: string | null;
   twoTowerVersion: string | null;
   koResult: KoResult;
+  interactionId: number;
 }
 
 export interface KoResult {
@@ -49,13 +50,19 @@ export type FeedbackType =
   | "review_ok"
   | "review_ng"
   | "accepted"
-  | "rejected";
+  | "rejected"
+  | "review_pending"
+  | "interview_scheduled"
+  | "no_response";
+
+export type FeedbackSource = "gui" | "crm" | "api" | "import";
 
 export interface FeedbackRequest {
   interactionId: number;
   feedbackType: FeedbackType;
   ngReasonCategory?: string;
   comment?: string;
+  source: FeedbackSource;
 }
 
 export interface FeedbackResponse {
@@ -73,11 +80,14 @@ export type InteractionEventType =
   | "clicked_contact"
   | "shortlisted";
 
+export type InteractionEventSource = "gui" | "crm" | "api" | "import";
+
 export interface InteractionEventRequest {
   interactionId: number;
   eventType: InteractionEventType;
   idempotencyKey: string;
   meta?: Record<string, unknown>;
+  source?: InteractionEventSource;
 }
 
 // ============================================================

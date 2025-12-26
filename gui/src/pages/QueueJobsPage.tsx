@@ -27,7 +27,8 @@ export function QueueJobsPage() {
 
   const status = searchParams.get("status") ?? undefined;
   const requiresReview = searchParams.get("review") === "true";
-  const offset = parseInt(searchParams.get("offset") ?? "0", 10);
+  const rawOffset = Number.parseInt(searchParams.get("offset") ?? "0", 10);
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
 
   const { data, isLoading, error } = useQueueJobs({
     status: status === "all" ? undefined : status,

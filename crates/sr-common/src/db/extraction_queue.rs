@@ -449,7 +449,7 @@ pub async fn list_jobs(
 ) -> Result<QueueJobListResponse, QueueStorageError> {
     let client = pool.get().await?;
 
-    let fetch_limit = pagination.limit + 1;
+    let fetch_limit = pagination.limit.saturating_add(1);
 
     // Guardrail: dynamic fragments must only append "AND column OP $n" clauses so that
     // the placeholder numbering stays correct and no raw user data is interpolated.
@@ -610,7 +610,7 @@ fn map_match_result(row: &Row) -> MatchResultRow {
     };
 
     MatchResultRow {
-        id: row.get::<_, i32>("id") as i64,
+        id: row.get::<_, i64>("id"),
         talent_id: row.get::<_, i64>("talent_id"),
         project_id: row.get::<_, i64>("project_id"),
         is_knockout: row.get("is_knockout"),
@@ -655,8 +655,8 @@ async fn fetch_match_results(
         .query(&stmt, &[&talent_id, &project_id, &days, &limit])
         .await?;
 
-    let mut results = Vec::new();
-    let mut seen = HashSet::new();
+    let mut results = Vec::with_capacity(rows.len());
+    let mut seen = HashSet::with_capacity(limit as usize);
 
     for row in rows {
         let mapped = map_match_result(&row);
@@ -881,10 +881,10 @@ pub async fn get_job_detail_with_includes(
     if set_statement_timeout {
         let transaction = client.transaction().await?;
         transaction
-            .batch_execute(&format!(
-                "SET LOCAL statement_timeout = '{}ms'",
-                statement_timeout_ms
-            ))
+            .execute(
+                "SET LOCAL statement_timeout = $1::text",
+                &[&format!("{statement_timeout_ms}ms")],
+            )
             .await?;
 
         let result = get_job_detail_with_client(
@@ -1076,35 +1076,35 @@ async fn get_job_detail_with_client<C: GenericClient>(
 
 #[instrument(skip(pool))]
 pub async fn retry_job(pool: &PgPool, id: i64) -> Result<(), QueueStorageError> {
-    let client = pool.get().await?;
+    let mut client = pool.get().await?;
+    let tx = client.transaction().await?;
 
-    let updated = client
-        .execute(
-            "UPDATE ses.extraction_queue SET status = 'pending', locked_by = NULL, processing_started_at = NULL, completed_at = NULL, next_retry_at = NULL, retry_count = 0, requires_manual_review = false, manual_review_reason = NULL, updated_at = NOW() WHERE id = $1 AND status = 'completed'",
-            &[&id],
-        )
-        .await?;
-
-    if updated == 1 {
-        return Ok(());
-    }
-
-    let status_row = client
+    let status_row = tx
         .query_opt(
-            "SELECT status FROM ses.extraction_queue WHERE id = $1",
+            "SELECT status FROM ses.extraction_queue WHERE id = $1 FOR UPDATE",
             &[&id],
         )
         .await?;
 
-    match status_row {
-        None => Err(QueueStorageError::NotFound(format!("job {id} not found"))),
-        Some(row) => {
-            let status: String = row.get("status");
-            Err(QueueStorageError::Conflict(format!(
-                "job {id} is {status} and cannot be retried"
-            )))
-        }
+    let Some(row) = status_row else {
+        return Err(QueueStorageError::NotFound(format!("job {id} not found")));
+    };
+
+    let status: String = row.get("status");
+    if status != "completed" {
+        return Err(QueueStorageError::Conflict(format!(
+            "job {id} is {status} and cannot be retried"
+        )));
     }
+
+    tx.execute(
+        "UPDATE ses.extraction_queue SET status = 'pending', locked_by = NULL, processing_started_at = NULL, completed_at = NULL, next_retry_at = NULL, retry_count = 0, requires_manual_review = false, manual_review_reason = NULL, updated_at = NOW() WHERE id = $1",
+        &[&id],
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
 }
 
 #[cfg(test)]

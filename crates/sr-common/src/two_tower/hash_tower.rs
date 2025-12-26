@@ -19,7 +19,9 @@ pub struct HashTwoTower {
 
 impl HashTwoTower {
     pub fn new(config: TwoTowerConfig) -> Self {
-        Self { config }
+        let mut cfg = config;
+        cfg.dimension = cfg.dimension.max(1);
+        Self { config: cfg }
     }
 
     /// トークンをハッシュして次元インデックスに変換

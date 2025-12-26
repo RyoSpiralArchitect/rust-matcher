@@ -40,7 +40,7 @@ pub mod handlers;
 
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
-use handlers::{candidates, conversion, feedback, health, queue};
+use handlers::{candidates, conversion, feedback, health, interactions, queue};
 
 const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -352,6 +352,10 @@ pub fn create_router(state: SharedState) -> Router {
             get(candidates::list_candidates),
         )
         .route("/feedback", post(feedback::submit_feedback))
+        .route(
+            "/interactions/events",
+            post(interactions::submit_interaction_event),
+        )
         .route("/conversions", post(conversion::submit_conversion));
 
     Router::new()
