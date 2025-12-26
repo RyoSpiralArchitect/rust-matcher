@@ -1,10 +1,10 @@
-use base64::prelude::{BASE64_URL_SAFE, Engine as _};
+use base64::prelude::{Engine as _, BASE64_URL_SAFE};
 use chrono::{DateTime, FixedOffset, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
 use google_gmail1::{
-    common::Body,
     api::{MessagePart, Scope},
+    common::Body,
     hyper_rustls,
     hyper_util::{self, client::legacy::connect::HttpConnector, rt::TokioExecutor},
     yup_oauth2::{self, ServiceAccountKey},
@@ -12,11 +12,11 @@ use google_gmail1::{
 };
 use html2text::from_read;
 use sr_common::db::{
-    DbPoolError, MigrationError, PgPool, create_pool_from_url_checked, run_migrations,
+    create_pool_from_url_checked, run_migrations, DbPoolError, MigrationError, PgPool,
 };
 use sr_common::logging::install_tracing_panic_hook;
 use std::collections::HashSet;
-use tokio::time::{Duration, interval, timeout};
+use tokio::time::{interval, timeout, Duration};
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Parser)]

@@ -1,10 +1,10 @@
-use axum::{Json, extract::State};
+use axum::{extract::State, Json};
 use sr_common::api::interaction_event::{InteractionEventRequest, InteractionEventResponse};
 use sr_common::db::insert_interaction_event;
 
-use crate::SharedState;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::SharedState;
 
 const MAX_META_LEN: usize = 4000;
 

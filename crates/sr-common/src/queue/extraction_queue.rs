@@ -295,12 +295,11 @@ mod tests {
         assert_eq!(job.final_method, Some(FinalMethod::RustCompleted));
         assert_eq!(job.locked_by, None);
         assert!(job.processing_started_at.is_some());
-        assert!(
-            job.completed_at
-                .zip(job.processing_started_at)
-                .map(|(completed, started)| completed >= started)
-                .unwrap_or(false)
-        );
+        assert!(job
+            .completed_at
+            .zip(job.processing_started_at)
+            .map(|(completed, started)| completed >= started)
+            .unwrap_or(false));
     }
 
     #[test]

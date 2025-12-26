@@ -1,6 +1,5 @@
 use super::ko_unified::KoDecision;
 use crate::{
-    Project, Talent,
     corrections::{
         contract_type::correct_gender,
         flow_depth::correct_flow_dept,
@@ -8,6 +7,7 @@ use crate::{
         station::normalize_station,
         todofuken::{correct_todofuken, correct_work_area},
     },
+    Project, Talent,
 };
 
 #[derive(Debug, Clone)]

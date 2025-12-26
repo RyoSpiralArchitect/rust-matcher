@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::PoolError;
 use serde_json::Value;
 use tokio_postgres::Error as PgError;
+use tokio_postgres::Row;
 use tracing::instrument;
 
 use crate::api::match_response::{
@@ -12,7 +13,7 @@ use crate::api::match_response::{
 use crate::db::PgPool;
 
 #[derive(Debug, thiserror::Error)]
-pub enum CandidateFetchError {
+pub enum MatchFetchError {
     #[error("failed to get postgres connection: {0}")]
     Pool(#[from] PoolError),
     #[error("postgres error: {0}")]
@@ -72,15 +73,59 @@ fn derive_ko_decisions(is_knockout: bool, ko_reasons: &[String]) -> HashMap<Stri
     map
 }
 
-#[instrument(skip(pool, config))]
+fn map_match_response(row: Row, config: &MatchConfig) -> Result<MatchResponse, MatchFetchError> {
+    let ko_reasons = parse_ko_reasons(row.get("ko_reasons"));
+    let is_knockout: bool = row.get("is_knockout");
+
+    let mut response = MatchResponse {
+        interaction_id: row.get("interaction_id"),
+        talent_id: row.get::<_, i64>("talent_id"),
+        project_id: row.get::<_, i64>("project_id"),
+        auto_match_eligible: false,
+        manual_review_required: row.get("needs_manual_review"),
+        score: row.get::<_, Option<f64>>("score_total").unwrap_or_default(),
+        score_breakdown: parse_score_breakdown(row.get("score_breakdown")),
+        two_tower_score: row.get::<_, Option<f64>>("two_tower_score").map(|v| v),
+        ko_decisions: derive_ko_decisions(is_knockout, &ko_reasons),
+        ko_reasons,
+        details: MatchDetails::default(),
+        engine_version: row
+            .get::<_, Option<String>>("engine_version")
+            .unwrap_or_else(|| "unknown".into()),
+        rule_version: row
+            .get::<_, Option<String>>("rule_version")
+            .unwrap_or_else(|| "unknown".into()),
+        matched_at: row
+            .get::<_, Option<DateTime<Utc>>>("created_at")
+            .unwrap_or_else(Utc::now),
+    };
+
+    if response.score_breakdown.business_total == 0.0 && response.score > 0.0 {
+        response.score_breakdown.business_total = response.score;
+    }
+
+    if is_knockout || !response.ko_reasons.is_empty() {
+        response.manual_review_required = true;
+    }
+
+    if response.is_near_threshold(config) {
+        response.manual_review_required = true;
+    }
+
+    response.auto_match_eligible = !is_knockout && response.is_auto_match_eligible(config);
+    Ok(response)
+}
+
+#[instrument(skip(pool, config, talent_ids))]
 pub async fn fetch_candidates_for_project(
     pool: &PgPool,
     project_id: i64,
     include_softko: bool,
     limit: u32,
     offset: u32,
+    talent_ids: Option<&[i64]>,
     config: &MatchConfig,
-) -> Result<Vec<MatchResponse>, CandidateFetchError> {
+) -> Result<Vec<MatchResponse>, MatchFetchError> {
     let client = pool.get().await?;
 
     let mut conditions = vec!["il.project_id = $1".to_string()];
@@ -88,6 +133,7 @@ pub async fn fetch_candidates_for_project(
         conditions.push("mr.is_knockout = false".to_string());
         conditions.push("mr.needs_manual_review = false".to_string());
     }
+    conditions.push("($2::bigint[] IS NULL OR mr.talent_id = ANY($2))".to_string());
     let where_clause = conditions.join(" AND ");
 
     let query = format!(
@@ -113,60 +159,56 @@ pub async fn fetch_candidates_for_project(
             ORDER BY mr.id, il.created_at DESC\
         ) t\
         ORDER BY t.score_total DESC NULLS LAST, t.interaction_created_at DESC\
-        LIMIT $2 OFFSET $3"
+        LIMIT $3 OFFSET $4"
     );
 
     let bounded_limit = limit.min(200) as i64;
     let offset = offset as i64;
     let rows = client
-        .query(&query, &[&project_id, &bounded_limit, &offset])
+        .query(&query, &[&project_id, &talent_ids, &bounded_limit, &offset])
         .await?;
 
     let responses = rows
         .into_iter()
-        .map(|row| {
-            let ko_reasons = parse_ko_reasons(row.get("ko_reasons"));
-            let is_knockout: bool = row.get("is_knockout");
-
-            let mut response = MatchResponse {
-                interaction_id: row.get("interaction_id"),
-                talent_id: row.get::<_, i64>("talent_id"),
-                project_id: row.get::<_, i64>("project_id"),
-                auto_match_eligible: false,
-                manual_review_required: row.get("needs_manual_review"),
-                score: row.get::<_, Option<f64>>("score_total").unwrap_or_default(),
-                score_breakdown: parse_score_breakdown(row.get("score_breakdown")),
-                two_tower_score: row.get::<_, Option<f64>>("two_tower_score").map(|v| v),
-                ko_decisions: derive_ko_decisions(is_knockout, &ko_reasons),
-                ko_reasons,
-                details: MatchDetails::default(),
-                engine_version: row
-                    .get::<_, Option<String>>("engine_version")
-                    .unwrap_or_else(|| "unknown".into()),
-                rule_version: row
-                    .get::<_, Option<String>>("rule_version")
-                    .unwrap_or_else(|| "unknown".into()),
-                matched_at: row
-                    .get::<_, Option<DateTime<Utc>>>("created_at")
-                    .unwrap_or_else(Utc::now),
-            };
-
-            if response.score_breakdown.business_total == 0.0 && response.score > 0.0 {
-                response.score_breakdown.business_total = response.score;
-            }
-
-            if is_knockout || !response.ko_reasons.is_empty() {
-                response.manual_review_required = true;
-            }
-
-            if response.is_near_threshold(config) {
-                response.manual_review_required = true;
-            }
-
-            response.auto_match_eligible = !is_knockout && response.is_auto_match_eligible(config);
-            Ok(response)
-        })
-        .collect::<Result<Vec<_>, CandidateFetchError>>()?;
+        .map(|row| map_match_response(row, config))
+        .collect::<Result<Vec<_>, MatchFetchError>>()?;
 
     Ok(responses)
+}
+
+#[instrument(skip(pool, config))]
+pub async fn fetch_match_by_id(
+    pool: &PgPool,
+    match_id: i64,
+    config: &MatchConfig,
+) -> Result<Option<MatchResponse>, MatchFetchError> {
+    let client = pool.get().await?;
+
+    let row = client
+        .query_opt(
+            "SELECT\
+                il.id AS interaction_id,\
+                mr.id AS match_result_id,\
+                mr.talent_id,\
+                mr.project_id,\
+                mr.needs_manual_review,\
+                mr.is_knockout,\
+                mr.score_total,\
+                mr.score_breakdown,\
+                mr.ko_reasons,\
+                mr.engine_version,\
+                mr.rule_version,\
+                mr.created_at,\
+                il.two_tower_score,\
+                il.created_at AS interaction_created_at\
+            FROM ses.match_results mr\
+            JOIN ses.interaction_logs il ON il.match_result_id = mr.id\
+            WHERE mr.id = $1\
+            ORDER BY il.created_at DESC\
+            LIMIT 1",
+            &[&match_id],
+        )
+        .await?;
+
+    Ok(row.map(|r| map_match_response(r, config)).transpose()?)
 }

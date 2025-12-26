@@ -13,10 +13,12 @@ pub mod schema;
 pub mod skill_normalizer;
 pub mod two_tower;
 
+use serde::{Deserialize, Serialize};
+
 use date::NormalizedStartDate;
 
 // Commonly used data models for matching functions.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub id: Option<i64>,
     pub work_todofuken: Option<String>,
@@ -47,7 +49,7 @@ pub struct Project {
     pub start_date: Option<NormalizedStartDate>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Talent {
     pub id: Option<i64>,
     pub residential_todofuken: Option<String>,
