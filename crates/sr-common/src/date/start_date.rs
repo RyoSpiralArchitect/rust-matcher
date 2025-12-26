@@ -2,9 +2,10 @@ use super::DatePrecision;
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use lazy_static::lazy_static;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 /// 開始日の精度を表現
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StartDatePrecision {
     /// 日付まで判明
     ExactDay,
@@ -21,7 +22,7 @@ pub enum StartDatePrecision {
 }
 
 /// 正規化済み開始日
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedStartDate {
     pub date: Option<NaiveDate>,
     pub precision: StartDatePrecision,

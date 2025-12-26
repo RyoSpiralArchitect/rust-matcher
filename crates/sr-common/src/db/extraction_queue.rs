@@ -3,10 +3,10 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Duration, Utc};
 use deadpool_postgres::{GenericClient, PoolError};
 use serde_json::Value;
-use tokio_postgres::Error as PgError;
-use tokio_postgres::Row;
 use tokio_postgres::types::Json;
 use tokio_postgres::types::ToSql;
+use tokio_postgres::Error as PgError;
+use tokio_postgres::Row;
 use tracing::instrument;
 
 use crate::api::models::queue::{

@@ -1,12 +1,12 @@
-use axum::{Json, http::StatusCode, response::IntoResponse};
+use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 use std::{borrow::Cow, future::Future};
 use thiserror::Error;
 use tracing::error;
 
 use sr_common::db::{
-    CandidateFetchError, ConversionStorageError, FeedbackStorageError,
-    InteractionEventStorageError, QueueDashboardError, QueueStorageError,
+    ConversionStorageError, FeedbackHistoryError, FeedbackStorageError,
+    InteractionEventStorageError, MatchFetchError, QueueDashboardError, QueueStorageError,
 };
 
 tokio::task_local! {
@@ -129,8 +129,14 @@ impl From<QueueDashboardError> for ApiError {
     }
 }
 
-impl From<CandidateFetchError> for ApiError {
-    fn from(value: CandidateFetchError) -> Self {
+impl From<MatchFetchError> for ApiError {
+    fn from(value: MatchFetchError) -> Self {
+        ApiError::Database(value.to_string())
+    }
+}
+
+impl From<FeedbackHistoryError> for ApiError {
+    fn from(value: FeedbackHistoryError) -> Self {
         ApiError::Database(value.to_string())
     }
 }

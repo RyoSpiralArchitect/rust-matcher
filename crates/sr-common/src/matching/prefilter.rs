@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use super::{ko_checks::run_all_ko_checks, scoring::calculate_prefilter_score};
 use crate::{
-    Project, Talent, matching::ko_unified::KnockoutResultV2, matching::scoring::MatchScore,
+    matching::ko_unified::KnockoutResultV2, matching::scoring::MatchScore, Project, Talent,
 };
 
 #[derive(Debug, Clone)]

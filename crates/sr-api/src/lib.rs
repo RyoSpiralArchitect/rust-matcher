@@ -40,7 +40,7 @@ pub mod handlers;
 
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
-use handlers::{candidates, conversion, feedback, health, interactions, queue};
+use handlers::{candidates, conversion, feedback, health, interactions, matches, queue};
 use sr_common::logging::install_tracing_panic_hook;
 
 const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -75,6 +75,10 @@ struct Cli {
     /// JWT algorithm (default aligns with NextAuth default HS512)
     #[arg(long, env = "JWT_ALGORITHM", default_value = "hs512", value_enum)]
     jwt_algorithm: JwtAlgorithm,
+
+    /// Use cookie-based JWT auth (__Host-sr-token) instead of Authorization header
+    #[arg(long, env = "SR_API_USE_COOKIE_AUTH", default_value_t = false)]
+    use_cookie_auth: bool,
 
     /// Comma separated list of allowed CORS origins
     #[arg(long, env = "SR_CORS_ORIGINS", default_value = "http://localhost:3000")]
@@ -165,6 +169,7 @@ impl AppConfig {
             jwt_secret: cli.jwt_secret,
             jwt_public_key: cli.jwt_public_key,
             jwt_algorithm: cli.jwt_algorithm,
+            use_cookie_auth: cli.use_cookie_auth,
         };
 
         match auth.mode {
@@ -348,11 +353,17 @@ pub fn create_router(state: SharedState) -> Router {
                 retry_rate_limit,
             )),
         )
+        .route("/match", post(matches::run_match))
+        .route("/matches/:match_id", get(matches::get_match))
         .route(
             "/projects/:project_id/candidates",
             get(candidates::list_candidates),
         )
         .route("/feedback", post(feedback::submit_feedback))
+        .route(
+            "/feedback/history/:interaction_id",
+            get(feedback::get_feedback_history),
+        )
         .route(
             "/interactions/events",
             post(interactions::submit_interaction_event),
@@ -390,6 +401,7 @@ pub fn test_state(api_key: &str) -> SharedState {
         jwt_secret: None,
         jwt_public_key: None,
         jwt_algorithm: JwtAlgorithm::Hs256,
+        use_cookie_auth: false,
     };
 
     Arc::new(AppState {
