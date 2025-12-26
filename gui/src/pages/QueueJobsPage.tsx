@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { LoadingState } from "@/components/LoadingState";
 import { useQueueJobs } from "@/api";
 
 const STATUSES = ["all", "pending", "processing", "completed"] as const;
@@ -120,7 +121,7 @@ export function QueueJobsPage() {
       </div>
 
       {isLoading ? (
-        <div className="text-muted-foreground">Loading...</div>
+        <LoadingState />
       ) : (
         <>
           <Table>

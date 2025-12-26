@@ -38,7 +38,7 @@ fn parse_ko_reasons(value: Option<Value>) -> Vec<String> {
 }
 
 fn derive_ko_decisions(is_knockout: bool, ko_reasons: &[String]) -> HashMap<String, KoDecisionDto> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::with_capacity(ko_reasons.len().max(1));
 
     if is_knockout {
         let reason = ko_reasons

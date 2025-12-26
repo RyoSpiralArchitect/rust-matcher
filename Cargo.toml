@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-edition = "2024"
+edition = "2021"
 version = "0.1.0"
 authors = []
 license = ""
@@ -31,7 +31,7 @@ tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_j
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 rand = "0.8"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 axum = { version = "0.7", features = ["macros"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = "0.5"
@@ -40,3 +40,7 @@ jsonwebtoken = "9"
 governor = "0.10"
 siphasher = "0.3"
 subtle = "2"
+serial_test = "3"
+
+[patch.crates-io]
+yup-oauth2 = { path = "patches/yup-oauth2" }

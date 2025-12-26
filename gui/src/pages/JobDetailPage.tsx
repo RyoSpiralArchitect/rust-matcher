@@ -27,6 +27,7 @@ import type {
   FeedbackType,
   ConversionStage,
 } from "@/api";
+import { LoadingState } from "@/components/LoadingState";
 
 export function JobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();
@@ -44,7 +45,7 @@ export function JobDetailPage() {
   }
 
   if (isLoading || !data) {
-    return <div className="text-muted-foreground">Loading...</div>;
+    return <LoadingState />;
   }
 
   const { job, entity, pairs, lastError, partialFields, llmLatencyMs } = data;
