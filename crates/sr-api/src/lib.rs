@@ -25,8 +25,8 @@ use governor::{
     state::keyed::DashMapStateStore,
 };
 use sr_common::api::match_response::MatchConfig;
-use sr_common::db::PgPool;
 use sr_common::db::create_pool_from_url_checked;
+use sr_common::db::{PgPool, run_migrations};
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -493,6 +493,9 @@ pub async fn run() -> Result<(), ApiError> {
     let pool = create_pool_from_url_checked(&config.database_url)
         .await
         .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
+    run_migrations(&pool)
+        .await
+        .map_err(|err| ApiError::Database(format!("failed to run migrations: {err}")))?;
 
     let rate_limits = default_rate_limits();
 

@@ -14,7 +14,7 @@ use html2text::from_read;
 use sr_common::db::{DbPoolError, PgPool, create_pool_from_url_checked};
 use std::collections::HashSet;
 use tokio::time::{Duration, interval};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -498,7 +498,7 @@ async fn run() -> Result<(), IngestError> {
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("sr-gmail-ingestor failed: {err}");
+        error!(error = %err, "sr-gmail-ingestor failed");
         std::process::exit(1);
     }
 }

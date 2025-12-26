@@ -14,7 +14,7 @@ use sr_common::normalize::{calculate_subject_hash, normalize_subject};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod,
 };
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -160,7 +160,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("sr-extractor failed: {err}");
+        error!(error = %err, "sr-extractor failed");
         std::process::exit(1);
     }
 }

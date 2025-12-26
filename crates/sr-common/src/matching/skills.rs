@@ -78,8 +78,8 @@ fn check_required_skills_with_threshold(
             is_knockout: false,
             match_percentage: 1.0,
             matched_skills: vec![],
-            reason: "必須スキル要件なし".to_string(),
-            requires_manual_review: false,
+            reason: "必須スキル要件なし (要手動確認)".to_string(),
+            requires_manual_review: true,
         };
     }
 
