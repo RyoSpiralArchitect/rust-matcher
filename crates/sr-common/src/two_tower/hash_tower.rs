@@ -1,4 +1,4 @@
-use super::{Embedding, EmbeddingSource, TwoTowerConfig, TwoTowerEmbedder, tokenizer};
+use super::{tokenizer, Embedding, EmbeddingSource, TwoTowerConfig, TwoTowerEmbedder};
 use siphasher::sip::SipHasher13;
 use std::hash::{Hash, Hasher};
 

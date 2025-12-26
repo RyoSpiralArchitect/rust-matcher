@@ -1,11 +1,15 @@
-use axum::{Json, extract::State};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use sr_common::api::feedback_request::FeedbackRequest;
 use sr_common::api::feedback_response::FeedbackResponse;
-use sr_common::db::insert_feedback_event;
+use sr_common::api::models::queue::FeedbackEventRow;
+use sr_common::db::{fetch_feedback_history, insert_feedback_event};
 
-use crate::SharedState;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::SharedState;
 
 const MAX_COMMENT_LEN: usize = 1_000;
 
@@ -28,4 +32,13 @@ pub async fn submit_feedback(
 
     let response = insert_feedback_event(&state.pool, &auth.subject, &payload).await?;
     Ok(Json(response))
+}
+
+pub async fn get_feedback_history(
+    State(state): State<SharedState>,
+    Path(interaction_id): Path<i64>,
+    _auth: AuthUser,
+) -> Result<Json<Vec<FeedbackEventRow>>, ApiError> {
+    let events = fetch_feedback_history(&state.pool, interaction_id, 200).await?;
+    Ok(Json(events))
 }

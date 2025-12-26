@@ -1,6 +1,7 @@
 use axum::{
-    Json, debug_handler,
+    debug_handler,
     extract::{Path, Query, State},
+    Json,
 };
 use sr_common::api::queue_dashboard::QueueDashboard;
 use sr_common::api::queue_job::{
@@ -11,9 +12,9 @@ use sr_common::db::{
     retry_job as retry_queue_job,
 };
 
-use crate::SharedState;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::SharedState;
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct ListJobsParams {

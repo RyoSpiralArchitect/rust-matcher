@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::PoolError;
 use serde_json::Value;
-use tokio_postgres::Error as PgError;
 use tokio_postgres::types::Json;
+use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
 use crate::db::PgPool;

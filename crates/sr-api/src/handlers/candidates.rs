@@ -1,14 +1,14 @@
 use axum::{
-    Json,
     extract::{Path, Query, State},
+    Json,
 };
 use serde::Deserialize;
 use sr_common::api::match_response::MatchResponse;
 use sr_common::db::fetch_candidates_for_project;
 
-use crate::SharedState;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::SharedState;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CandidateQuery {
@@ -45,6 +45,7 @@ pub async fn list_candidates(
         query.include_softko,
         limit,
         offset,
+        None,
         &state.match_config,
     )
     .await?;

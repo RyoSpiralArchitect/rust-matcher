@@ -7,9 +7,9 @@ use sr_common::db::{
     upsert_extraction_job,
 };
 use sr_common::extraction::{
-    ExtractorOutput, PartialFields, calculate_priority, evaluate_quality, extract_all_fields,
-    extract_flow_dept, extract_remote_onsite, extract_start_date_raw, extract_tanka,
-    extract_work_todofuken,
+    calculate_priority, evaluate_quality, extract_all_fields, extract_flow_dept,
+    extract_remote_onsite, extract_start_date_raw, extract_tanka, extract_work_todofuken,
+    ExtractorOutput, PartialFields,
 };
 use sr_common::logging::install_tracing_panic_hook;
 use sr_common::normalize::{calculate_subject_hash, normalize_subject};
