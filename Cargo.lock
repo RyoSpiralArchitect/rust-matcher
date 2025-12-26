@@ -2473,6 +2473,7 @@ dependencies = [
  "siphasher 0.3.11",
  "strsim 0.10.0",
  "thiserror 1.0.69",
+ "tokio",
  "tokio-postgres",
  "tracing",
  "ulid",

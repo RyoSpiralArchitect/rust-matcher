@@ -124,6 +124,7 @@ default-features = false
 
 [dependencies.pem-rfc7468]
 version = "1"
+features = ["alloc"]
 optional = true
 
 [dependencies.seahash]

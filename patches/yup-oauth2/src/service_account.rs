@@ -42,7 +42,7 @@ fn append_base64<T: AsRef<[u8]> + ?Sized>(s: &T, out: &mut String) {
 }
 
 /// Decode a PKCS8 formatted RSA key.
-fn decode_rsa_key(pem_pkcs8: &str) -> Result<PrivateKeyDer, io::Error> {
+fn decode_rsa_key(pem_pkcs8: &str) -> Result<PrivateKeyDer<'_>, io::Error> {
     let (label, der) = decode_vec(pem_pkcs8.as_bytes()).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -51,7 +51,8 @@ fn decode_rsa_key(pem_pkcs8: &str) -> Result<PrivateKeyDer, io::Error> {
     })?;
 
     match label {
-        "PRIVATE KEY" | "RSA PRIVATE KEY" => Ok(PrivateKeyDer::Pkcs8(der)),
+        "PRIVATE KEY" => Ok(PrivateKeyDer::Pkcs8(der.into())),
+        "RSA PRIVATE KEY" => Ok(PrivateKeyDer::Pkcs1(der.into())),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unexpected PEM label: {other}"),
