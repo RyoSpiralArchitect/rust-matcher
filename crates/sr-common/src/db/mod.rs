@@ -6,6 +6,7 @@ pub mod feedback;
 pub mod interaction_events;
 pub mod interaction_logs;
 pub mod match_results;
+pub mod migrations;
 pub mod pool;
 pub mod queue_dashboard;
 
@@ -23,5 +24,6 @@ pub use interaction_logs::{
     InteractionLogInsert, InteractionLogStorageError, insert_interaction_log,
 };
 pub use match_results::{MatchResultInsert, MatchResultStorageError, insert_match_result};
+pub use migrations::{MigrationError, run_migrations};
 pub use pool::{DbPoolError, PgPool, create_pool_from_url, create_pool_from_url_checked};
 pub use queue_dashboard::{QueueDashboardError, fetch_dashboard};

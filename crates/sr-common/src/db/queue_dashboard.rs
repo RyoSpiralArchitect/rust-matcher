@@ -27,9 +27,9 @@ pub async fn fetch_dashboard(pool: &PgPool) -> Result<QueueDashboard, QueueDashb
                 COUNT(*) FILTER (WHERE last_error IS NOT NULL) AS error_count, \
                 COUNT(*) FILTER ( \
                     WHERE status = 'processing' \
-                      AND processing_started_at <= NOW() - INTERVAL '10 minutes' \
+                      AND processing_started_at <= timezone('utc', NOW()) - INTERVAL '10 minutes' \
                 ) AS stale_processing_count, \
-                COALESCE(MAX(updated_at), NOW()) AS updated_at \
+                COALESCE(MAX(updated_at), timezone('utc', NOW())) AS updated_at \
             FROM ses.extraction_queue",
             &[],
         )
