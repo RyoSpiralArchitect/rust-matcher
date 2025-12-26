@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
-use sr_common::db::{create_pool_from_url_checked, recover_stuck_jobs};
+use sr_common::db::{create_pool_from_url_checked, recover_stuck_jobs, run_migrations};
 use sr_common::queue::{ExtractionJob, ExtractionQueue, QueueStatus};
 use tracing::{debug, error, info};
 
@@ -46,6 +46,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Cli::parse();
     let pool = create_pool_from_url_checked(&args.db_url).await?;
+    run_migrations(&pool).await?;
     let status = pool.status();
     info!(
         size = status.size,

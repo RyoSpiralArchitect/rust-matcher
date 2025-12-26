@@ -3,7 +3,8 @@ use clap::Parser;
 use dotenvy::dotenv;
 use serde_json::to_value;
 use sr_common::db::{
-    create_pool_from_url_checked, fetch_pending_emails, pending_copy, upsert_extraction_job,
+    create_pool_from_url_checked, fetch_pending_emails, pending_copy, run_migrations,
+    upsert_extraction_job,
 };
 use sr_common::extraction::{
     ExtractorOutput, PartialFields, calculate_priority, evaluate_quality, extract_all_fields,
@@ -116,6 +117,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Cli::parse();
     let pool = create_pool_from_url_checked(&args.db_url).await?;
+
+    run_migrations(&pool).await?;
 
     let status = pool.status();
     info!(

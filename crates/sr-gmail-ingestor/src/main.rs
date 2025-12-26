@@ -11,7 +11,7 @@ use google_gmail1::{
     oauth2::{self, ServiceAccountKey},
 };
 use html2text::from_read;
-use sr_common::db::{DbPoolError, PgPool, create_pool_from_url_checked};
+use sr_common::db::{DbPoolError, PgPool, create_pool_from_url_checked, run_migrations};
 use std::collections::HashSet;
 use tokio::time::{Duration, interval};
 use tracing::{debug, error, info, warn};
@@ -473,6 +473,7 @@ async fn run() -> Result<(), IngestError> {
 
     let cli = Cli::parse();
     let pool = create_pool_from_url_checked(&cli.db_url).await?;
+    run_migrations(&pool).await?;
 
     let mut ingestor = GmailIngestor::new(&cli, pool).await?;
 
