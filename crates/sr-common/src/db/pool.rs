@@ -62,29 +62,30 @@ fn build_options() -> Option<String> {
         }
     }
 
+    // Force UTC to align NOW()/CURRENT_TIMESTAMP with application-side Utc::now comparisons.
+    let timezone = env::var("SR_DB_TIMEZONE").unwrap_or_else(|_| "UTC".into());
+    if !timezone.trim().is_empty() {
+        options.push(format!("-c TimeZone={}", timezone.trim()));
+    }
+
+    if let Some(log_min_ms) = parse_env::<i64>(&["SR_DB_LOG_MIN_DURATION_MS"]) {
+        let bounded = log_min_ms.max(-1);
+        options.push(format!("-c log_min_duration_statement={bounded}"));
+    }
+
+    if let Some(log_level) = env::var("SR_DB_LOG_STATEMENTS")
+        .ok()
+        .map(|s| s.to_ascii_lowercase())
+        .filter(|s| matches!(s.as_str(), "none" | "ddl" | "mod" | "all"))
+    {
+        options.push(format!("-c log_statement={log_level}"));
+    }
+
     if options.is_empty() {
         None
     } else {
         Some(options.join(" "))
     }
-}
-
-/// Allow only safe characters for application_name to avoid injection via -c options.
-fn sanitized_app_name() -> Option<String> {
-    env::var("SR_DB_APPLICATION_NAME")
-        .ok()
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .and_then(|name| {
-            if name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
-            {
-                Some(name)
-            } else {
-                None
-            }
-        })
 }
 
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {

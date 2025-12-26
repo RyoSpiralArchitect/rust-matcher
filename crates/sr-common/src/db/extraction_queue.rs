@@ -1037,11 +1037,7 @@ async fn get_job_detail_with_client<C: GenericClient>(
                 .as_ref()
                 .and_then(|interaction| feedback_maps.0.get(&interaction.id).map(|v| v.len()))
                 .unwrap_or(0)
-                + feedback_maps
-                    .1
-                    .get(&match_id)
-                    .map(|v| v.len())
-                    .unwrap_or(0);
+                + feedback_maps.1.get(&match_id).map(|v| v.len()).unwrap_or(0);
             let mut seen_feedback_ids = HashSet::with_capacity(expected_feedback);
 
             if let Some(interaction) = &latest_interaction {

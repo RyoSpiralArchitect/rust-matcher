@@ -3,18 +3,20 @@ use clap::Parser;
 use dotenvy::dotenv;
 use serde_json::to_value;
 use sr_common::db::{
-    create_pool_from_url_checked, fetch_pending_emails, pending_copy, upsert_extraction_job,
+    create_pool_from_url_checked, fetch_pending_emails, pending_copy, run_migrations,
+    upsert_extraction_job,
 };
 use sr_common::extraction::{
     ExtractorOutput, PartialFields, calculate_priority, evaluate_quality, extract_all_fields,
     extract_flow_dept, extract_remote_onsite, extract_start_date_raw, extract_tanka,
     extract_work_todofuken,
 };
+use sr_common::logging::install_tracing_panic_hook;
 use sr_common::normalize::{calculate_subject_hash, normalize_subject};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod,
 };
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -113,9 +115,12 @@ pub fn run_sample_flow() -> ExtractionQueue {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
+    install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
 
     let args = Cli::parse();
     let pool = create_pool_from_url_checked(&args.db_url).await?;
+
+    run_migrations(&pool).await?;
 
     let status = pool.status();
     info!(
@@ -160,7 +165,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("sr-extractor failed: {err}");
+        error!(error = %err, "sr-extractor failed");
         std::process::exit(1);
     }
 }
