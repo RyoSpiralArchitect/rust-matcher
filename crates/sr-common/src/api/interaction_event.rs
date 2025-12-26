@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
+use strum::AsRefStr;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, AsRefStr)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionEventType {
     ViewedCandidateDetail,
@@ -9,18 +10,7 @@ pub enum InteractionEventType {
     Shortlisted,
 }
 
-impl InteractionEventType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            InteractionEventType::ViewedCandidateDetail => "viewed_candidate_detail",
-            InteractionEventType::CopiedTemplate => "copied_template",
-            InteractionEventType::ClickedContact => "clicked_contact",
-            InteractionEventType::Shortlisted => "shortlisted",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, AsRefStr)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionEventSource {
     Gui,
@@ -29,31 +19,11 @@ pub enum InteractionEventSource {
     Import,
 }
 
-impl InteractionEventSource {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            InteractionEventSource::Gui => "gui",
-            InteractionEventSource::Crm => "crm",
-            InteractionEventSource::Api => "api",
-            InteractionEventSource::Import => "import",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, AsRefStr)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionEventStatus {
     Created,
     Updated,
-}
-
-impl InteractionEventStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            InteractionEventStatus::Created => "created",
-            InteractionEventStatus::Updated => "updated",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

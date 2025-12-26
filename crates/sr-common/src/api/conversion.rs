@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
+use strum::AsRefStr;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, AsRefStr)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversionStage {
     Contacted,
@@ -11,35 +12,12 @@ pub enum ConversionStage {
     Lost,
 }
 
-impl ConversionStage {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ConversionStage::Contacted => "contacted",
-            ConversionStage::Entry => "entry",
-            ConversionStage::InterviewScheduled => "interview_scheduled",
-            ConversionStage::Offer => "offer",
-            ConversionStage::ContractSigned => "contract_signed",
-            ConversionStage::Lost => "lost",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, AsRefStr)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversionSource {
     Gui,
     Crm,
     Import,
-}
-
-impl ConversionSource {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ConversionSource::Gui => "gui",
-            ConversionSource::Crm => "crm",
-            ConversionSource::Import => "import",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -25,7 +25,7 @@ struct InteractionContext {
 }
 
 fn map_ng_reason(value: &Option<NgReasonCategory>) -> Option<&str> {
-    value.as_ref().map(|reason| reason.as_str())
+    value.as_ref().map(AsRef::as_ref)
 }
 
 /// Recompute the canonical outcome / feedback_at on interaction_logs based on
@@ -154,11 +154,11 @@ pub async fn insert_feedback_event(
                 &interaction.config_version,
                 &interaction.project_id,
                 &interaction.talent_id,
-                &request.feedback_type.as_str(),
+                &request.feedback_type.as_ref(),
                 &map_ng_reason(&request.ng_reason_category),
                 &request.comment,
                 &actor,
-                &request.source.as_str(),
+                &request.source.as_ref(),
             ],
         )
         .await?;

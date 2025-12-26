@@ -22,8 +22,8 @@ pub async fn insert_interaction_event(
     let source = request
         .source
         .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or(InteractionEventSource::Gui.as_str());
+        .map(AsRef::as_ref)
+        .unwrap_or(InteractionEventSource::Gui.as_ref());
 
     let client = pool.get().await?;
 
@@ -82,7 +82,7 @@ pub async fn insert_interaction_event(
             &insert_stmt,
             &[
                 &request.interaction_id,
-                &request.event_type.as_str(),
+                &request.event_type.as_ref(),
                 &actor,
                 &source,
                 &request.idempotency_key,

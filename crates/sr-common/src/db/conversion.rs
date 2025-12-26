@@ -19,8 +19,8 @@ pub async fn insert_conversion_event(
     let source = request
         .source
         .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or(ConversionSource::Gui.as_str());
+        .map(AsRef::as_ref)
+        .unwrap_or(ConversionSource::Gui.as_ref());
 
     let client = pool.get().await?;
 
@@ -48,7 +48,7 @@ pub async fn insert_conversion_event(
                 &request.interaction_id,
                 &request.talent_id,
                 &request.project_id,
-                &request.stage.as_str(),
+                &request.stage.as_ref(),
                 &actor,
                 &source,
                 &request.meta,
