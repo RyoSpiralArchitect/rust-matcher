@@ -1,18 +1,10 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::PoolError;
-use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
 use crate::api::models::queue::FeedbackEventRow;
-use crate::db::PgPool;
+use crate::db::{db_error, PgPool};
 
-#[derive(Debug, thiserror::Error)]
-pub enum FeedbackHistoryError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
-}
+db_error!(FeedbackHistoryError {});
 
 fn map_feedback_row(row: tokio_postgres::Row) -> FeedbackEventRow {
     FeedbackEventRow {

@@ -1,3 +1,27 @@
+macro_rules! db_error {
+    ($name:ident { $($extra:tt)* }) => {
+        #[derive(Debug, thiserror::Error)]
+        pub enum $name {
+            #[error("failed to get postgres connection: {0}")]
+            Pool(#[from] deadpool_postgres::PoolError),
+            #[error("postgres error: {0}")]
+            Postgres(#[from] tokio_postgres::Error),
+            $($extra)*
+        }
+    };
+}
+
+pub(crate) use db_error;
+
+pub fn validated_actor(actor: &str) -> Option<&str> {
+    let actor = actor.trim();
+    if actor.is_empty() {
+        None
+    } else {
+        Some(actor)
+    }
+}
+
 pub mod anken_emails;
 pub mod candidates;
 pub mod conversion;

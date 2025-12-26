@@ -1,17 +1,9 @@
-use deadpool_postgres::PoolError;
-use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
 use crate::api::models::queue::{QueueDashboard, StatusCounts};
-use crate::db::PgPool;
+use crate::db::{db_error, PgPool};
 
-#[derive(Debug, thiserror::Error)]
-pub enum QueueDashboardError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
-}
+db_error!(QueueDashboardError {});
 
 #[instrument(skip(pool))]
 pub async fn fetch_dashboard(pool: &PgPool) -> Result<QueueDashboard, QueueDashboardError> {

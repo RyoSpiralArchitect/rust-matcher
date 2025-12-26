@@ -1,23 +1,18 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::{GenericClient, PoolError};
+use deadpool_postgres::GenericClient;
 use tokio_postgres::Error as PgError;
 use tracing::instrument;
 
 use crate::api::feedback_request::{FeedbackRequest, NgReasonCategory};
 use crate::api::feedback_response::{FeedbackResponse, FeedbackStatus};
-use crate::db::PgPool;
+use crate::db::{db_error, validated_actor, PgPool};
 
-#[derive(Debug, thiserror::Error)]
-pub enum FeedbackStorageError {
-    #[error("failed to get postgres connection: {0}")]
-    Pool(#[from] PoolError),
-    #[error("postgres error: {0}")]
-    Postgres(#[from] PgError),
+db_error!(FeedbackStorageError {
     #[error("interaction not found: {0}")]
     InteractionNotFound(i64),
     #[error("feedback actor is missing")]
     MissingActor,
-}
+});
 
 struct InteractionContext {
     interaction_id: i64,
@@ -30,7 +25,7 @@ struct InteractionContext {
 }
 
 fn map_ng_reason(value: &Option<NgReasonCategory>) -> Option<&str> {
-    value.as_ref().map(|reason| reason.as_str())
+    value.as_ref().map(AsRef::as_ref)
 }
 
 /// Recompute the canonical outcome / feedback_at on interaction_logs based on
@@ -119,10 +114,7 @@ pub async fn insert_feedback_event(
     actor: &str,
     request: &FeedbackRequest,
 ) -> Result<FeedbackResponse, FeedbackStorageError> {
-    let actor = actor.trim();
-    if actor.is_empty() {
-        return Err(FeedbackStorageError::MissingActor);
-    }
+    let actor = validated_actor(actor).ok_or(FeedbackStorageError::MissingActor)?;
 
     let mut client = pool.get().await?;
     let tx = client.transaction().await?;
@@ -162,11 +154,11 @@ pub async fn insert_feedback_event(
                 &interaction.config_version,
                 &interaction.project_id,
                 &interaction.talent_id,
-                &request.feedback_type.as_str(),
+                &request.feedback_type.as_ref(),
                 &map_ng_reason(&request.ng_reason_category),
                 &request.comment,
                 &actor,
-                &request.source.as_str(),
+                &request.source.as_ref(),
             ],
         )
         .await?;
