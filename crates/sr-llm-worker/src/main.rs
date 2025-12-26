@@ -6,7 +6,8 @@ use reqwest::{StatusCode, blocking::Client};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sr_common::db::{
-    create_pool_from_url_checked, fetch_email_body, lock_next_pending_job, upsert_extraction_job,
+    create_pool_from_url_checked, fetch_email_body, lock_next_pending_job, run_migrations,
+    upsert_extraction_job,
 };
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
@@ -15,7 +16,7 @@ use sr_common::queue::{
 use std::thread::sleep as std_sleep;
 use std::time::Duration as StdDuration;
 use tokio::time::{Duration, sleep};
-use tracing::info;
+use tracing::{error, info};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompareMode {
@@ -756,6 +757,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
     let pool = create_pool_from_url_checked(&args.db_url).await?;
+    run_migrations(&pool).await?;
     let status = pool.status();
     info!(
         size = status.size,
@@ -798,7 +800,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("sr-llm-worker failed: {err}");
+        error!(error = %err, "sr-llm-worker failed");
         std::process::exit(1);
     }
 }

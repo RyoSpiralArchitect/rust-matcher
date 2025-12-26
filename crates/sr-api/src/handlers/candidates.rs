@@ -35,7 +35,7 @@ pub async fn list_candidates(
     Path(project_id): Path<i64>,
     Query(query): Query<CandidateQuery>,
     _auth: AuthUser,
-) -> Result<Json<Vec<MatchResponse>>, ApiError> {
+) -> Result<Json<CandidateListResponse>, ApiError> {
     let limit = query.limit.clamp(1, 200);
     let offset = query.offset.min(10_000);
 

@@ -1,9 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
-use sr_common::db::{create_pool_from_url_checked, recover_stuck_jobs};
+use sr_common::db::{create_pool_from_url_checked, recover_stuck_jobs, run_migrations};
 use sr_common::queue::{ExtractionJob, ExtractionQueue, QueueStatus};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 const DEFAULT_STUCK_THRESHOLD_MINUTES: i64 = 10;
 
@@ -46,6 +46,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Cli::parse();
     let pool = create_pool_from_url_checked(&args.db_url).await?;
+    run_migrations(&pool).await?;
     let status = pool.status();
     info!(
         size = status.size,
@@ -84,7 +85,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("sr-queue-recovery failed: {err}");
+        error!(error = %err, "sr-queue-recovery failed");
         std::process::exit(1);
     }
 }
