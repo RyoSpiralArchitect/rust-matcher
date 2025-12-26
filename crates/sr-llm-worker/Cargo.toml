@@ -20,4 +20,5 @@ reqwest.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
-httpmock = "0.7"
+mockito = "1"
+serial_test.workspace = true

@@ -27,3 +27,4 @@ subtle.workspace = true
 
 [dev-dependencies]
 http-body-util = "0.1"
+serial_test.workspace = true

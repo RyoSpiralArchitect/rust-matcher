@@ -201,88 +201,101 @@ impl From<StartDatePrecision> for DatePrecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{Datelike, TimeZone};
+
+    fn base_year() -> i32 {
+        Utc::now().year() + 1
+    }
+
+    fn base_datetime(month: u32, day: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(base_year(), month, day, 0, 0, 0)
+            .unwrap()
+    }
 
     #[test]
     fn normalizes_asap_and_exact_dates() {
-        let base = Utc.with_ymd_and_hms(2025, 1, 10, 0, 0, 0).unwrap();
+        let year = base_year();
+        let base = base_datetime(1, 10);
 
         let asap = normalize_start_date("即日", base).unwrap();
         assert_eq!(asap.date, Some(base.date_naive()));
         assert_eq!(asap.precision, StartDatePrecision::Asap);
 
-        let exact = normalize_start_date("2025/02/15", base).unwrap();
+        let exact = normalize_start_date(&format!("{year}/02/15"), base).unwrap();
         assert_eq!(
             exact.date,
-            Some(NaiveDate::from_ymd_opt(2025, 2, 15).unwrap())
+            Some(NaiveDate::from_ymd_opt(year, 2, 15).unwrap())
         );
         assert_eq!(exact.precision, StartDatePrecision::ExactDay);
     }
 
     #[test]
     fn normalizes_next_month_and_month_parts() {
-        let base = Utc.with_ymd_and_hms(2025, 1, 28, 0, 0, 0).unwrap();
+        let year = base_year();
+        let base = base_datetime(1, 28);
 
         let next_month = normalize_start_date("来月", base).unwrap();
         assert_eq!(
             next_month.date,
-            Some(NaiveDate::from_ymd_opt(2025, 2, 1).unwrap())
+            Some(NaiveDate::from_ymd_opt(year, 2, 1).unwrap())
         );
         assert_eq!(next_month.precision, StartDatePrecision::ApproximateMonth);
 
         let late = normalize_start_date("3月下旬", base).unwrap();
         assert_eq!(
             late.date,
-            Some(NaiveDate::from_ymd_opt(2025, 3, 25).unwrap())
+            Some(NaiveDate::from_ymd_opt(year, 3, 25).unwrap())
         );
         assert_eq!(late.precision, StartDatePrecision::ApproximateMonth);
     }
 
     #[test]
     fn rolls_months_into_next_year_when_needed() {
-        let base = Utc.with_ymd_and_hms(2025, 12, 15, 0, 0, 0).unwrap();
+        let year = base_year();
+        let base = base_datetime(12, 15);
 
         let next_month = normalize_start_date("来月", base).unwrap();
         assert_eq!(
             next_month.date,
-            Some(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap())
+            Some(NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap())
         );
 
         let november = normalize_start_date("11月", base).unwrap();
         assert_eq!(
             november.date,
-            Some(NaiveDate::from_ymd_opt(2026, 11, 1).unwrap())
+            Some(NaiveDate::from_ymd_opt(year + 1, 11, 1).unwrap())
         );
     }
 
     #[test]
     fn parses_quarter_and_negotiable_cases() {
-        let base = Utc.with_ymd_and_hms(2025, 1, 10, 0, 0, 0).unwrap();
+        let year = base_year();
+        let base = base_datetime(1, 10);
 
-        let q2 = normalize_start_date("2026Q2", base).unwrap();
-        assert_eq!(q2.date, Some(NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()));
+        let q2 = normalize_start_date(&format!("{}Q2", year + 1), base).unwrap();
+        assert_eq!(
+            q2.date,
+            Some(NaiveDate::from_ymd_opt(year + 1, 4, 1).unwrap())
+        );
         assert_eq!(q2.precision, StartDatePrecision::Quarter);
         assert!(q2.interpretation_note.is_none());
 
         let q3 = normalize_start_date("第3四半期", base).unwrap();
-        assert_eq!(q3.date, Some(NaiveDate::from_ymd_opt(2025, 7, 1).unwrap()));
+        assert_eq!(q3.date, Some(NaiveDate::from_ymd_opt(year, 7, 1).unwrap()));
         assert_eq!(q3.precision, StartDatePrecision::Quarter);
-        assert!(
-            q3.interpretation_note
-                .as_ref()
-                .map(|n| n.contains("received_at"))
-                .unwrap_or(false)
-        );
+        assert!(q3
+            .interpretation_note
+            .as_ref()
+            .map(|n| n.contains("received_at"))
+            .unwrap_or(false));
 
         let negotiable = normalize_start_date("参画時期は応相談です", base).unwrap();
         assert_eq!(negotiable.date, None);
         assert_eq!(negotiable.precision, StartDatePrecision::Negotiable);
-        assert!(
-            negotiable
-                .interpretation_note
-                .as_ref()
-                .map(|n| n.contains("negotiable"))
-                .unwrap_or(false)
-        );
+        assert!(negotiable
+            .interpretation_note
+            .as_ref()
+            .map(|n| n.contains("negotiable"))
+            .unwrap_or(false));
     }
 }

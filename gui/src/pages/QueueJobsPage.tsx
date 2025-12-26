@@ -17,6 +17,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { LoadingState } from "@/components/LoadingState";
+import { ErrorDisplay } from "@/components/ErrorDisplay";
+import { StatusBadge } from "@/components/StatusBadge";
 import { useQueueJobs } from "@/api";
 
 const STATUSES = ["all", "pending", "processing", "completed"] as const;
@@ -58,11 +61,7 @@ export function QueueJobsPage() {
   };
 
   if (error) {
-    return (
-      <div className="text-destructive">
-        Error: {error instanceof Error ? error.message : "Unknown error"}
-      </div>
-    );
+    return <ErrorDisplay error={error} />;
   }
 
   return (
@@ -120,7 +119,7 @@ export function QueueJobsPage() {
       </div>
 
       {isLoading ? (
-        <div className="text-muted-foreground">Loading...</div>
+        <LoadingState />
       ) : (
         <>
           <Table>
@@ -195,15 +194,4 @@ export function QueueJobsPage() {
       )}
     </div>
   );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "completed"
-      ? "default"
-      : status === "processing"
-        ? "secondary"
-        : "outline";
-
-  return <Badge variant={variant}>{status}</Badge>;
 }
