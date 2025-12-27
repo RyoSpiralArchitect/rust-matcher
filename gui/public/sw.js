@@ -1,4 +1,4 @@
-const CACHE_NAME = "sr-matcher-static-v1";
+const CACHE_NAME = "sr-matcher-static-v2";
 
 const ASSETS = ["/", "/index.html", "/manifest.webmanifest", "/icons/icon.svg"];
 
@@ -19,6 +19,8 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
 
   event.respondWith(
     caches.match(request).then(
