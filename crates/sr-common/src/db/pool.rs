@@ -62,7 +62,7 @@ fn build_options() -> Option<String> {
         }
     }
 
-    // Force UTC to align NOW()/CURRENT_TIMESTAMP with application-side Utc::now comparisons.
+    // Force UTC to align NOW()/CURRENT_TIMESTAMP/clock_timestamp() with application-side Utc::now comparisons.
     let timezone = env::var("SR_DB_TIMEZONE").unwrap_or_else(|_| "UTC".into());
     if !timezone.trim().is_empty() {
         options.push(format!("-c TimeZone={}", timezone.trim()));

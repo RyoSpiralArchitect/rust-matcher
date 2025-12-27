@@ -1,3 +1,5 @@
+#![allow(async_fn_in_trait)]
+
 use deadpool_postgres::GenericClient;
 use serde_json::Value;
 use std::{sync::OnceLock, time::Instant};
@@ -47,6 +49,19 @@ pub trait TimedClientExt: GenericClient {
         result
     }
 
+    async fn timed_query_cached(
+        &self,
+        statement: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+        label: &str,
+    ) -> Result<Vec<tokio_postgres::Row>, tokio_postgres::Error> {
+        let started = Instant::now();
+        let prepared = self.prepare_cached(statement).await?;
+        let result = self.query(&prepared, params).await;
+        maybe_log_slow_query(label, started);
+        result
+    }
+
     async fn timed_query_opt<S>(
         &self,
         statement: &S,
@@ -58,6 +73,19 @@ pub trait TimedClientExt: GenericClient {
     {
         let started = Instant::now();
         let result = self.query_opt(statement, params).await;
+        maybe_log_slow_query(label, started);
+        result
+    }
+
+    async fn timed_query_opt_cached(
+        &self,
+        statement: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+        label: &str,
+    ) -> Result<Option<tokio_postgres::Row>, tokio_postgres::Error> {
+        let started = Instant::now();
+        let prepared = self.prepare_cached(statement).await?;
+        let result = self.query_opt(&prepared, params).await;
         maybe_log_slow_query(label, started);
         result
     }
@@ -77,6 +105,19 @@ pub trait TimedClientExt: GenericClient {
         result
     }
 
+    async fn timed_query_one_cached(
+        &self,
+        statement: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+        label: &str,
+    ) -> Result<tokio_postgres::Row, tokio_postgres::Error> {
+        let started = Instant::now();
+        let prepared = self.prepare_cached(statement).await?;
+        let result = self.query_one(&prepared, params).await;
+        maybe_log_slow_query(label, started);
+        result
+    }
+
     async fn timed_execute<S>(
         &self,
         statement: &S,
@@ -88,6 +129,19 @@ pub trait TimedClientExt: GenericClient {
     {
         let started = Instant::now();
         let result = self.execute(statement, params).await;
+        maybe_log_slow_query(label, started);
+        result
+    }
+
+    async fn timed_execute_cached(
+        &self,
+        statement: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+        label: &str,
+    ) -> Result<u64, tokio_postgres::Error> {
+        let started = Instant::now();
+        let prepared = self.prepare_cached(statement).await?;
+        let result = self.execute(&prepared, params).await;
         maybe_log_slow_query(label, started);
         result
     }

@@ -27,10 +27,10 @@ CREATE TABLE ses.extraction_queue (
     manual_review_reason TEXT,
     reprocess_after TIMESTAMPTZ,
 
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT clock_timestamp(),
     processing_started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT clock_timestamp(),
 
     llm_latency_ms INTEGER,
 
@@ -51,6 +51,7 @@ CREATE INDEX idx_extraction_queue_subject_hash ON ses.extraction_queue(subject_h
 CREATE INDEX idx_extraction_queue_canary ON ses.extraction_queue(canary_target, created_at);
 CREATE INDEX idx_extraction_queue_reprocess ON ses.extraction_queue(reprocess_after) WHERE reprocess_after IS NOT NULL;
 CREATE INDEX idx_extraction_queue_review_reason ON ses.extraction_queue(manual_review_reason) WHERE manual_review_reason IS NOT NULL;
+CREATE INDEX idx_extraction_queue_partial_fields_json ON ses.extraction_queue USING GIN(partial_fields jsonb_path_ops);
 "#;
 
 #[cfg(test)]
@@ -69,6 +70,7 @@ mod tests {
             "manual_review_reason",
             "reprocess_after",
             "idx_extraction_queue_status_priority",
+            "idx_extraction_queue_partial_fields_json",
         ] {
             assert!(EXTRACTION_QUEUE_DDL.contains(required));
         }
