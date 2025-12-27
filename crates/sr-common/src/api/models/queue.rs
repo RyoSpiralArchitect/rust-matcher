@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::queue::QueueStatus;
+
 fn default_limit() -> i64 {
     50
 }
@@ -69,7 +71,7 @@ impl Default for Pagination {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct QueueJobFilter {
-    pub status: Option<String>,
+    pub status: Option<QueueStatus>,
     pub requires_manual_review: Option<bool>,
     pub canary_target: Option<bool>,
     pub final_method: Option<String>,
@@ -108,7 +110,7 @@ pub struct QueueJobDashboardItem {
     /// 件名
     pub subject: String,
     /// ステータス
-    pub status: String,
+    pub status: QueueStatus,
     /// 推奨メソッド
     pub recommended_method: Option<String>,
     /// 最終メソッド
@@ -155,7 +157,7 @@ pub struct QueueJobDashboardDetail {
 pub struct QueueJobListItem {
     pub id: i64,
     pub message_id: String,
-    pub status: String,
+    pub status: QueueStatus,
     pub priority: i32,
     pub retry_count: i32,
     pub next_retry_at: Option<DateTime<Utc>>,
@@ -347,7 +349,7 @@ mod tests {
         let summary = QueueJobDashboardItem {
             message_id: "msg-1".into(),
             subject: "案件A".into(),
-            status: "pending".into(),
+            status: QueueStatus::Pending,
             recommended_method: Some("rust_recommended".into()),
             final_method: None,
             locked_by: Some("worker-1".into()),

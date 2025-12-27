@@ -128,12 +128,12 @@ export interface ConversionResponse {
 // Queue Dashboard (既存)
 // ============================================================
 
+export const QUEUE_JOB_STATUSES = ["pending", "processing", "completed"] as const;
+export type QueueJobStatus = (typeof QUEUE_JOB_STATUSES)[number];
+export type QueueStatusCounts = Record<QueueJobStatus, number>;
+
 export interface QueueDashboard {
-  statusCounts: {
-    pending: number;
-    processing: number;
-    completed: number;
-  };
+  statusCounts: QueueStatusCounts;
   manualReviewCount: number;
   errorCount: number;
   staleProcessingCount: number;
@@ -143,7 +143,7 @@ export interface QueueDashboard {
 export interface QueueJobListItem {
   id: number;
   messageId: string;
-  status: string;
+  status: QueueJobStatus;
   priority: number;
   retryCount: number;
   nextRetryAt: string | null;

@@ -14,11 +14,13 @@ import { Switch } from "@/components/ui/switch";
 import { LoadingState } from "@/components/LoadingState";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { StatusBadge } from "@/components/StatusBadge";
-import { useInfiniteQueueJobs } from "@/api";
+import { QUEUE_JOB_STATUSES, type QueueJobStatus, useInfiniteQueueJobs } from "@/api";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 import { Inbox, Loader2 } from "lucide-react";
 
-const STATUSES = ["all", "pending", "processing", "completed"] as const;
+type StatusFilter = QueueJobStatus | "all";
+const STATUS_FILTERS: StatusFilter[] = ["all", ...QUEUE_JOB_STATUSES];
 const PAGE_SIZE = 50;
 const ROW_HEIGHT = 64;
 const FILTER_DEBOUNCE_MS = 300;
@@ -26,12 +28,16 @@ const COLUMN_LAYOUT =
   "grid grid-cols-[90px_210px_130px_100px_80px_90px_180px] items-center";
 
 export function QueueJobsPage() {
+  const { t, locale } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
-  const status = searchParams.get("status") ?? undefined;
+  const statusParam = searchParams.get("status");
+  const normalizedStatus = QUEUE_JOB_STATUSES.includes(statusParam as QueueJobStatus)
+    ? (statusParam as QueueJobStatus)
+    : undefined;
   const requiresReview = searchParams.get("review") === "true";
-  const [pendingStatus, setPendingStatus] = useState(status ?? "all");
+  const [pendingStatus, setPendingStatus] = useState<StatusFilter>(normalizedStatus ?? "all");
   const [pendingRequiresReview, setPendingRequiresReview] =
     useState(requiresReview);
   const {
@@ -42,7 +48,7 @@ export function QueueJobsPage() {
     hasNextPage,
     fetchNextPage,
   } = useInfiniteQueueJobs({
-    status: status === "all" ? undefined : status,
+    status: normalizedStatus,
     limit: PAGE_SIZE,
     requiresManualReview: requiresReview ? true : undefined,
   });
@@ -80,7 +86,7 @@ export function QueueJobsPage() {
 
   useEffect(() => {
     if (
-      pendingStatus === (status ?? "all") &&
+      pendingStatus === (normalizedStatus ?? "all") &&
       pendingRequiresReview === requiresReview
     ) {
       return;
@@ -122,13 +128,13 @@ export function QueueJobsPage() {
     rowVirtualizer,
     searchParams,
     setSearchParams,
-    status,
+    normalizedStatus,
   ]);
 
   useEffect(() => {
-    setPendingStatus(status ?? "all");
+    setPendingStatus(normalizedStatus ?? "all");
     setPendingRequiresReview(requiresReview);
-  }, [requiresReview, status]);
+  }, [requiresReview, normalizedStatus]);
 
   useEffect(() => {
     if (jobs.length === 0) {
@@ -197,10 +203,6 @@ export function QueueJobsPage() {
     }
   };
 
-  const locale =
-    typeof navigator !== "undefined" && navigator.language
-      ? navigator.language
-      : undefined;
   const formatDate = (value: string) =>
     new Intl.DateTimeFormat(locale, {
       dateStyle: "medium",
@@ -214,27 +216,35 @@ export function QueueJobsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Queue Jobs</h1>
+        <h1 className="text-2xl font-bold">{t("queue.jobs.title")}</h1>
       </div>
 
       {/* Filters */}
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">Status:</span>
+          <span className="text-sm text-muted-foreground">{t("queue.jobs.filter.statusLabel")}</span>
           <Select
             value={pendingStatus}
-            onValueChange={setPendingStatus}
+            onValueChange={(value) => setPendingStatus(value as StatusFilter)}
           >
             <SelectTrigger
-              aria-label="Filter queue by status"
+              aria-label={t("queue.jobs.filter.statusAria")}
               className="w-[140px]"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {STATUSES.map((s) => (
+              {STATUS_FILTERS.map((s) => (
                 <SelectItem key={s} value={s}>
-                  {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+                  {s === "all"
+                    ? t("queue.jobs.filter.all")
+                    : t(
+                        s === "pending"
+                          ? "status.pending"
+                          : s === "processing"
+                            ? "status.processing"
+                            : "status.completed"
+                      )}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -244,7 +254,7 @@ export function QueueJobsPage() {
         <div className="flex items-center gap-2">
           <Switch
             id="review-filter"
-            aria-label="Filter to jobs requiring manual review"
+            aria-label={t("queue.jobs.filter.reviewOnly")}
             checked={pendingRequiresReview}
             onCheckedChange={setPendingRequiresReview}
           />
@@ -252,15 +262,15 @@ export function QueueJobsPage() {
             htmlFor="review-filter"
             className="text-sm text-muted-foreground cursor-pointer"
           >
-            Manual Review Only
+            {t("queue.jobs.filter.reviewOnly")}
           </label>
         </div>
 
-        {(status || requiresReview) && (
+        {(normalizedStatus || requiresReview) && (
           <Button
             variant="ghost"
             size="sm"
-            aria-label="Clear active filters"
+            aria-label={t("queue.jobs.filter.clear")}
             onClick={() => {
               setSearchParams({}, { replace: true });
               setPendingStatus("all");
@@ -268,7 +278,7 @@ export function QueueJobsPage() {
               rowVirtualizer.scrollToIndex(0);
             }}
           >
-            Clear Filters
+            {t("queue.jobs.filter.clear")}
           </Button>
         )}
       </div>
@@ -278,28 +288,28 @@ export function QueueJobsPage() {
       ) : jobs.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-md border border-dashed p-10 text-center">
           <Inbox className="h-10 w-10 text-muted-foreground" />
-          <p className="mt-2 text-lg font-semibold">No queue jobs found</p>
+          <p className="mt-2 text-lg font-semibold">{t("queue.jobs.empty.title")}</p>
           <p className="text-sm text-muted-foreground">
-            Try adjusting the filters to see jobs that match your criteria.
+            {t("queue.jobs.empty.description")}
           </p>
         </div>
       ) : (
         <div className="rounded-md border">
           <div className="overflow-x-auto">
             <div className={cn(COLUMN_LAYOUT, "min-w-[880px] border-b bg-muted/60 px-3 py-2 text-sm font-semibold")}>
-              <span>ID</span>
-              <span>Message ID</span>
-              <span>Status</span>
-              <span>Priority</span>
-              <span>Retry</span>
-              <span>Review</span>
-              <span>Updated</span>
+              <span>{t("queue.jobs.table.id")}</span>
+              <span>{t("queue.jobs.table.messageId")}</span>
+              <span>{t("queue.jobs.table.status")}</span>
+              <span>{t("queue.jobs.table.priority")}</span>
+              <span>{t("queue.jobs.table.retry")}</span>
+              <span>{t("queue.jobs.table.review")}</span>
+              <span>{t("queue.jobs.table.updated")}</span>
             </div>
             <div
               ref={scrollParentRef}
               className="max-h-[70vh] min-w-[880px] overflow-auto"
               role="listbox"
-              aria-label="Queue jobs"
+              aria-label={t("queue.jobs.title")}
               aria-activedescendant={
                 activeJobId ? `queue-row-${activeJobId}` : undefined
               }
@@ -338,7 +348,7 @@ export function QueueJobsPage() {
                     >
                       <Link
                         to={`/jobs/${job.id}`}
-                        aria-label={`View queue job ${job.id}`}
+                        aria-label={t("queue.jobs.row.link", { id: job.id })}
                         className="text-primary hover:underline"
                       >
                         {job.id}
@@ -353,7 +363,7 @@ export function QueueJobsPage() {
                       <span>{job.retryCount}</span>
                       <span>
                         {job.requiresManualReview && (
-                          <Badge variant="secondary">Review</Badge>
+                          <Badge variant="secondary">{t("status.review")}</Badge>
                         )}
                       </span>
                       <span className="text-xs text-muted-foreground">
@@ -368,7 +378,7 @@ export function QueueJobsPage() {
                     style={{ top: rowVirtualizer.getTotalSize() }}
                   >
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading more jobs...
+                    {t("queue.jobs.loadingMore")}
                   </div>
                 )}
               </div>

@@ -3,9 +3,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useQueueDashboard } from "@/api";
 import { LoadingState } from "@/components/LoadingState";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
+import { useI18n } from "@/lib/i18n";
 
 export function QueueDashboardPage() {
   const { data, isLoading, error } = useQueueDashboard();
+  const { t } = useI18n();
 
   if (isLoading) {
     return <LoadingState />;
@@ -17,14 +19,14 @@ export function QueueDashboardPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Queue Dashboard</h1>
+      <h1 className="text-2xl font-bold">{t("queue.dashboard.title")}</h1>
 
       {/* Status Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Pending
+              {t("status.pending")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -37,7 +39,7 @@ export function QueueDashboardPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Processing
+              {t("status.processing")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -50,7 +52,7 @@ export function QueueDashboardPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Completed
+              {t("status.completed")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -66,7 +68,7 @@ export function QueueDashboardPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Manual Review
+              {t("queue.dashboard.manualReview")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -79,7 +81,7 @@ export function QueueDashboardPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Errors
+              {t("queue.dashboard.errors")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -92,7 +94,7 @@ export function QueueDashboardPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Stale Processing
+              {t("queue.dashboard.staleProcessing")}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -109,13 +111,13 @@ export function QueueDashboardPage() {
           to="/jobs"
           className="text-sm text-primary hover:underline"
         >
-          View All Jobs →
+          {t("queue.dashboard.viewAllJobs")}
         </Link>
         <Link
           to="/jobs?status=pending"
           className="text-sm text-primary hover:underline"
         >
-          View Pending Jobs →
+          {t("queue.dashboard.viewPendingJobs")}
         </Link>
       </div>
     </div>

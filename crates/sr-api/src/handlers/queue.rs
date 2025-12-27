@@ -28,17 +28,6 @@ pub struct ListJobsParams {
 }
 
 fn validate_filter(filter: &QueueJobFilter) -> Result<(), ApiError> {
-    if let Some(status) = &filter.status {
-        match status.as_str() {
-            "pending" | "processing" | "completed" => {}
-            other => {
-                return Err(ApiError::BadRequest(format!(
-                    "unsupported status filter: {other}"
-                )));
-            }
-        }
-    }
-
     if let Some(final_method) = &filter.final_method {
         match final_method.as_str() {
             "rust_completed" | "llm_completed" | "manual_review" => {}

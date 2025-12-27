@@ -1,11 +1,14 @@
+import { useI18n } from "@/lib/i18n";
+
 type LoadingStateProps = {
   message?: string;
   className?: string;
 };
 
 export function LoadingState({
-  message = "Loading...",
+  message,
   className = "text-muted-foreground",
 }: LoadingStateProps) {
-  return <div className={className}>{message}</div>;
+  const { t } = useI18n();
+  return <div className={className}>{message ?? t("loading.default")}</div>;
 }
