@@ -59,11 +59,7 @@ impl HashTwoTower {
             }
         }
 
-        Embedding {
-            vector,
-            source,
-            created_at: chrono::Utc::now(),
-        }
+        Embedding::new(vector, self.config.dimension, source)
     }
 }
 

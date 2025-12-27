@@ -35,19 +35,19 @@ impl TwoTowerEmbedder for OnnxTwoTower {
 
     fn embed_project(&self, _project: &Project) -> Embedding {
         // Phase 4: ONNX 推論を実装
-        Embedding {
-            vector: vec![0.0; self.dimension],
-            source: EmbeddingSource::Project,
-            created_at: chrono::Utc::now(),
-        }
+        Embedding::new(
+            vec![0.0; self.dimension],
+            self.dimension,
+            EmbeddingSource::Project,
+        )
     }
 
     fn embed_talent(&self, _talent: &Talent) -> Embedding {
         // Phase 4: ONNX 推論を実装
-        Embedding {
-            vector: vec![0.0; self.dimension],
-            source: EmbeddingSource::Talent,
-            created_at: chrono::Utc::now(),
-        }
+        Embedding::new(
+            vec![0.0; self.dimension],
+            self.dimension,
+            EmbeddingSource::Talent,
+        )
     }
 }

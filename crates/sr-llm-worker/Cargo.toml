@@ -18,6 +18,8 @@ tracing-subscriber.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 
 [dev-dependencies]
 mockito = "1"

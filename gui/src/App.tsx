@@ -13,8 +13,8 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <ErrorBoundary>
         <RouterProvider router={router} />
+        <Toaster position="top-right" richColors />
       </ErrorBoundary>
-      <Toaster position="top-right" richColors />
     </QueryClientProvider>
   );
 }

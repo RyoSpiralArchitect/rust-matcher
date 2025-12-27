@@ -13,6 +13,7 @@ pub use embedding::{Embedding, EmbeddingSource};
 pub use hash_tower::HashTwoTower;
 pub use onnx_tower::OnnxTwoTower;
 pub use similarity::cosine_similarity;
+use tracing::warn;
 
 /// Two-Tower モデルの抽象インターフェース
 ///
@@ -49,6 +50,18 @@ pub trait TwoTowerEmbedder: Send + Sync {
 
     /// 2つの埋め込みベクトルの類似度（0.0〜1.0）
     fn similarity(&self, a: &Embedding, b: &Embedding) -> f32 {
+        if a.dimension != b.dimension {
+            warn!(
+                source_a = ?a.source,
+                source_b = ?b.source,
+                a_dimension = a.dimension,
+                b_dimension = b.dimension,
+                a_vec_len = a.vector.len(),
+                b_vec_len = b.vector.len(),
+                "embedding dimension mismatch; returning zero similarity"
+            );
+            return 0.0;
+        }
         cosine_similarity(&a.vector, &b.vector)
     }
 
