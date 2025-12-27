@@ -5,6 +5,7 @@ use deadpool_postgres::{
 use std::{env, str::FromStr, time::Duration};
 use thiserror::Error;
 use tokio_postgres::NoTls;
+use tracing::warn;
 
 pub type PgPool = Pool;
 
@@ -92,6 +93,53 @@ fn parse_env_duration_ms(keys: &[&str]) -> Option<Duration> {
     parse_env::<u64>(keys).map(Duration::from_millis)
 }
 
+fn resolve_pool_size() -> usize {
+    const DEFAULT_POOL_SIZE: usize = 8;
+    const POOL_SIZE_CAP: usize = 32;
+
+    for key in [
+        "SR_DB_POOL_MAX_CONNECTIONS",
+        "SR_DB_POOL_MAX_SIZE",
+        "SR_DB_MAX_SIZE",
+    ] {
+        if let Ok(raw) = env::var(key) {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match trimmed.parse::<usize>() {
+                Ok(0) => {
+                    warn!(
+                        key,
+                        default = DEFAULT_POOL_SIZE,
+                        "pool size must be greater than 0; using default"
+                    );
+                    return DEFAULT_POOL_SIZE;
+                }
+                Ok(size) if size > POOL_SIZE_CAP => {
+                    warn!(
+                        key,
+                        requested = size,
+                        cap = POOL_SIZE_CAP,
+                        "capping database pool size to protect shared database resources"
+                    );
+                    return POOL_SIZE_CAP;
+                }
+                Ok(size) => return size,
+                Err(_) => warn!(
+                    key,
+                    raw,
+                    default = DEFAULT_POOL_SIZE,
+                    "invalid pool size; using default"
+                ),
+            }
+        }
+    }
+
+    DEFAULT_POOL_SIZE
+}
+
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
     let mut pg_config = tokio_postgres::Config::from_str(db_url)
         .map_err(|e| DbPoolError::InvalidConfig(e.to_string()))?;
@@ -107,7 +155,7 @@ pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
     cfg.connect_timeout = pg_config.get_connect_timeout().cloned();
 
     cfg.pool = Some(PoolConfig {
-        max_size: parse_env::<usize>(&["SR_DB_POOL_MAX_SIZE", "SR_DB_MAX_SIZE"]).unwrap_or(16),
+        max_size: resolve_pool_size(),
         timeouts: Timeouts {
             wait: parse_env_duration_ms(&[
                 "SR_DB_POOL_WAIT_TIMEOUT_MS",
@@ -186,6 +234,33 @@ mod tests {
                 assert!(result.is_ok());
             },
         );
+    }
+
+    #[test]
+    #[serial]
+    fn resolves_pool_size_with_bounds() {
+        with_envs(
+            &[
+                ("SR_DB_POOL_MAX_CONNECTIONS", None),
+                ("SR_DB_POOL_MAX_SIZE", None),
+                ("SR_DB_MAX_SIZE", None),
+            ],
+            || {
+                assert_eq!(resolve_pool_size(), 8);
+            },
+        );
+
+        with_env("SR_DB_POOL_MAX_CONNECTIONS", Some("0"), || {
+            assert_eq!(resolve_pool_size(), 8);
+        });
+
+        with_env("SR_DB_POOL_MAX_CONNECTIONS", Some("64"), || {
+            assert_eq!(resolve_pool_size(), 32);
+        });
+
+        with_env("SR_DB_POOL_MAX_CONNECTIONS", Some("abc"), || {
+            assert_eq!(resolve_pool_size(), 8);
+        });
     }
 
     static ENV_GUARD: Mutex<()> = Mutex::new(());
