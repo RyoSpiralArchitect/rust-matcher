@@ -30,3 +30,4 @@ sr-metrics = { path = "../sr-metrics" }
 [dev-dependencies]
 http-body-util = "0.1"
 serial_test.workspace = true
+regex.workspace = true
