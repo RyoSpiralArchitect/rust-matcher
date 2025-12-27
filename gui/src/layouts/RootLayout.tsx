@@ -16,6 +16,7 @@ export function RootLayout() {
   const { t } = useI18n();
   const { isQueueAdmin } = useFlags();
   const location = useLocation();
+  const visibleNavItems = navItems;
 
   const isActive = (href: string) =>
     location.pathname === href || location.pathname.startsWith(`${href}/`);
