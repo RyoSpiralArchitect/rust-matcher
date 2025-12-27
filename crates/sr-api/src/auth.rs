@@ -1,15 +1,18 @@
 use axum::async_trait;
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::FromRef;
 use axum::extract::FromRequestParts;
-use axum::http::header::{AUTHORIZATION, COOKIE};
+use axum::http::header::{HeaderValue, AUTHORIZATION, COOKIE};
 use axum::http::request::Parts;
+use chrono::{SecondsFormat, Utc};
 use clap::ValueEnum;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, SocketAddr};
 use subtle::ConstantTimeEq;
 use tracing::warn;
 
-use crate::error::ApiError;
+use crate::error::{self, ApiError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "snake_case")]
@@ -125,6 +128,10 @@ where
             AuthMode::ApiKey => authorize_api_key(parts, &config),
             AuthMode::Jwt => authorize_jwt(parts, &config),
         }
+        .map_err(|err| {
+            log_auth_failure(parts, &config, &err);
+            err
+        })
     }
 }
 
@@ -285,6 +292,51 @@ impl AuthUser {
     }
 }
 
+fn client_ip_from_parts(parts: &Parts) -> Option<IpAddr> {
+    parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip())
+}
+
+fn log_auth_failure(parts: &Parts, config: &AuthConfig, err: &ApiError) {
+    let client_ip = client_ip_from_parts(parts)
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "".to_string());
+
+    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    warn!(
+        event = "auth_failure",
+        auth_mode = ?config.mode,
+        use_cookie_auth = config.use_cookie_auth,
+        client_ip = client_ip.as_str(),
+        timestamp = %timestamp,
+        request_id = error::current_request_id().as_deref().unwrap_or(""),
+        reason = %err,
+        "authentication rejected"
+    );
+}
+
+/// Build Set-Cookie headers for cookie-based JWT auth, enforcing HttpOnly + Secure for the token.
+pub fn build_auth_cookies(token: &str, csrf: Option<&str>) -> Result<Vec<HeaderValue>, ApiError> {
+    let token_cookie =
+        format!("{TOKEN_COOKIE_NAME}={token}; Path=/; Secure; HttpOnly; SameSite=Strict");
+
+    let mut cookies = vec![HeaderValue::from_str(&token_cookie)
+        .map_err(|_| ApiError::Internal("failed to encode auth token cookie".into()))?];
+
+    if let Some(csrf) = csrf {
+        let csrf_cookie = format!("{CSRF_COOKIE_NAME}={csrf}; Path=/; Secure; SameSite=Strict");
+        cookies.push(
+            HeaderValue::from_str(&csrf_cookie)
+                .map_err(|_| ApiError::Internal("failed to encode csrf cookie".into()))?,
+        );
+    }
+
+    Ok(cookies)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,6 +478,25 @@ mod tests {
         let user = authorize_jwt(&parts, &config).expect("bearer token should be accepted");
         assert_eq!(user.subject, "header-user");
         assert!(user.is_admin());
+    }
+
+    #[test]
+    fn build_auth_cookies_sets_secure_defaults() {
+        let token = "token-value";
+        let csrf = "csrf-value";
+
+        let cookies = build_auth_cookies(token, Some(csrf)).expect("cookies should build");
+        assert_eq!(cookies.len(), 2);
+
+        let token_cookie = cookies[0].to_str().unwrap();
+        assert!(token_cookie.contains("Secure"));
+        assert!(token_cookie.contains("HttpOnly"));
+        assert!(token_cookie.contains("__Host-sr-token=token-value"));
+
+        let csrf_cookie = cookies[1].to_str().unwrap();
+        assert!(csrf_cookie.contains("Secure"));
+        assert!(!csrf_cookie.contains("HttpOnly"));
+        assert!(csrf_cookie.contains("__Host-sr-csrf=csrf-value"));
     }
 
     #[test]
