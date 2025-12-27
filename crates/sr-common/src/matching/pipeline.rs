@@ -230,7 +230,7 @@ pub struct MatchRunner {
 
 impl MatchRunner {
     /// 環境変数を読み込んで初期化する。
-    /// - match_run_id: sr_common::run_id のプロセス固定 ULID
+    /// - match_run_id: sr_common::run_id の生成 ULID（runごとに一意）
     /// - Two-Tower: TWO_TOWER_ENABLED/TWO_TOWER_DIMENSION/TWO_TOWER_WEIGHT/TWO_TOWER_EMBEDDER で制御
     pub fn from_env() -> Self {
         let (two_tower_config, two_tower) = init_two_tower_from_env();
@@ -242,7 +242,7 @@ impl MatchRunner {
             engine_version: None,
             config_version: None,
             variant: None,
-            match_run_id: run_id::get().to_string(),
+            match_run_id: run_id::generate(),
         }
     }
 

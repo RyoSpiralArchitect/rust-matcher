@@ -4,6 +4,7 @@ use tracing::instrument;
 
 use crate::db::util::TimedClientExt;
 use crate::db::{normalize_json, PgPool};
+use crate::run_id;
 
 db_error!(MatchResultStorageError {});
 
@@ -73,6 +74,10 @@ pub async fn insert_match_result(
 
     let now = Utc::now();
     let created_at = result.created_at.unwrap_or(now);
+    let match_run_id = result
+        .match_run_id
+        .clone()
+        .unwrap_or_else(|| run_id::generate());
     let rows = client
         .timed_execute(
             &stmt,
@@ -86,7 +91,7 @@ pub async fn insert_match_result(
                 &normalize_json(&result.score_breakdown),
                 &result.engine_version,
                 &result.rule_version,
-                &result.match_run_id,
+                &match_run_id,
                 &created_at,
             ],
             "insert_match_result",

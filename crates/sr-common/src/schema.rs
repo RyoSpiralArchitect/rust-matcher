@@ -216,7 +216,7 @@ CREATE TABLE ses.match_results (
     rule_version VARCHAR(20),
 
     -- 最後にこのスナップショットを更新した実行ID（ULID/UUID）
-    last_match_run_id VARCHAR(64),
+    last_match_run_id VARCHAR(64) NOT NULL,
 
     -- ソフトデリート対応（監査用）
     is_deleted BOOLEAN NOT NULL DEFAULT false,
@@ -692,7 +692,7 @@ mod tests {
             "talent_id",
             "project_id",
             "score_breakdown",
-            "last_match_run_id",
+            "last_match_run_id VARCHAR(64) NOT NULL",
             "updated_at",
             "run_date DATE GENERATED ALWAYS",
             "Asia/Tokyo",

@@ -117,6 +117,16 @@ BEGIN
             ALTER TABLE ses.match_results DROP CONSTRAINT match_results_talent_id_project_id_run_date_key;
         END IF;
 
+        -- Backfill missing run IDs before enforcing NOT NULL
+        UPDATE ses.match_results
+        SET last_match_run_id = COALESCE(
+            last_match_run_id,
+            md5(random()::text || clock_timestamp()::text)
+        );
+
+        ALTER TABLE ses.match_results
+            ALTER COLUMN last_match_run_id SET NOT NULL;
+
         IF NOT EXISTS (
             SELECT 1 FROM pg_constraint WHERE conname = 'uniq_match_results_active'
         ) THEN
