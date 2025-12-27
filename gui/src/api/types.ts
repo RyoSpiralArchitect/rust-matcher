@@ -6,6 +6,26 @@
  */
 
 // ============================================================
+// Projects
+// ============================================================
+
+export interface ProjectListItem {
+  id?: number;
+  projectId?: number;
+  projectName: string;
+  monthlyTankaMin: number | null;
+  monthlyTankaMax: number | null;
+  matchedCount: number;
+  proposedCount: number;
+  interviewingCount: number;
+}
+
+export interface ProjectListResponse {
+  items: ProjectListItem[];
+  total?: number;
+}
+
+// ============================================================
 // Matching Candidates
 // ============================================================
 
