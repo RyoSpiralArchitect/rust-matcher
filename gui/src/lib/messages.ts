@@ -21,6 +21,10 @@ export const MESSAGES = {
     "queue.dashboard.manualReview": "Manual Review",
     "queue.dashboard.errors": "Errors",
     "queue.dashboard.staleProcessing": "Stale Processing",
+    "queue.dashboard.quickLinks.main": "Main workflows",
+    "queue.dashboard.quickLinks.admin": "Admin queue links",
+    "queue.dashboard.quickLinks.projects": "Browse projects",
+    "queue.dashboard.quickLinks.talents": "Browse talents",
     "queue.dashboard.viewAllJobs": "View All Jobs →",
     "queue.dashboard.viewPendingJobs": "View Pending Jobs →",
 
@@ -196,6 +200,10 @@ export const MESSAGES = {
     "queue.dashboard.manualReview": "要レビュー",
     "queue.dashboard.errors": "エラー",
     "queue.dashboard.staleProcessing": "処理中（滞留）",
+    "queue.dashboard.quickLinks.main": "主要ワークフロー",
+    "queue.dashboard.quickLinks.admin": "管理者向けキューリンク",
+    "queue.dashboard.quickLinks.projects": "プロジェクトを確認",
+    "queue.dashboard.quickLinks.talents": "タレントを確認",
     "queue.dashboard.viewAllJobs": "すべてのジョブを見る →",
     "queue.dashboard.viewPendingJobs": "待機中のジョブを見る →",
 

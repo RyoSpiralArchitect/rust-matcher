@@ -215,8 +215,13 @@ export function QueueJobsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">{t("queue.jobs.title")}</h1>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">{t("queue.jobs.title")}</h1>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t("queue.jobs.subtitle")}
+        </p>
       </div>
 
       {/* Filters */}

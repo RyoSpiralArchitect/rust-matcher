@@ -2,6 +2,7 @@ import { Outlet, Link, useLocation } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 
 const navItems = [
   { href: "/projects", labelKey: "nav.projects", isAdmin: false },
@@ -10,6 +11,7 @@ const navItems = [
 ] as const;
 
 export function RootLayout() {
+  const { t } = useI18n();
   const location = useLocation();
   const { t } = useI18n();
 
