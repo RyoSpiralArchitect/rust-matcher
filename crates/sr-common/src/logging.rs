@@ -13,6 +13,9 @@ pub fn install_tracing_panic_hook(app_name: &'static str) {
 
     INSTALLED.get_or_init(|| {
         let default_hook = panic::take_hook();
+        let include_backtrace = std::env::var("SR_LOG_INCLUDE_BACKTRACE")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
 
         panic::set_hook(Box::new(move |info| {
             let thread = std::thread::current();
@@ -36,7 +39,9 @@ pub fn install_tracing_panic_hook(app_name: &'static str) {
                 "panic captured"
             );
 
-            default_hook(info);
+            if include_backtrace {
+                default_hook(info);
+            }
         }));
     });
 }
