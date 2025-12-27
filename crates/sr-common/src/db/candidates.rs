@@ -73,12 +73,14 @@ fn map_match_response(row: Row, config: &MatchConfig) -> Result<MatchResponse, M
     let match_result_id: i64 = row.get("match_result_id");
     let match_engine_version: Option<String> = row.get("match_engine_version");
     let interaction_engine_version: Option<String> = row.get("interaction_engine_version");
+    let interaction_match_run_id: Option<String> = row.get("interaction_match_run_id");
     let engine_version = match (match_engine_version, interaction_engine_version) {
         (Some(match_version), Some(interaction_version))
             if match_version != interaction_version =>
         {
             warn!(
                 match_result_id,
+                match_run_id = %interaction_match_run_id.as_deref().unwrap_or("unknown"),
                 %match_version,
                 %interaction_version,
                 "engine_version changed mid-match-run"
@@ -166,6 +168,7 @@ pub async fn fetch_candidates_for_project(
                 mr.ko_reasons,\
                 mr.engine_version AS match_engine_version,\
                 il.engine_version AS interaction_engine_version,\
+                il.match_run_id AS interaction_match_run_id,\
                 mr.rule_version,\
                 mr.created_at,\
                 il.two_tower_score,\
@@ -223,13 +226,14 @@ pub async fn fetch_match_by_id(
                 mr.is_knockout,\
                 mr.score_total,\
                 mr.score_breakdown,\
-                mr.ko_reasons,\
-                mr.engine_version AS match_engine_version,\
-                il.engine_version AS interaction_engine_version,\
-                mr.rule_version,\
-                mr.created_at,\
-                il.two_tower_score,\
-                il.created_at AS interaction_created_at\
+            mr.ko_reasons,\
+            mr.engine_version AS match_engine_version,\
+            il.engine_version AS interaction_engine_version,\
+            il.match_run_id AS interaction_match_run_id,\
+            mr.rule_version,\
+            mr.created_at,\
+            il.two_tower_score,\
+            il.created_at AS interaction_created_at\
         FROM ses.match_results mr\
         JOIN ses.interaction_logs il ON il.match_result_id = mr.id\
         WHERE mr.id = $1 AND mr.deleted_at IS NULL\

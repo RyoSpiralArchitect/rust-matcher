@@ -159,17 +159,31 @@ impl LlmRuntimeConfig {
         }
 
         fn parse_timeout_secs(key: &str, default: u64) -> u64 {
+            const MAX_TIMEOUT_SECS: u64 = 600;
+
             match std::env::var(key) {
                 Ok(raw) => match raw.parse::<u64>() {
-                    Ok(value) if value > 0 => value,
-                    Ok(_) => {
+                    Ok(value) if value == 0 => {
                         warn!(
                             key,
                             default, "timeout must be greater than 0 seconds; using default"
                         );
                         default
                     }
-                    Err(_) => default,
+                    Ok(value) if value > MAX_TIMEOUT_SECS => {
+                        warn!(
+                            key,
+                            requested = value,
+                            capped = MAX_TIMEOUT_SECS,
+                            "timeout exceeds safety cap; capping value"
+                        );
+                        MAX_TIMEOUT_SECS
+                    }
+                    Ok(value) => value,
+                    Err(_) => {
+                        warn!(key, default, "invalid timeout value; using default");
+                        default
+                    }
                 },
                 Err(_) => default,
             }
@@ -1744,6 +1758,15 @@ mod tests {
         with_env(&[("LLM_TIMEOUT_SECONDS", Some("0"))], || {
             let cfg = LlmRuntimeConfig::from_env();
             assert_eq!(cfg.timeout_secs, 30);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn llm_timeout_caps_upper_bound() {
+        with_env(&[("LLM_TIMEOUT_SECONDS", Some("3600"))], || {
+            let cfg = LlmRuntimeConfig::from_env();
+            assert_eq!(cfg.timeout_secs, 600);
         });
     }
 

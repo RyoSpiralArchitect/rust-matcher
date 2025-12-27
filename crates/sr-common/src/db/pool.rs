@@ -97,31 +97,47 @@ fn resolve_pool_size() -> usize {
     const DEFAULT_POOL_SIZE: usize = 8;
     const POOL_SIZE_CAP: usize = 32;
 
-    let requested = parse_env::<usize>(&[
+    for key in [
         "SR_DB_POOL_MAX_CONNECTIONS",
         "SR_DB_POOL_MAX_SIZE",
         "SR_DB_MAX_SIZE",
-    ]);
+    ] {
+        if let Ok(raw) = env::var(key) {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
 
-    match requested {
-        Some(0) => {
-            warn!(
-                default = DEFAULT_POOL_SIZE,
-                "SR_DB_POOL_MAX_CONNECTIONS must be greater than 0; using default pool size"
-            );
-            DEFAULT_POOL_SIZE
+            match trimmed.parse::<usize>() {
+                Ok(0) => {
+                    warn!(
+                        key,
+                        default = DEFAULT_POOL_SIZE,
+                        "pool size must be greater than 0; using default"
+                    );
+                    return DEFAULT_POOL_SIZE;
+                }
+                Ok(size) if size > POOL_SIZE_CAP => {
+                    warn!(
+                        key,
+                        requested = size,
+                        cap = POOL_SIZE_CAP,
+                        "capping database pool size to protect shared database resources"
+                    );
+                    return POOL_SIZE_CAP;
+                }
+                Ok(size) => return size,
+                Err(_) => warn!(
+                    key,
+                    raw,
+                    default = DEFAULT_POOL_SIZE,
+                    "invalid pool size; using default"
+                ),
+            }
         }
-        Some(size) if size > POOL_SIZE_CAP => {
-            warn!(
-                requested = size,
-                cap = POOL_SIZE_CAP,
-                "capping database pool size to protect shared database resources"
-            );
-            POOL_SIZE_CAP
-        }
-        Some(size) => size,
-        None => DEFAULT_POOL_SIZE,
     }
+
+    DEFAULT_POOL_SIZE
 }
 
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
@@ -240,6 +256,10 @@ mod tests {
 
         with_env("SR_DB_POOL_MAX_CONNECTIONS", Some("64"), || {
             assert_eq!(resolve_pool_size(), 32);
+        });
+
+        with_env("SR_DB_POOL_MAX_CONNECTIONS", Some("abc"), || {
+            assert_eq!(resolve_pool_size(), 8);
         });
     }
 
