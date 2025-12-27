@@ -6,23 +6,26 @@
  */
 
 // ============================================================
-// Projects
+// Talents
 // ============================================================
 
-export interface ProjectListItem {
-  id?: number;
-  projectId?: number;
-  projectName: string;
-  monthlyTankaMin: number | null;
-  monthlyTankaMax: number | null;
-  matchedCount: number;
-  proposedCount: number;
-  interviewingCount: number;
+export interface TalentListItem {
+  id: number;
+  name: string;
+  role: string | null;
+  location: string | null;
+  availabilityDate: string | null;
+  skills: string[];
+  score: number | null;
+  experienceHighlights: string[];
 }
 
-export interface ProjectListResponse {
-  items: ProjectListItem[];
-  total?: number;
+export interface TalentSearchResponse {
+  items: TalentListItem[];
+  limit: number;
+  offset: number;
+  total: number;
+  hasMore: boolean;
 }
 
 // ============================================================
