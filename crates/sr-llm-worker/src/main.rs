@@ -27,6 +27,8 @@ enum CompareMode {
     Shadow,
 }
 
+const MAX_RETRY_COUNT: u32 = 100;
+
 fn current_trace_id() -> Option<String> {
     Span::current().id().map(|id| format!("{id:?}"))
 }
@@ -886,19 +888,41 @@ fn apply_outcome(
             retry_after,
         }) => {
             let finished_at = Utc::now();
-            job.status = QueueStatus::Pending;
-            job.retry_count += 1;
-            job.next_retry_at =
-                Some(finished_at + retry_after.unwrap_or_else(|| chrono::Duration::minutes(5)));
-            job.last_error = Some(message);
-            job.final_method = None;
-            job.partial_fields = None;
-            job.decision_reason = None;
-            job.manual_review_reason = None;
-            job.llm_latency_ms = None;
-            job.completed_at = None;
-            job.updated_at = finished_at;
-            job.locked_by = None;
+            let next_retry_count = job.retry_count.saturating_add(1);
+            if next_retry_count > MAX_RETRY_COUNT {
+                job.status = QueueStatus::Completed;
+                job.retry_count = next_retry_count;
+                job.final_method = Some(FinalMethod::ManualReview);
+                job.last_error = Some(format!(
+                    "retry limit exceeded after {next_retry_count} attempts: {message}"
+                ));
+                job.decision_reason = job.last_error.clone();
+                job.manual_review_reason = job.last_error.clone();
+                job.requires_manual_review = true;
+                job.next_retry_at = None;
+                job.partial_fields = None;
+                job.llm_latency_ms = None;
+                job.completed_at = Some(finished_at);
+                job.updated_at = finished_at;
+                job.processing_started_at = None;
+                job.locked_by = None;
+            } else {
+                job.status = QueueStatus::Pending;
+                job.retry_count = next_retry_count;
+                job.next_retry_at =
+                    Some(finished_at + retry_after.unwrap_or_else(|| chrono::Duration::minutes(5)));
+                job.last_error = Some(message);
+                job.final_method = None;
+                job.partial_fields = None;
+                job.decision_reason = None;
+                job.manual_review_reason = None;
+                job.llm_latency_ms = None;
+                job.completed_at = None;
+                job.updated_at = finished_at;
+                job.requires_manual_review = false;
+                job.processing_started_at = None;
+                job.locked_by = None;
+            }
         }
     }
 

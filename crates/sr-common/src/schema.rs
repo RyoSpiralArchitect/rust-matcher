@@ -415,7 +415,7 @@ CREATE TABLE ses.interaction_logs (
     id BIGSERIAL PRIMARY KEY,
 
     -- マッチング情報
-    match_result_id BIGINT REFERENCES ses.match_results(id),
+    match_result_id BIGINT REFERENCES ses.match_results(id) ON DELETE SET NULL,
     talent_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
     match_run_id VARCHAR(64) NOT NULL,  -- 実行インスタンスID（ULID/UUID、毎回生成）
