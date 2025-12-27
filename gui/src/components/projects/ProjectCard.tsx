@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import type { ProjectListItem } from "@/api";
 import type { TranslationKey } from "@/lib/messages";
-import { formatBudgetRange } from "./formatBudgetRange";
+import { componentTheme } from "@/theme/component-theme";
 
 type Translator = (key: TranslationKey, values?: Record<string, string | number>) => string;
 
