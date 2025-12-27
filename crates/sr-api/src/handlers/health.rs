@@ -53,6 +53,7 @@ mod tests {
     use sr_common::db::create_pool_from_url;
 
     use crate::auth::{AuthConfig, AuthMode, JwtAlgorithm};
+    use crate::security::SecurityTxtConfig;
     use crate::{default_rate_limits, AppConfig, AppState, MatchConfig};
 
     fn state_with_readiness(readiness: bool) -> SharedState {
@@ -71,6 +72,10 @@ mod tests {
             },
             allow_source_text: false,
             job_detail_statement_timeout_ms: 5000,
+            security_txt: SecurityTxtConfig::with_defaults(
+                "mailto:security@example.com".into(),
+                vec!["en".into()],
+            ),
         };
 
         Arc::new(AppState {
