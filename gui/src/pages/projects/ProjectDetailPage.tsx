@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
@@ -12,6 +12,42 @@ import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
+import type { TranslationKey } from "@/lib/messages";
+
+const FEEDBACK_LABEL_KEYS: Record<FeedbackType, TranslationKey> = {
+  thumbs_up: "feedback.thumbs_up",
+  thumbs_down: "feedback.thumbs_down",
+  review_ok: "feedback.review_ok",
+  review_ng: "feedback.review_ng",
+  accepted: "feedback.accepted",
+  rejected: "feedback.rejected",
+  review_pending: "feedback.review_pending",
+  interview_scheduled: "feedback.interview_scheduled",
+  no_response: "feedback.no_response",
+};
+
+const STATUS_META: Record<
+  ProjectMatchStatus,
+  { labelKey: TranslationKey; variant?: "default" | "secondary" | "outline" | "destructive"; className?: string }
+> = {
+  pending: { labelKey: "projectDetail.status.pending", variant: "outline" },
+  proposed: { labelKey: "projectDetail.status.proposed", className: "bg-blue-600 text-white border-blue-600" },
+  rejected: {
+    labelKey: "projectDetail.status.rejected",
+    variant: "secondary",
+    className: "bg-muted text-muted-foreground border-transparent",
+  },
+  interview_scheduled: {
+    labelKey: "projectDetail.status.interviewing",
+    className: "bg-orange-500 text-white border-orange-500",
+  },
+  accepted: { labelKey: "projectDetail.status.accepted", className: "bg-emerald-500 text-white border-emerald-500" },
+  no_response: {
+    labelKey: "projectDetail.status.no_response",
+    variant: "secondary",
+    className: "bg-slate-200 text-slate-800 border-transparent dark:bg-slate-800 dark:text-slate-50",
+  },
+};
 
 function SummaryField({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
@@ -43,15 +79,39 @@ export function ProjectDetailPage() {
     rateLabel = `~¥${maxRate.toLocaleString()}`;
   }
 
+  const projectLabel = data?.name ?? t("projectDetail.title.fallback", { id: projectId ?? "" });
+
+  const buildTalentLabel = (interactionId: number) => {
+    const target = matches.find((match) => match.interactionId === interactionId);
+    if (!target) return t("candidates.talentFallback", { id: interactionId });
+    return target.talentName ?? t("candidates.talentFallback", { id: target.talentId });
+  };
+
   const handleFeedback = (interactionId: number, feedbackType: FeedbackType) => {
     setPendingInteractionId(interactionId);
+    const actionLabel = t(FEEDBACK_LABEL_KEYS[feedbackType]);
+    const talentLabel = buildTalentLabel(interactionId);
     feedbackMutation.mutate(
       { interactionId, feedbackType, source: "gui" },
       {
-        onSuccess: () => toast.success(t("projectDetail.feedback.success")),
+        onSuccess: () =>
+          toast.success(
+            t("projectDetail.feedback.successWithContext", {
+              action: actionLabel,
+              project: projectLabel,
+              talent: talentLabel,
+            })
+          ),
         onError: (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
-          toast.error(t("projectDetail.feedback.error", { message }));
+          toast.error(
+            t("projectDetail.feedback.errorWithContext", {
+              action: actionLabel,
+              project: projectLabel,
+              talent: talentLabel,
+              message,
+            })
+          );
         },
         onSettled: () => setPendingInteractionId(null),
       }

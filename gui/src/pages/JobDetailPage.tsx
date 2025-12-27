@@ -34,6 +34,7 @@ import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
 import { useFlags } from "@/lib/auth";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
+import { useFlags } from "@/lib/auth";
 
 export function JobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();

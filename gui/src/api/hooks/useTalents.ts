@@ -7,6 +7,9 @@ export interface TalentSearchParams {
   skill?: string;
   location?: string;
   availability?: string;
+  availabilityWindowDays?: number;
+  scoreMin?: number;
+  scoreMax?: number;
   limit?: number;
 }
 
@@ -29,6 +32,11 @@ function buildSearchParams(params: TalentSearchParams, offset: number) {
   if (params.skill) searchParams.set("skill", params.skill);
   if (params.location) searchParams.set("location", params.location);
   if (params.availability) searchParams.set("availability", params.availability);
+  if (params.availabilityWindowDays !== undefined) {
+    searchParams.set("availability_within_days", String(params.availabilityWindowDays));
+  }
+  if (params.scoreMin !== undefined) searchParams.set("score_min", String(params.scoreMin));
+  if (params.scoreMax !== undefined) searchParams.set("score_max", String(params.scoreMax));
 
   return searchParams;
 }

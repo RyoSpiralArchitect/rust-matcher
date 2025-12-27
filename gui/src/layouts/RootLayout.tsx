@@ -1,21 +1,25 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { useI18n } from "@/lib/i18n";
 import type { TranslationKey } from "@/lib/messages";
 
-const navItems: { href: string; labelKey: TranslationKey }[] = [
-  { href: "/queue", labelKey: "navigation.dashboard" },
-  { href: "/jobs", labelKey: "navigation.jobs" },
+const navItems: { href: string; labelKey: TranslationKey; adminOnly?: boolean }[] = [
+  { href: "/queue", labelKey: "navigation.dashboard", adminOnly: true },
+  { href: "/jobs", labelKey: "navigation.jobs", adminOnly: true },
   { href: "/projects", labelKey: "navigation.projects" },
   { href: "/talents", labelKey: "navigation.talents" },
 ];
 
 export function RootLayout() {
   const { t } = useI18n();
+  const { isQueueAdmin } = useFlags();
   const location = useLocation();
 
   const isActive = (href: string) =>
     location.pathname === href || location.pathname.startsWith(`${href}/`);
+
+  const visibleNavItems = navItems.filter(
+    (item) => !item.adminOnly || isQueueAdmin,
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -35,7 +39,14 @@ export function RootLayout() {
                   isActive(item.href) ? "text-primary" : "text-muted-foreground",
                 )}
               >
-                {t(item.labelKey)}
+                <span className="inline-flex items-center gap-2">
+                  {t(item.labelKey)}
+                  {item.adminOnly && (
+                    <Badge variant="outline" className="text-[10px] font-semibold">
+                      Admin
+                    </Badge>
+                  )}
+                </span>
               </Link>
             ))}
           </nav>
