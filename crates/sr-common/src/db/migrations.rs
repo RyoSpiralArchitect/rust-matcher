@@ -42,6 +42,8 @@ BEGIN
         CREATE INDEX IF NOT EXISTS idx_extraction_queue_pending
             ON ses.extraction_queue(created_at, id)
             WHERE status = 'pending';
+        CREATE INDEX IF NOT EXISTS idx_extraction_queue_status_created
+            ON ses.extraction_queue(status, created_at, id);
 
         IF NOT EXISTS (
             SELECT 1 FROM pg_constraint WHERE conname = 'chk_retry_count'
