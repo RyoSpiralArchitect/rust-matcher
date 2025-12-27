@@ -32,6 +32,21 @@ struct QueryBuilder {
     values: Vec<Box<dyn ToSql + Sync + Send>>, // enforce placeholder-only additions
 }
 
+#[derive(Clone, Copy)]
+enum OrderField {
+    CreatedAtDesc,
+    IdDesc,
+}
+
+impl OrderField {
+    fn as_sql(self) -> &'static str {
+        match self {
+            OrderField::CreatedAtDesc => "created_at DESC",
+            OrderField::IdDesc => "id DESC",
+        }
+    }
+}
+
 impl QueryBuilder {
     fn new(base: &str) -> Self {
         Self {
@@ -52,12 +67,17 @@ impl QueryBuilder {
         self.push_fragment(column, "<=", value);
     }
 
-    fn push_order_limit_offset(&mut self, order_by: &str, limit: i64, offset: i64) {
+    fn push_order_limit_offset(&mut self, order_by: &[OrderField], limit: i64, offset: i64) {
         let limit_placeholder = self.values.len() + 1;
         let offset_placeholder = self.values.len() + 2;
+        let order_clause = order_by
+            .iter()
+            .map(|field| field.as_sql())
+            .collect::<Vec<_>>()
+            .join(", ");
         self.sql.push_str(&format!(
             " ORDER BY {} LIMIT ${} OFFSET ${}",
-            order_by, limit_placeholder, offset_placeholder
+            order_clause, limit_placeholder, offset_placeholder
         ));
 
         self.values.push(Box::new(limit));
@@ -480,7 +500,11 @@ pub async fn list_jobs(
         query.push_le("created_at", created_before);
     }
 
-    query.push_order_limit_offset("created_at DESC, id DESC", fetch_limit, pagination.offset);
+    query.push_order_limit_offset(
+        &[OrderField::CreatedAtDesc, OrderField::IdDesc],
+        fetch_limit,
+        pagination.offset,
+    );
 
     let (query, values) = query.finish();
     let params: Vec<&(dyn ToSql + Sync)> = values

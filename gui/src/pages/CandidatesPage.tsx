@@ -2,7 +2,7 @@ import { useParams } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ThumbsUp, ThumbsDown, Star, Mail, Copy } from "lucide-react";
+import { Loader2, ThumbsUp, ThumbsDown, Star, Mail, Copy } from "lucide-react";
 import { toast } from "sonner";
 import {
   useCandidates,
@@ -176,8 +176,12 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               onClick={() => onFeedback(interactionId, "thumbs_up")}
               disabled={isSubmitting}
             >
-              <ThumbsUp className="h-4 w-4 mr-1" />
-              Good
+              {isSubmitting ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <ThumbsUp className="h-4 w-4 mr-1" />
+              )}
+              {isSubmitting ? "Submitting..." : "Good"}
             </Button>
             <Button
               variant="outline"
@@ -185,8 +189,12 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               onClick={() => onFeedback(interactionId, "thumbs_down")}
               disabled={isSubmitting}
             >
-              <ThumbsDown className="h-4 w-4 mr-1" />
-              NG
+              {isSubmitting ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <ThumbsDown className="h-4 w-4 mr-1" />
+              )}
+              {isSubmitting ? "Submitting..." : "NG"}
             </Button>
           </div>
         </div>
