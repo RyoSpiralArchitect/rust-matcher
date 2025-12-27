@@ -156,7 +156,7 @@ struct Cli {
     log_bodies: bool,
 
     /// Sampling rate for request logging (0.0 - 1.0)
-    #[arg(long, env = "SR_API_LOG_SAMPLE_RATE", default_value_t = 1.0)]
+    #[arg(long, env = "SR_API_LOG_SAMPLE_RATE", default_value_t = 0.1)]
     log_sample_rate: f64,
 }
 
@@ -361,7 +361,7 @@ impl AppConfig {
                 vec!["en".into()],
             ),
             log_bodies: false,
-            log_sample_rate: 1.0,
+            log_sample_rate: 0.1,
         }
     }
 }
@@ -677,6 +677,20 @@ fn sample_logging(sample_rate: f64) -> bool {
     rand::thread_rng().gen_bool(sample_rate)
 }
 
+fn should_log_path(path: &str) -> bool {
+    !matches!(path, "/health" | "/readyz" | "/livez")
+}
+
+fn should_log_body(content_type: Option<&HeaderValue>) -> bool {
+    if let Some(value) = content_type.and_then(|v| v.to_str().ok()) {
+        let lowered = value.to_ascii_lowercase();
+        if lowered.starts_with("multipart/") || lowered.starts_with("application/octet-stream") {
+            return false;
+        }
+    }
+    true
+}
+
 fn format_body_for_log(bytes: &[u8]) -> String {
     let as_text = String::from_utf8_lossy(bytes);
     if bytes.len() > LOG_BODY_LIMIT {
@@ -694,7 +708,7 @@ async fn log_request_response(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if !sample_logging(state.config.log_sample_rate) {
+    if !sample_logging(state.config.log_sample_rate) || !should_log_path(req.uri().path()) {
         return Ok(next.run(req).await);
     }
 
@@ -704,8 +718,9 @@ async fn log_request_response(
     let log_bodies = state.config.log_bodies;
 
     let (parts, body) = req.into_parts();
-    let (req, request_body) = if log_bodies {
-        match to_bytes(body, LOG_BODY_LIMIT).await {
+    let request_content_type = parts.headers.get(CONTENT_TYPE).cloned();
+    let (req, request_body) = match (log_bodies, should_log_body(request_content_type.as_ref())) {
+        (true, true) => match to_bytes(body, LOG_BODY_LIMIT).await {
             Ok(bytes) => (
                 Request::from_parts(parts, Body::from(bytes.clone())),
                 Some(bytes),
@@ -714,16 +729,15 @@ async fn log_request_response(
                 error!(error = %err, "failed to read request body for logging");
                 (Request::from_parts(parts, Body::empty()), None)
             }
-        }
-    } else {
-        (Request::from_parts(parts, body), None)
+        },
+        _ => (Request::from_parts(parts, body), None),
     };
 
     let response = next.run(req).await;
     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
     let status = response.status().as_u16();
 
-    if log_bodies {
+    if log_bodies && should_log_body(response.headers().get(CONTENT_TYPE)) {
         let (parts, body) = response.into_parts();
         return match to_bytes(body, LOG_BODY_LIMIT).await {
             Ok(bytes) => {
@@ -1209,6 +1223,26 @@ mod tests {
             Some(&HeaderValue::from_static(SHORT_CACHE_CONTROL))
         );
         assert!(response.headers().get(header::ETAG).is_some());
+    }
+
+    #[test]
+    fn should_log_body_rejects_binary_and_multipart() {
+        let octet = HeaderValue::from_static("application/octet-stream");
+        let multipart = HeaderValue::from_static("multipart/form-data; boundary=abc");
+        let json = HeaderValue::from_static("application/json");
+
+        assert!(!should_log_body(Some(&octet)));
+        assert!(!should_log_body(Some(&multipart)));
+        assert!(should_log_body(Some(&json)));
+        assert!(should_log_body(None));
+    }
+
+    #[test]
+    fn should_log_path_skips_health_endpoints() {
+        assert!(!should_log_path("/health"));
+        assert!(!should_log_path("/readyz"));
+        assert!(!should_log_path("/livez"));
+        assert!(should_log_path("/api/v1/match"));
     }
 
     #[test]
