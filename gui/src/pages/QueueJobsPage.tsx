@@ -28,7 +28,7 @@ const FILTER_DEBOUNCE_MS = 300;
 const COLUMN_LAYOUT =
   "grid grid-cols-[90px_210px_130px_100px_80px_90px_180px] items-center";
 
-export function QueueJobsPage() {
+export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean } = {}) {
   const { t, locale } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -217,9 +217,48 @@ export function QueueJobsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">{t("queue.jobs.title")}</h1>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h1 className="text-2xl font-bold">{t("queue.jobs.title")}</h1>
+        {canCreateJob && (
+          <Button asChild>
+            {/* TODO: Replace with the actual job creation route or modal trigger once implemented. */}
+            <Link to="/jobs/new">
+              {t("queue.jobs.ctaCreate")}
+            </Link>
+          </Button>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">{t("queue.jobs.filter.statusLabel")}</span>
+          <Select
+            value={pendingStatus}
+            onValueChange={(value) => setPendingStatus(value as StatusFilter)}
+          >
+            <SelectTrigger
+              aria-label={t("queue.jobs.filter.statusAria")}
+              className="w-[140px]"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {STATUS_FILTERS.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s === "all"
+                    ? t("queue.jobs.filter.all")
+                    : t(
+                        s === "pending"
+                          ? "status.pending"
+                          : s === "processing"
+                            ? "status.processing"
+                            : "status.completed"
+                      )}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <p className="text-sm text-muted-foreground">
           {t("queue.access.note")}
