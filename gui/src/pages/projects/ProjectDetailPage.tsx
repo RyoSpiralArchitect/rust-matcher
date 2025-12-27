@@ -1,18 +1,19 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { TalentMatchCard } from "@/components/projects/TalentMatchCard";
 import { useProjectDetail, useProjectFeedback, useProjectMatches, trackViewedDetail } from "@/api";
-import type { FeedbackType } from "@/api";
+import type { FeedbackType, ProjectMatchStatus } from "@/api";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import type { TranslationKey } from "@/lib/messages";
+import { TalentMatchCard } from "@/components/projects/TalentMatchCard";
+import { componentTheme, type InteractionState } from "@/theme/component-theme";
 
 const FEEDBACK_LABEL_KEYS: Record<FeedbackType, TranslationKey> = {
   thumbs_up: "feedback.thumbs_up",
@@ -26,27 +27,13 @@ const FEEDBACK_LABEL_KEYS: Record<FeedbackType, TranslationKey> = {
   no_response: "feedback.no_response",
 };
 
-const STATUS_META: Record<
-  ProjectMatchStatus,
-  { labelKey: TranslationKey; variant?: "default" | "secondary" | "outline" | "destructive"; className?: string }
-> = {
-  pending: { labelKey: "projectDetail.status.pending", variant: "outline" },
-  proposed: { labelKey: "projectDetail.status.proposed", className: "bg-blue-600 text-white border-blue-600" },
-  rejected: {
-    labelKey: "projectDetail.status.rejected",
-    variant: "secondary",
-    className: "bg-muted text-muted-foreground border-transparent",
-  },
-  interview_scheduled: {
-    labelKey: "projectDetail.status.interviewing",
-    className: "bg-orange-500 text-white border-orange-500",
-  },
-  accepted: { labelKey: "projectDetail.status.accepted", className: "bg-emerald-500 text-white border-emerald-500" },
-  no_response: {
-    labelKey: "projectDetail.status.no_response",
-    variant: "secondary",
-    className: "bg-slate-200 text-slate-800 border-transparent dark:bg-slate-800 dark:text-slate-50",
-  },
+const MATCH_STATUS_META: Record<ProjectMatchStatus, { labelKey: TranslationKey; state: InteractionState }> = {
+  pending: { labelKey: "projectDetail.status.pending", state: "pending" },
+  proposed: { labelKey: "projectDetail.status.proposed", state: "proposed" },
+  rejected: { labelKey: "projectDetail.status.rejected", state: "rejected" },
+  interview_scheduled: { labelKey: "projectDetail.status.interviewing", state: "interviewing" },
+  accepted: { labelKey: "projectDetail.status.accepted", state: "accepted" },
+  no_response: { labelKey: "projectDetail.status.no_response", state: "no_response" },
 };
 
 function SummaryField({ label, value }: { label: string; value: string | number | null | undefined }) {
@@ -120,6 +107,7 @@ export function ProjectDetailPage() {
 
   const handlePropose = (interactionId: number) => handleFeedback(interactionId, "thumbs_up");
   const handleReject = (interactionId: number) => handleFeedback(interactionId, "thumbs_down");
+  const handleInterview = (interactionId: number) => handleFeedback(interactionId, "interview_scheduled");
 
   const handleViewDetail = (interactionId: number) => {
     trackViewedDetail(interactionId);
@@ -204,30 +192,38 @@ export function ProjectDetailPage() {
               <CardTitle>{t("projectDetail.matches.title")}</CardTitle>
               <CardDescription>{t("projectDetail.matches.count", { count: matches.length })}</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className={componentTheme.spacing.cardStack}>
               {!hasMatches ? (
                 <div className="py-10 text-center text-muted-foreground">
                   {t("projectDetail.matches.empty")}
                 </div>
               ) : (
-                matches.map((match) => (
-                  <TalentMatchCard
-                    key={match.interactionId}
-                    match={match}
-                    onPropose={handlePropose}
-                    onReject={handleReject}
-                    onViewDetail={handleViewDetail}
-                    isBusy={feedbackMutation.isPending && pendingInteractionId === match.interactionId}
-                    isDisabled={feedbackMutation.isPending}
-                    labels={{
-                      propose: t("projectDetail.cta.propose"),
-                      reject: t("projectDetail.cta.reject"),
-                      details: t("projectDetail.cta.details"),
-                      scoreLabel: "Score",
-                      rateLabel: t("projectDetail.summary.rate"),
-                    }}
-                  />
-                ))
+                matches.map((match) => {
+                  const resolvedStatus = MATCH_STATUS_META[match.status as ProjectMatchStatus] ?? MATCH_STATUS_META.pending;
+
+                  return (
+                    <TalentMatchCard
+                      key={match.interactionId}
+                      match={match}
+                      onPropose={handlePropose}
+                      onReject={handleReject}
+                      onInterview={handleInterview}
+                      onViewDetail={handleViewDetail}
+                      isBusy={feedbackMutation.isPending && pendingInteractionId === match.interactionId}
+                      isDisabled={feedbackMutation.isPending}
+                      labels={{
+                        propose: t("projectDetail.cta.propose"),
+                        reject: t("projectDetail.cta.reject"),
+                        interview: t("projectDetail.cta.interview"),
+                        details: t("projectDetail.cta.details"),
+                        scoreLabel: "Score",
+                        rateLabel: t("projectDetail.summary.rate"),
+                      }}
+                      statusLabel={t(resolvedStatus.labelKey)}
+                      statusState={resolvedStatus.state}
+                    />
+                  );
+                })
               )}
             </CardContent>
           </Card>
