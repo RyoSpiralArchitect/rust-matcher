@@ -19,6 +19,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use chrono::{Duration as ChronoDuration, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
 use governor::{
@@ -41,10 +42,15 @@ use tracing::{error, info};
 pub mod auth;
 pub mod error;
 pub mod handlers;
+pub mod security;
 
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
 use error::ApiError;
-use handlers::{candidates, conversion, feedback, health, interactions, matches, queue};
+use handlers::{
+    candidates, conversion, feedback, health, interactions, matches, queue,
+    security as security_handler,
+};
+use security::SecurityTxtConfig;
 use sr_common::logging::{init_tracing_subscriber, install_tracing_panic_hook};
 
 const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -99,6 +105,42 @@ struct Cli {
         default_value_t = 5000
     )]
     job_detail_statement_timeout_ms: i32,
+
+    /// Contact for /.well-known/security.txt (mailto:, tel:, or https://)
+    #[arg(
+        long,
+        env = "SR_SECURITY_CONTACT",
+        default_value = "mailto:security@example.com"
+    )]
+    security_contact: String,
+
+    /// Days until security.txt expires (must be positive)
+    #[arg(long, env = "SR_SECURITY_EXPIRES_DAYS", default_value_t = 180)]
+    security_expires_days: i64,
+
+    /// Preferred languages for security.txt (comma separated)
+    #[arg(long, env = "SR_SECURITY_PREFERRED_LANGS", default_value = "en")]
+    security_preferred_langs: String,
+
+    /// Optional policy URL for security.txt
+    #[arg(long, env = "SR_SECURITY_POLICY")]
+    security_policy: Option<String>,
+
+    /// Optional acknowledgments URL for security.txt
+    #[arg(long, env = "SR_SECURITY_ACKNOWLEDGMENTS")]
+    security_acknowledgments: Option<String>,
+
+    /// Optional encryption key URL for security.txt
+    #[arg(long, env = "SR_SECURITY_ENCRYPTION")]
+    security_encryption: Option<String>,
+
+    /// Optional canonical URL for security.txt
+    #[arg(long, env = "SR_SECURITY_CANONICAL")]
+    security_canonical: Option<String>,
+
+    /// Optional hiring URL for security.txt
+    #[arg(long, env = "SR_SECURITY_HIRING")]
+    security_hiring: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +151,7 @@ pub struct AppConfig {
     pub auth: AuthConfig,
     pub allow_source_text: bool,
     pub job_detail_statement_timeout_ms: i32,
+    pub security_txt: SecurityTxtConfig,
 }
 
 type IpRateLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock, NoOpMiddleware>;
@@ -227,6 +270,45 @@ impl AppConfig {
             ));
         }
 
+        if cli.security_contact.trim().is_empty() {
+            return Err(ApiError::BadRequest(
+                "SR_SECURITY_CONTACT cannot be empty".into(),
+            ));
+        }
+
+        if !is_valid_security_contact(&cli.security_contact) {
+            return Err(ApiError::BadRequest(
+                "SR_SECURITY_CONTACT must start with mailto:, https://, http://, or tel:".into(),
+            ));
+        }
+
+        if cli.security_expires_days <= 0 {
+            return Err(ApiError::BadRequest(
+                "SR_SECURITY_EXPIRES_DAYS must be positive".into(),
+            ));
+        }
+
+        let preferred_languages = cli
+            .security_preferred_langs
+            .split(',')
+            .map(|lang| lang.trim().to_string())
+            .filter(|lang| !lang.is_empty())
+            .collect::<Vec<_>>();
+
+        let expires = (Utc::now() + ChronoDuration::days(cli.security_expires_days))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        let security_txt = SecurityTxtConfig {
+            contact: cli.security_contact.clone(),
+            expires,
+            policy: cli.security_policy.clone(),
+            acknowledgments: cli.security_acknowledgments.clone(),
+            encryption: cli.security_encryption.clone(),
+            preferred_languages,
+            canonical: cli.security_canonical.clone(),
+            hiring: cli.security_hiring.clone(),
+        };
+
         Ok(Self {
             database_url: cli.database_url,
             port: cli.port,
@@ -234,6 +316,7 @@ impl AppConfig {
             auth,
             allow_source_text: cli.allow_source_text,
             job_detail_statement_timeout_ms: cli.job_detail_statement_timeout_ms,
+            security_txt,
         })
     }
 
@@ -245,6 +328,10 @@ impl AppConfig {
             auth,
             allow_source_text: false,
             job_detail_statement_timeout_ms: 5000,
+            security_txt: SecurityTxtConfig::with_defaults(
+                "mailto:security@example.com".into(),
+                vec!["en".into()],
+            ),
         }
     }
 }
@@ -264,6 +351,14 @@ impl axum::extract::FromRef<SharedState> for AuthConfig {
     fn from_ref(input: &SharedState) -> AuthConfig {
         input.config.auth.clone()
     }
+}
+
+fn is_valid_security_contact(contact: &str) -> bool {
+    let contact = contact.trim().to_ascii_lowercase();
+    contact.starts_with("mailto:")
+        || contact.starts_with("https://")
+        || contact.starts_with("http://")
+        || contact.starts_with("tel:")
 }
 
 fn cors_layer(origins: &[String]) -> CorsLayer {
@@ -387,6 +482,21 @@ async fn record_http_metrics(req: Request<Body>, next: Next) -> Result<Response,
     Ok(response)
 }
 
+async fn apply_security_headers(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
+    let mut response = next.run(req).await;
+
+    response
+        .headers_mut()
+        .entry(HeaderName::from_static("x-content-type-options"))
+        .or_insert_with(|| HeaderValue::from_static("nosniff"));
+    response
+        .headers_mut()
+        .entry(HeaderName::from_static("x-frame-options"))
+        .or_insert_with(|| HeaderValue::from_static("DENY"));
+
+    Ok(response)
+}
+
 async fn log_body_limit_rejections(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
     let path = req.uri().path().to_string();
     let client_ip = request_ip(&req)
@@ -472,6 +582,10 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/conversions", post(conversion::submit_conversion));
 
     Router::new()
+        .route(
+            "/.well-known/security.txt",
+            get(security_handler::security_txt),
+        )
         .route("/health", get(health::readyz))
         .route("/livez", get(health::livez))
         .route("/readyz", get(health::readyz))
@@ -485,6 +599,7 @@ pub fn create_router(state: SharedState) -> Router {
         .layer(middleware::from_fn(record_http_metrics))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(middleware::from_fn(log_body_limit_rejections))
+        .layer(middleware::from_fn(apply_security_headers))
         .layer(trace)
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(
@@ -521,9 +636,11 @@ pub fn test_state(api_key: &str) -> SharedState {
 mod tests {
     use super::*;
     use axum::{
+        body::Body,
         http::{Request, StatusCode},
         routing::get,
     };
+    use http_body_util::BodyExt;
     use serial_test::serial;
     use std::sync::Mutex;
     use tower::ServiceExt;
@@ -630,6 +747,105 @@ mod tests {
             rate_limiter_for_path(&limits, "/api/v1/queue/jobs"),
             limits.global.as_ref()
         ));
+    }
+
+    fn base_cli() -> Cli {
+        Cli {
+            database_url: "postgres://user:pass@localhost:5432/example".into(),
+            port: 3001,
+            api_key: Some("test-key".into()),
+            auth_mode: AuthMode::ApiKey,
+            jwt_secret: None,
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs512,
+            use_cookie_auth: false,
+            cors_origins: "http://localhost:3000".into(),
+            allow_source_text: false,
+            job_detail_statement_timeout_ms: 5000,
+            security_contact: "mailto:security@example.com".into(),
+            security_expires_days: 180,
+            security_preferred_langs: "en".into(),
+            security_policy: None,
+            security_acknowledgments: None,
+            security_encryption: None,
+            security_canonical: None,
+            security_hiring: None,
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_security_contact_and_expiry() {
+        let mut cli = base_cli();
+        cli.security_contact = "   ".into();
+        let err = AppConfig::from_cli(cli).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+
+        let mut cli = base_cli();
+        cli.security_contact = "ftp://example.com".into();
+        let err = AppConfig::from_cli(cli).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+
+        let mut cli = base_cli();
+        cli.security_expires_days = 0;
+        let err = AppConfig::from_cli(cli).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn applies_security_headers_globally() {
+        let state = test_state("test-key");
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/livez")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-frame-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("DENY")
+        );
+    }
+
+    #[tokio::test]
+    async fn serves_security_txt_with_configured_metadata() {
+        let state = test_state("test-key");
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/security.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(body_str.contains("Contact: mailto:security@example.com"));
+        assert!(body_str.contains("Expires:"));
+        assert!(body_str.contains("Preferred-Languages: en"));
     }
 }
 
