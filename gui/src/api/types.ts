@@ -64,6 +64,56 @@ export interface MatchCandidatesResponse {
 }
 
 // ============================================================
+// Talent Detail
+// ============================================================
+
+export type TalentMatchStatus =
+  | "pending"
+  | "proposed"
+  | "rejected"
+  | "accepted"
+  | "in_project";
+
+export interface TalentProfile {
+  id: number;
+  name: string | null;
+  title: string | null;
+  skills: string[];
+  availability: string | null;
+  availableFrom: string | null;
+  location: string | null;
+  desiredPriceMin: number | null;
+}
+
+export interface TalentMatchProject {
+  projectId: number;
+  projectName: string;
+  status: TalentMatchStatus;
+  score: number | null;
+  businessScore?: number | null;
+  interactionId?: number | null;
+  canPropose?: boolean;
+  canReject?: boolean;
+  lastStatusChange?: string | null;
+}
+
+export interface TalentDetailResponse {
+  talent: TalentProfile;
+  matches: TalentMatchProject[];
+}
+
+export interface TalentMatchDecisionRequest {
+  talentId: number;
+  projectId: number;
+  decision: "propose" | "reject";
+}
+
+export interface TalentMatchDecisionResponse {
+  status: string;
+  matchStatus?: TalentMatchStatus;
+}
+
+// ============================================================
 // Feedback
 // ============================================================
 
