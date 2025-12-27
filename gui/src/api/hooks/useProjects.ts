@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
 import { get, post } from "../client";
 import type {
   ProjectDetailResponse,
@@ -15,7 +15,14 @@ export function useProjects() {
 }
 
 export function useProjectDetail(projectId: number | string | undefined) {
-  return useQuery({
+  return useProjectDetailQuery<ProjectDetailResponse>(projectId);
+}
+
+export function useProjectDetailQuery<TData = ProjectDetailResponse>(
+  projectId: number | string | undefined,
+  options?: Omit<UseQueryOptions<ProjectDetailResponse, unknown, TData>, "queryKey" | "queryFn">,
+) {
+  return useQuery<ProjectDetailResponse, unknown, TData>({
     queryKey: ["projects", "detail", projectId],
     queryFn: async () => {
       const detail = await get<ProjectDetailResponse>(`/api/projects/${projectId}`);
@@ -29,6 +36,13 @@ export function useProjectDetail(projectId: number | string | undefined) {
       };
     },
     enabled: !!projectId,
+    ...(options ?? {}),
+  });
+}
+
+export function useProjectMatches(projectId: number | string | undefined) {
+  return useProjectDetailQuery(projectId, {
+    select: (detail) => detail.matches ?? [],
   });
 }
 

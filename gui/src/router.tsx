@@ -9,46 +9,43 @@ const QueueDashboardPage = lazy(() =>
     default: module.QueueDashboardPage,
   })),
 );
+
 const QueueJobsPage = lazy(() =>
   import("./pages/QueueJobsPage").then((module) => ({
     default: module.QueueJobsPage,
   })),
 );
+
 const JobDetailPage = lazy(() =>
   import("./pages/JobDetailPage").then((module) => ({
     default: module.JobDetailPage,
   })),
 );
-const TalentsPage = lazy(() =>
-  import("./pages/TalentsPage").then((module) => ({
-    default: module.TalentsPage,
-  })),
-);
-const TalentDetailPage = lazy(() =>
-  import("./pages/TalentDetailPage").then((module) => ({
-    default: module.TalentDetailPage,
-  })),
-);
+
 const CandidatesPage = lazy(() =>
   import("./pages/CandidatesPage").then((module) => ({
     default: module.CandidatesPage,
   })),
 );
+
 const ProjectsListPage = lazy(() =>
   import("./pages/projects/ProjectsListPage").then((module) => ({
     default: module.ProjectsListPage,
   })),
 );
+
 const ProjectDetailPage = lazy(() =>
   import("./pages/projects/ProjectDetailPage").then((module) => ({
     default: module.ProjectDetailPage,
   })),
 );
+
 const TalentsPage = lazy(() =>
   import("./pages/TalentsPage").then((module) => ({
     default: module.TalentsPage,
   })),
 );
+
 const TalentDetailPage = lazy(() =>
   import("./pages/TalentDetailPage").then((module) => ({
     default: module.TalentDetailPage,
@@ -130,15 +127,6 @@ export const router = createBrowserRouter([
             element: withSuspense(<TalentDetailPage />),
           },
         ],
-      },
-      // 候補一覧（プロジェクト単位）
-      {
-        path: "projects/:projectId/candidates",
-        element: withSuspense(<CandidatesPage />),
-      },
-      {
-        path: "projects/:projectId",
-        element: withSuspense(<ProjectDetailPage />),
       },
     ],
   },
