@@ -34,9 +34,9 @@ const CandidatesPage = lazy(() =>
     default: module.CandidatesPage,
   })),
 );
-const ProjectsIndexPage = lazy(() =>
-  import("./pages/projects/ProjectsIndexPage").then((module) => ({
-    default: module.ProjectsIndexPage,
+const ProjectsListPage = lazy(() =>
+  import("./pages/projects/ProjectsListPage").then((module) => ({
+    default: module.ProjectsListPage,
   })),
 );
 const ProjectDetailPage = lazy(() =>
@@ -96,10 +96,6 @@ export const router = createBrowserRouter([
         element: withSuspense(<TalentDetailPage />),
       },
       // Project 一覧
-      {
-        path: "projects",
-        element: withSuspense(<ProjectsIndexPage />),
-      },
       {
         path: "projects/:projectId",
         element: withSuspense(<ProjectDetailPage />),
