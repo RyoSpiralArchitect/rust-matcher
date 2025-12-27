@@ -347,15 +347,26 @@ pub fn decide_recommended_method(quality: &ExtractionQuality) -> RecommendedDeci
 }
 
 /// priority は「処理順序」であり品質スコアとは独立
+/// 高い数値ほど優先的に処理される。値の粒度は
+/// - Tier1 が欠けている: 100（最優先で LLM を呼ぶ）
+/// - Tier2 が全く取れていない: 50（LLM で埋める可能性が高い）
+/// - Tier2 が部分的に取れている: 20（軽微な穴埋めを優先）
+/// - Tier1/2 が揃っている: 10（通常キュー）
+const PRIORITY_MISSING_TIER1: i32 = 100;
+const PRIORITY_NO_TIER2: i32 = 50;
+const PRIORITY_PARTIAL_TIER2: i32 = 20;
+const PRIORITY_COMPLETE: i32 = 10;
+
+/// priority は「処理順序」であり品質スコアとは独立
 pub fn calculate_priority(quality: &ExtractionQuality) -> i32 {
     if quality.tier1_extracted < quality.tier1_total {
-        100
+        PRIORITY_MISSING_TIER1
     } else if quality.tier2_extracted == 0 {
-        50
+        PRIORITY_NO_TIER2
     } else if quality.tier2_extracted == 1 {
-        20
+        PRIORITY_PARTIAL_TIER2
     } else {
-        10
+        PRIORITY_COMPLETE
     }
 }
 
