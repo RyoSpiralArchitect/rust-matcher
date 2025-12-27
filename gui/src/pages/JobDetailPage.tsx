@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,7 +34,6 @@ import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
 import { useFlags } from "@/lib/auth";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
-import { useFlags } from "@/lib/auth";
 
 export function JobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();
@@ -96,6 +95,43 @@ export function JobDetailPage() {
   }
 
   const { job, entity, pairs, lastError, partialFields, llmLatencyMs } = data;
+
+  const entityLinks = entity
+    ? (() => {
+        const links: { to: string; label: string }[] = [];
+        if (entity.type === "talent") {
+          links.push({
+            to: `/talents/${entity.id}`,
+            label: t("jobDetail.entityLinks.talent", {
+              name: entity.talentName ?? `#${entity.id}`,
+            }),
+          });
+        }
+        if (entity.type === "project") {
+          links.push({
+            to: `/projects/${entity.projectCode}`,
+            label: t("jobDetail.entityLinks.project", {
+              name: entity.projectName,
+            }),
+          });
+        }
+        if (entity.type === "both") {
+          links.push({
+            to: `/projects/${entity.project.projectCode}`,
+            label: t("jobDetail.entityLinks.project", {
+              name: entity.project.projectName,
+            }),
+          });
+          links.push({
+            to: `/talents/${entity.talent.id}`,
+            label: t("jobDetail.entityLinks.talent", {
+              name: entity.talent.talentName ?? `#${entity.talent.id}`,
+            }),
+          });
+        }
+        return links;
+      })()
+    : [];
 
   const handleRetry = () => {
     if (jobId) {
@@ -195,6 +231,24 @@ export function JobDetailPage() {
     <div className="space-y-6">
       {breadcrumb}
       {header}
+
+      {entityLinks.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">{t("jobDetail.entityLinks.title")}</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-center gap-2">
+            {entityLinks.map((link) => (
+              <Button key={link.to} asChild variant="outline" size="sm">
+                <Link to={link.to}>{link.label}</Link>
+              </Button>
+            ))}
+            <p className="text-sm text-muted-foreground">
+              {t("jobDetail.entityLinks.note")}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Summary */}
       <Card>
