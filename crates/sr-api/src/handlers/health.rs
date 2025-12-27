@@ -55,6 +55,7 @@ mod tests {
     use crate::auth::{AuthConfig, AuthMode, JwtAlgorithm};
     use crate::security::SecurityTxtConfig;
     use crate::{default_rate_limits, AppConfig, AppState, MatchConfig};
+    use tokio::sync::RwLock;
 
     fn state_with_readiness(readiness: bool) -> SharedState {
         let pool = create_pool_from_url("postgres://user:pass@localhost:5432/example").unwrap();
@@ -76,12 +77,14 @@ mod tests {
                 "mailto:security@example.com".into(),
                 vec!["en".into()],
             ),
+            log_bodies: false,
+            log_sample_rate: 1.0,
         };
 
         Arc::new(AppState {
             pool,
             config,
-            match_config: MatchConfig::default(),
+            match_config: Arc::new(RwLock::new(MatchConfig::default())),
             rate_limits: default_rate_limits(),
             readiness: Arc::new(AtomicBool::new(readiness)),
         })
