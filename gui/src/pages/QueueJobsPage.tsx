@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,14 +21,19 @@ import { Inbox, Loader2 } from "lucide-react";
 const STATUSES = ["all", "pending", "processing", "completed"] as const;
 const PAGE_SIZE = 50;
 const ROW_HEIGHT = 64;
+const FILTER_DEBOUNCE_MS = 300;
 const COLUMN_LAYOUT =
   "grid grid-cols-[90px_210px_130px_100px_80px_90px_180px] items-center";
 
 export function QueueJobsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   const status = searchParams.get("status") ?? undefined;
   const requiresReview = searchParams.get("review") === "true";
+  const [pendingStatus, setPendingStatus] = useState(status ?? "all");
+  const [pendingRequiresReview, setPendingRequiresReview] =
+    useState(requiresReview);
   const {
     data,
     isLoading,
@@ -48,6 +53,7 @@ export function QueueJobsPage() {
   );
 
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
+  const debounceRef = useRef<number | null>(null);
   // eslint-disable-next-line react-hooks/incompatible-library
   const rowVirtualizer = useVirtualizer({
     count: jobs.length,
@@ -55,6 +61,12 @@ export function QueueJobsPage() {
     estimateSize: () => ROW_HEIGHT,
     overscan: 8,
   });
+  const [activeIndex, setActiveIndex] = useState<number | null>(
+    jobs.length ? 0 : null,
+  );
+  const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const activeJobId =
+    activeIndex !== null && jobs[activeIndex] ? jobs[activeIndex].id : undefined;
 
   const virtualItems = rowVirtualizer.getVirtualItems();
 
@@ -66,15 +78,123 @@ export function QueueJobsPage() {
     }
   }, [virtualItems, hasNextPage, isFetchingNextPage, jobs.length, fetchNextPage]);
 
-  const updateFilter = (key: string, value: string | null) => {
-    const next = new URLSearchParams(searchParams);
-    if (value === null || value === "all" || value === "") {
-      next.delete(key);
-    } else {
-      next.set(key, value);
+  useEffect(() => {
+    if (
+      pendingStatus === (status ?? "all") &&
+      pendingRequiresReview === requiresReview
+    ) {
+      return;
     }
-    setSearchParams(next);
-    rowVirtualizer.scrollToIndex(0);
+
+    if (typeof window === "undefined") return;
+
+    if (debounceRef.current !== null) {
+      window.clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = window.setTimeout(() => {
+      const next = new URLSearchParams(searchParams);
+      if (pendingStatus === "all") {
+        next.delete("status");
+      } else {
+        next.set("status", pendingStatus);
+      }
+      if (pendingRequiresReview) {
+        next.set("review", "true");
+      } else {
+        next.delete("review");
+      }
+
+      setSearchParams(next, { replace: true });
+      rowVirtualizer.scrollToIndex(0);
+    }, FILTER_DEBOUNCE_MS);
+
+    return () => {
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    };
+  }, [
+    pendingRequiresReview,
+    pendingStatus,
+    requiresReview,
+    rowVirtualizer,
+    searchParams,
+    setSearchParams,
+    status,
+  ]);
+
+  useEffect(() => {
+    setPendingStatus(status ?? "all");
+    setPendingRequiresReview(requiresReview);
+  }, [requiresReview, status]);
+
+  useEffect(() => {
+    if (jobs.length === 0) {
+      setActiveIndex(null);
+      return;
+    }
+
+    setActiveIndex((current) => {
+      if (current === null || current >= jobs.length) {
+        return 0;
+      }
+      return current;
+    });
+  }, [jobs.length]);
+
+  useEffect(() => {
+    if (activeIndex === null) return;
+    rowVirtualizer.scrollToIndex(activeIndex);
+    const node = rowRefs.current.get(activeIndex);
+    node?.focus({ preventScroll: true });
+  }, [activeIndex, rowVirtualizer]);
+
+  const setRowRef = (index: number, node: HTMLDivElement | null) => {
+    if (node) {
+      rowRefs.current.set(index, node);
+      rowVirtualizer.measureElement(node);
+    } else {
+      rowRefs.current.delete(index);
+    }
+  };
+
+  const handleListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!jobs.length) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((current) => {
+        const next =
+          current === null ? 0 : Math.min(current + 1, jobs.length - 1);
+        return next;
+      });
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((current) => {
+        const next =
+          current === null ? 0 : Math.max(current - 1, 0);
+        return next;
+      });
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      setActiveIndex(jobs.length ? 0 : null);
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      setActiveIndex(jobs.length ? jobs.length - 1 : null);
+    }
+
+    if ((event.key === "Enter" || event.key === " ") && activeJobId) {
+      event.preventDefault();
+      navigate(`/jobs/${activeJobId}`);
+    }
   };
 
   const locale =
@@ -102,10 +222,13 @@ export function QueueJobsPage() {
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground">Status:</span>
           <Select
-            value={status ?? "all"}
-            onValueChange={(v) => updateFilter("status", v)}
+            value={pendingStatus}
+            onValueChange={setPendingStatus}
           >
-            <SelectTrigger className="w-[140px]">
+            <SelectTrigger
+              aria-label="Filter queue by status"
+              className="w-[140px]"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -121,10 +244,9 @@ export function QueueJobsPage() {
         <div className="flex items-center gap-2">
           <Switch
             id="review-filter"
-            checked={requiresReview}
-            onCheckedChange={(checked) =>
-              updateFilter("review", checked ? "true" : null)
-            }
+            aria-label="Filter to jobs requiring manual review"
+            checked={pendingRequiresReview}
+            onCheckedChange={setPendingRequiresReview}
           />
           <label
             htmlFor="review-filter"
@@ -138,8 +260,11 @@ export function QueueJobsPage() {
           <Button
             variant="ghost"
             size="sm"
+            aria-label="Clear active filters"
             onClick={() => {
-              setSearchParams({});
+              setSearchParams({}, { replace: true });
+              setPendingStatus("all");
+              setPendingRequiresReview(false);
               rowVirtualizer.scrollToIndex(0);
             }}
           >
@@ -173,6 +298,13 @@ export function QueueJobsPage() {
             <div
               ref={scrollParentRef}
               className="max-h-[70vh] min-w-[880px] overflow-auto"
+              role="listbox"
+              aria-label="Queue jobs"
+              aria-activedescendant={
+                activeJobId ? `queue-row-${activeJobId}` : undefined
+              }
+              tabIndex={0}
+              onKeyDown={handleListKeyDown}
             >
               <div
                 style={{
@@ -185,12 +317,17 @@ export function QueueJobsPage() {
                   return (
                     <div
                       key={job.id}
+                      id={`queue-row-${job.id}`}
                       data-index={virtualRow.index}
-                      ref={rowVirtualizer.measureElement}
+                      ref={(node) => setRowRef(virtualRow.index, node)}
                       className={cn(
                         COLUMN_LAYOUT,
-                        "border-b px-3 py-3 text-sm"
+                        "border-b px-3 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                       )}
+                      role="option"
+                      aria-selected={activeIndex === virtualRow.index}
+                      tabIndex={activeIndex === virtualRow.index ? 0 : -1}
+                      onFocus={() => setActiveIndex(virtualRow.index)}
                       style={{
                         position: "absolute",
                         top: 0,
@@ -201,6 +338,7 @@ export function QueueJobsPage() {
                     >
                       <Link
                         to={`/jobs/${job.id}`}
+                        aria-label={`View queue job ${job.id}`}
                         className="text-primary hover:underline"
                       >
                         {job.id}
