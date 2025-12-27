@@ -56,13 +56,16 @@ pub struct RecommendedDecision {
 
 lazy_static! {
     // レンジ: "70〜90万円" / "70-90万円" / "70万円〜90万円"
-    static ref RANGE_RE: Regex = Regex::new(r"(\d{1,3})\s*[〜～~-]\s*(\d{1,3})\s*万円").unwrap();
-    // 下限のみ: "70万円〜" / "70万円以上"
-    static ref MIN_ONLY_RE: Regex = Regex::new(r"(\d{1,3})\s*万円\s*(?:〜|以上)").unwrap();
-    // 上限のみ: "〜90万円" / "90万円まで"
-    static ref MAX_ONLY_RE: Regex = Regex::new(r"(?:〜|まで)\s*(\d{1,3})\s*万円").unwrap();
-    // 単発: "80万円" / "80万円程度"
-    static ref SINGLE_RE: Regex = Regex::new(r"(\d{1,3})\s*万円(?:程度|くらい|前後)?").unwrap();
+    static ref RANGE_RE: Regex =
+        Regex::new(r"(\d{1,3})\s*[〜～~-]\s*(\d{1,3})\s*万(?:円)?").unwrap();
+    // 下限のみ: "70万円〜" / "70万円以上" / "70万～"
+    static ref MIN_ONLY_RE: Regex =
+        Regex::new(r"(\d{1,3})\s*万(?:円)?\s*(?:〜|～|以上)").unwrap();
+    // 上限のみ: "〜90万円" / "90万円まで" / "～90万"
+    static ref MAX_ONLY_RE: Regex =
+        Regex::new(r"(?:〜|～|まで)\s*(\d{1,3})\s*万(?:円)?").unwrap();
+    // 単発: "80万円" / "80万円程度" / "80万くらい"
+    static ref SINGLE_RE: Regex = Regex::new(r"(\d{1,3})\s*万(?:円)?(?:程度|くらい|前後)?").unwrap();
 
     // 開始日: ASAP / 即日系
     static ref ASAP_RE: Regex = Regex::new(r"(?i)(即日|即時|ASAP)").unwrap();
@@ -78,12 +81,18 @@ lazy_static! {
     static ref MONTH_ONLY_RE: Regex = Regex::new(r"\d{1,2}月").unwrap();
 
     // リモート/出社キーワード
-    static ref FULL_REMOTE_RE: Regex =
-        Regex::new(r"(?i)(フルリモート|完全在宅|常時リモート|full\s*remote)").unwrap();
-    static ref HYBRID_REMOTE_RE: Regex = Regex::new(
-        r"(?i)(週\s*[1-4１-４一二三四]\s*リモート|リモート可|リモート併用|ハイブリッド)"
+    static ref FULL_REMOTE_RE: Regex = Regex::new(
+        r"(?i)(フルリモート|完全在宅|常時リモート|full\s*remote|在宅フル対応)"
     )
     .unwrap();
+    static ref FULL_REMOTE_OPTIONAL_RE: Regex =
+        Regex::new(r"(?i)(フルリモート可|フルリモート相談可|原則フルリモート)").unwrap();
+    static ref PARTIAL_REMOTE_RE: Regex = Regex::new(
+        r"(?i)(週\s*[1-4１-４一二三四]\s*リモート|リモート併用|ハイブリッド|一部リモート|部分リモート|一部在宅)"
+    )
+    .unwrap();
+    static ref REMOTE_OPTIONAL_RE: Regex =
+        Regex::new(r"(?i)(リモート可|リモート可能|リモート相談可)").unwrap();
     static ref ONSITE_RE: Regex = Regex::new(r"(?i)(フル出社|常駐|客先|出社のみ|出社必須)").unwrap();
 
     // 商流キーワード
@@ -240,15 +249,28 @@ pub fn extract_all_fields_with_skills(
 
 /// メール本文からリモート/出社形態を抽出して ENUM 補正
 pub fn extract_remote_onsite(body_text: &str) -> Option<String> {
-    if FULL_REMOTE_RE.is_match(body_text) {
-        return Some("フルリモート".to_string());
-    }
+    let has_onsite = ONSITE_RE.is_match(body_text);
 
-    if HYBRID_REMOTE_RE.is_match(body_text) {
+    if FULL_REMOTE_OPTIONAL_RE.is_match(body_text) {
         return Some("リモート併用".to_string());
     }
 
-    if ONSITE_RE.is_match(body_text) {
+    if FULL_REMOTE_RE.is_match(body_text) {
+        if has_onsite {
+            return Some("リモート併用".to_string());
+        }
+        return Some("フルリモート".to_string());
+    }
+
+    if PARTIAL_REMOTE_RE.is_match(body_text) {
+        return Some("リモート併用".to_string());
+    }
+
+    if REMOTE_OPTIONAL_RE.is_match(body_text) {
+        return Some("リモート併用".to_string());
+    }
+
+    if has_onsite {
         return correct_remote_onsite("フル出社");
     }
 
@@ -410,6 +432,9 @@ mod tests {
         assert_eq!(extract_tanka("月額70〜90万円の案件です"), Some((70, 90)));
         assert_eq!(extract_tanka("70万円〜で検討"), Some((70, 90)));
         assert_eq!(extract_tanka("〜90万円まで"), Some((70, 90)));
+        assert_eq!(extract_tanka("70万～"), Some((70, 90)));
+        assert_eq!(extract_tanka("～90万"), Some((70, 90)));
+        assert_eq!(extract_tanka("～90万円+税"), Some((70, 90)));
         assert_eq!(extract_tanka("80万円程度"), Some((80, 80)));
         assert_eq!(extract_tanka("25万円"), None);
     }
@@ -514,6 +539,30 @@ mod tests {
 
         let deep = "4次以上の商流です";
         assert_eq!(extract_flow_dept(deep), Some("4次請け以上".to_string()));
+    }
+
+    #[test]
+    fn extracts_remote_variants_without_collapsing_strength() {
+        assert_eq!(
+            extract_remote_onsite("フルリモートで参画可能"),
+            Some("フルリモート".to_string())
+        );
+        assert_eq!(
+            extract_remote_onsite("フルリモート可、出社頻度は相談"),
+            Some("リモート併用".to_string())
+        );
+        assert_eq!(
+            extract_remote_onsite("一部リモート相談可、週2リモート"),
+            Some("リモート併用".to_string())
+        );
+        assert_eq!(
+            extract_remote_onsite("リモート可ですが出社もあり"),
+            Some("リモート併用".to_string())
+        );
+        assert_eq!(
+            extract_remote_onsite("出社のみでお願いします"),
+            Some("フル出社".to_string())
+        );
     }
 
     #[test]

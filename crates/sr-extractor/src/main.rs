@@ -4,7 +4,7 @@ use dotenvy::dotenv;
 use serde_json::to_value;
 use sr_common::db::{
     create_pool_from_url_checked, fetch_pending_emails, pending_copy, run_migrations,
-    upsert_extraction_job,
+    upsert_extraction_job, PendingEmail,
 };
 use sr_common::extraction::{
     calculate_priority, evaluate_quality, extract_all_fields, extract_flow_dept,
@@ -12,10 +12,11 @@ use sr_common::extraction::{
     ExtractorOutput, PartialFields,
 };
 use sr_common::logging::install_tracing_panic_hook;
-use sr_common::normalize::{calculate_subject_hash, normalize_subject};
+use sr_common::normalize::{calculate_content_hash, calculate_subject_hash, normalize_subject};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod,
 };
+use std::collections::HashSet;
 use tracing::{debug, error, info};
 
 #[derive(Debug, Parser)]
@@ -35,6 +36,23 @@ struct Cli {
 
 const RULE_VERSION: &str = "2025-01-15-r1";
 const FETCH_LIMIT: i64 = 100;
+
+fn dedup_emails_by_body(emails: Vec<PendingEmail>) -> (Vec<PendingEmail>, usize) {
+    let mut seen_hashes = HashSet::new();
+    let mut unique = Vec::new();
+    let mut dropped = 0usize;
+
+    for email in emails {
+        let hash = calculate_content_hash(&email.body_text);
+        if seen_hashes.insert(hash) {
+            unique.push(email);
+        } else {
+            dropped += 1;
+        }
+    }
+
+    (unique, dropped)
+}
 
 fn build_job_from_email(
     email_subject: &str,
@@ -136,8 +154,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let emails = fetch_pending_emails(&pool, FETCH_LIMIT).await?;
-    info!(count = emails.len(), "fetched pending emails to enqueue");
+    let (emails, deduped) = {
+        let fetched = fetch_pending_emails(&pool, FETCH_LIMIT).await?;
+        let (unique, dropped) = dedup_emails_by_body(fetched);
+        (unique, dropped)
+    };
+    info!(
+        count = emails.len(),
+        deduped, "fetched pending emails to enqueue"
+    );
 
     for email in emails {
         let normalized_subject = normalize_subject(&email.subject);
@@ -188,5 +213,36 @@ mod tests {
             Some(RecommendedMethod::RustRecommended)
         );
         assert!(job.email_subject.contains("stub"));
+    }
+
+    #[test]
+    fn dedup_emails_by_body_removes_duplicate_payloads() {
+        let now = Utc::now();
+        let emails = vec![
+            PendingEmail {
+                message_id: "m1".into(),
+                subject: "s1".into(),
+                body_text: "duplicate body".into(),
+                created_at: now,
+            },
+            PendingEmail {
+                message_id: "m2".into(),
+                subject: "s2".into(),
+                body_text: "duplicate body".into(),
+                created_at: now,
+            },
+            PendingEmail {
+                message_id: "m3".into(),
+                subject: "s3".into(),
+                body_text: "unique body".into(),
+                created_at: now,
+            },
+        ];
+
+        let (unique, deduped) = dedup_emails_by_body(emails);
+        assert_eq!(unique.len(), 2);
+        assert_eq!(deduped, 1);
+        assert!(unique.iter().any(|e| e.message_id == "m1"));
+        assert!(unique.iter().any(|e| e.message_id == "m3"));
     }
 }
