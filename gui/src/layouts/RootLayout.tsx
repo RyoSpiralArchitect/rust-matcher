@@ -33,7 +33,7 @@ export function RootLayout() {
             SR Matcher
           </Link>
           <nav className="flex gap-4">
-            {visibleNavItems.map((item) => (
+            {navItems.map((item) => (
               <Link
                 key={item.href}
                 to={item.href}
