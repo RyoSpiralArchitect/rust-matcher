@@ -1,6 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { get, post } from "../client";
-import type { ProjectDetailResponse, FeedbackRequest, FeedbackResponse } from "../types";
+import type {
+  ProjectDetailResponse,
+  FeedbackRequest,
+  FeedbackResponse,
+  ProjectsListResponse,
+} from "../types";
+
+export function useProjects() {
+  return useQuery({
+    queryKey: ["projects", "list"],
+    queryFn: () => get<ProjectsListResponse>("/api/projects"),
+  });
+}
 
 export function useProjectDetail(projectId: number | string | undefined) {
   return useQuery({

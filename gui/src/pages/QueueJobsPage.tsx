@@ -18,6 +18,7 @@ import { QUEUE_JOB_STATUSES, type QueueJobStatus, useInfiniteQueueJobs } from "@
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { Inbox, Loader2 } from "lucide-react";
+import { useFlags } from "@/lib/auth";
 
 type StatusFilter = QueueJobStatus | "all";
 const STATUS_FILTERS: StatusFilter[] = ["all", ...QUEUE_JOB_STATUSES];
@@ -31,6 +32,7 @@ export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean 
   const { t, locale } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { isQueueAdmin } = useFlags();
 
   const statusParam = searchParams.get("status");
   const normalizedStatus = QUEUE_JOB_STATUSES.includes(statusParam as QueueJobStatus)
@@ -258,141 +260,185 @@ export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean 
             </SelectContent>
           </Select>
         </div>
-
-        <div className="flex items-center gap-2">
-          <Switch
-            id="review-filter"
-            aria-label={t("queue.jobs.filter.reviewOnly")}
-            checked={pendingRequiresReview}
-            onCheckedChange={setPendingRequiresReview}
-          />
-          <label
-            htmlFor="review-filter"
-            className="text-sm text-muted-foreground cursor-pointer"
-          >
-            {t("queue.jobs.filter.reviewOnly")}
-          </label>
-        </div>
-
-        {(normalizedStatus || requiresReview) && (
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={t("queue.jobs.filter.clear")}
-            onClick={() => {
-              setSearchParams({}, { replace: true });
-              setPendingStatus("all");
-              setPendingRequiresReview(false);
-              rowVirtualizer.scrollToIndex(0);
-            }}
-          >
-            {t("queue.jobs.filter.clear")}
-          </Button>
-        )}
+        <p className="text-sm text-muted-foreground">
+          {t("queue.access.note")}
+        </p>
       </div>
 
-      {isLoading ? (
-        <LoadingState />
-      ) : jobs.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-md border border-dashed p-10 text-center">
-          <Inbox className="h-10 w-10 text-muted-foreground" />
-          <p className="mt-2 text-lg font-semibold">{t("queue.jobs.empty.title")}</p>
-          <p className="text-sm text-muted-foreground">
-            {t("queue.jobs.empty.description")}
-          </p>
+      {!isQueueAdmin ? (
+        <div className="rounded-md border border-dashed bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+          {t("queue.access.noAccess")}
         </div>
       ) : (
-        <div className="rounded-md border">
-          <div className="overflow-x-auto">
-            <div className={cn(COLUMN_LAYOUT, "min-w-[880px] border-b bg-muted/60 px-3 py-2 text-sm font-semibold")}>
-              <span>{t("queue.jobs.table.id")}</span>
-              <span>{t("queue.jobs.table.messageId")}</span>
-              <span>{t("queue.jobs.table.status")}</span>
-              <span>{t("queue.jobs.table.priority")}</span>
-              <span>{t("queue.jobs.table.retry")}</span>
-              <span>{t("queue.jobs.table.review")}</span>
-              <span>{t("queue.jobs.table.updated")}</span>
+        <>
+          {/* Filters */}
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">{t("queue.jobs.filter.statusLabel")}</span>
+              <Select
+                value={pendingStatus}
+                onValueChange={(value) => setPendingStatus(value as StatusFilter)}
+              >
+                <SelectTrigger
+                  aria-label={t("queue.jobs.filter.statusAria")}
+                  className="w-[140px]"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_FILTERS.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {s === "all"
+                        ? t("queue.jobs.filter.all")
+                        : t(
+                            s === "pending"
+                              ? "status.pending"
+                              : s === "processing"
+                                ? "status.processing"
+                                : "status.completed"
+                          )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            <div
-              ref={scrollParentRef}
-              className="max-h-[70vh] min-w-[880px] overflow-auto"
-              role="listbox"
-              aria-label={t("queue.jobs.title")}
-              aria-activedescendant={
-                activeJobId ? `queue-row-${activeJobId}` : undefined
-              }
-              tabIndex={0}
-              onKeyDown={handleListKeyDown}
-            >
-              <div
-                style={{
-                  height: `${rowVirtualizer.getTotalSize() + (isFetchingNextPage ? ROW_HEIGHT : 0)}px`,
-                  position: "relative",
+
+            <div className="flex items-center gap-2">
+              <Switch
+                id="review-filter"
+                aria-label={t("queue.jobs.filter.reviewOnly")}
+                checked={pendingRequiresReview}
+                onCheckedChange={setPendingRequiresReview}
+              />
+              <label
+                htmlFor="review-filter"
+                className="text-sm text-muted-foreground cursor-pointer"
+              >
+                {t("queue.jobs.filter.reviewOnly")}
+              </label>
+            </div>
+
+            {(normalizedStatus || requiresReview) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={t("queue.jobs.filter.clear")}
+                onClick={() => {
+                  setSearchParams({}, { replace: true });
+                  setPendingStatus("all");
+                  setPendingRequiresReview(false);
+                  rowVirtualizer.scrollToIndex(0);
                 }}
               >
-                {virtualItems.map((virtualRow: VirtualItem) => {
-                  const job = jobs[virtualRow.index];
-                  return (
-                    <div
-                      key={job.id}
-                      id={`queue-row-${job.id}`}
-                      data-index={virtualRow.index}
-                      ref={(node) => setRowRef(virtualRow.index, node)}
-                      className={cn(
-                        COLUMN_LAYOUT,
-                        "border-b px-3 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                      )}
-                      role="option"
-                      aria-selected={activeIndex === virtualRow.index}
-                      tabIndex={activeIndex === virtualRow.index ? 0 : -1}
-                      onFocus={() => setActiveIndex(virtualRow.index)}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                    >
-                      <Link
-                        to={`/jobs/${job.id}`}
-                        aria-label={t("queue.jobs.row.link", { id: job.id })}
-                        className="text-primary hover:underline"
-                      >
-                        {job.id}
-                      </Link>
-                      <span className="font-mono text-xs">
-                        {job.messageId.slice(0, 20)}...
-                      </span>
-                      <span>
-                        <StatusBadge status={job.status} />
-                      </span>
-                      <span>{job.priority}</span>
-                      <span>{job.retryCount}</span>
-                      <span>
-                        {job.requiresManualReview && (
-                          <Badge variant="secondary">{t("status.review")}</Badge>
-                        )}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {formatDate(job.updatedAt)}
-                      </span>
-                    </div>
-                  );
-                })}
-                {isFetchingNextPage && (
+                {t("queue.jobs.filter.clear")}
+              </Button>
+            )}
+          </div>
+
+          {isLoading ? (
+            <LoadingState />
+          ) : jobs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-md border border-dashed p-10 text-center">
+              <Inbox className="h-10 w-10 text-muted-foreground" />
+              <p className="mt-2 text-lg font-semibold">{t("queue.jobs.empty.title")}</p>
+              <p className="text-sm text-muted-foreground">
+                {t("queue.jobs.empty.description")}
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-md border">
+              <div className="overflow-x-auto">
+                <div className={cn(COLUMN_LAYOUT, "min-w-[880px] border-b bg-muted/60 px-3 py-2 text-sm font-semibold")}>
+                  <span>{t("queue.jobs.table.id")}</span>
+                  <span>{t("queue.jobs.table.messageId")}</span>
+                  <span>{t("queue.jobs.table.status")}</span>
+                  <span>{t("queue.jobs.table.priority")}</span>
+                  <span>{t("queue.jobs.table.retry")}</span>
+                  <span>{t("queue.jobs.table.review")}</span>
+                  <span>{t("queue.jobs.table.updated")}</span>
+                </div>
+                <div
+                  ref={scrollParentRef}
+                  className="max-h-[70vh] min-w-[880px] overflow-auto"
+                  role="listbox"
+                  aria-label={t("queue.jobs.title")}
+                  aria-activedescendant={
+                    activeJobId ? `queue-row-${activeJobId}` : undefined
+                  }
+                  tabIndex={0}
+                  onKeyDown={handleListKeyDown}
+                >
                   <div
-                    className="absolute left-0 right-0 flex items-center justify-center gap-2 text-sm text-muted-foreground"
-                    style={{ top: rowVirtualizer.getTotalSize() }}
+                    style={{
+                      height: `${rowVirtualizer.getTotalSize() + (isFetchingNextPage ? ROW_HEIGHT : 0)}px`,
+                      position: "relative",
+                    }}
                   >
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    {t("queue.jobs.loadingMore")}
+                    {virtualItems.map((virtualRow: VirtualItem) => {
+                      const job = jobs[virtualRow.index];
+                      return (
+                        <div
+                          key={job.id}
+                          id={`queue-row-${job.id}`}
+                          data-index={virtualRow.index}
+                          ref={(node) => setRowRef(virtualRow.index, node)}
+                          className={cn(
+                            COLUMN_LAYOUT,
+                            "border-b px-3 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                          )}
+                          role="option"
+                          aria-selected={activeIndex === virtualRow.index}
+                          tabIndex={activeIndex === virtualRow.index ? 0 : -1}
+                          onFocus={() => setActiveIndex(virtualRow.index)}
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            width: "100%",
+                            transform: `translateY(${virtualRow.start}px)`,
+                          }}
+                        >
+                          <Link
+                            to={`/jobs/${job.id}`}
+                            aria-label={t("queue.jobs.row.link", { id: job.id })}
+                            className="text-primary hover:underline"
+                          >
+                            {job.id}
+                          </Link>
+                          <span className="font-mono text-xs">
+                            {job.messageId.slice(0, 20)}...
+                          </span>
+                          <span>
+                            <StatusBadge status={job.status} />
+                          </span>
+                          <span>{job.priority}</span>
+                          <span>{job.retryCount}</span>
+                          <span>
+                            {job.requiresManualReview && (
+                              <Badge variant="secondary">{t("status.review")}</Badge>
+                            )}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {formatDate(job.updatedAt)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {isFetchingNextPage && (
+                      <div
+                        className="absolute left-0 right-0 flex items-center justify-center gap-2 text-sm text-muted-foreground"
+                        style={{ top: rowVirtualizer.getTotalSize() }}
+                      >
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {t("queue.jobs.loadingMore")}
+                      </div>
+                    )}
                   </div>
-                )}
+                </div>
               </div>
             </div>
-          </div>
-        </div>
+          )}
+        </>
       )}
     </div>
   );
