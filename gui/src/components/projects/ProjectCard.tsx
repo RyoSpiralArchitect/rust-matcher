@@ -57,7 +57,7 @@ export function ProjectCard({ project, locale, onOpen, formatMessage }: ProjectC
         <CardDescription>{budgetLabel}</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="flex flex-wrap gap-2">
+        <div className={componentTheme.layout.badgeRow}>
           <Badge variant="secondary">
             {formatMessage("projects.counts.matched", {
               count: project.matchedCount ?? 0,

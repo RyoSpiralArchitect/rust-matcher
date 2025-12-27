@@ -1,27 +1,41 @@
-import { Loader2, MessageCircle, ThumbsDown, ThumbsUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ProjectMatch } from "@/api";
+import { InteractionBadge } from "@/components/common/InteractionBadge";
+import { InteractionActionButton } from "@/components/common/InteractionActionButton";
+import { componentTheme, type InteractionAction, type InteractionState } from "@/theme/component-theme";
 
 type TalentMatchCardProps = {
   match: ProjectMatch;
-  onPropose: (interactionId: number) => void;
-  onReject: (interactionId: number) => void;
-  onViewDetail: (interactionId: number) => void;
+  onPropose?: (interactionId: number) => void;
+  onReject?: (interactionId: number) => void;
+  onInterview?: (interactionId: number) => void;
+  onViewDetail?: (interactionId: number) => void;
   isBusy?: boolean;
   isDisabled?: boolean;
-  labels: { propose: string; reject: string; details: string; scoreLabel?: string; rateLabel?: string };
+  labels: {
+    propose?: string;
+    reject?: string;
+    interview?: string;
+    details?: string;
+    scoreLabel?: string;
+    rateLabel?: string;
+  };
+  statusLabel?: string;
+  statusState?: InteractionState;
 };
 
 export function TalentMatchCard({
   match,
   onPropose,
   onReject,
+  onInterview,
   onViewDetail,
   isBusy = false,
   isDisabled = false,
   labels,
+  statusLabel,
+  statusState,
 }: TalentMatchCardProps) {
   const skills = match.keySkills ?? [];
   const visibleSkills = skills.slice(0, 4);
@@ -30,15 +44,39 @@ export function TalentMatchCard({
     match.desiredRateMin !== null && match.desiredRateMin !== undefined
       ? `¥${match.desiredRateMin.toLocaleString()}${match.desiredRateMax ? ` - ¥${match.desiredRateMax.toLocaleString()}` : ""}`
       : null;
+  const actions: { action: InteractionAction; label: string; handler: () => void }[] = [];
+
+  if (onPropose) {
+    actions.push({ action: "propose", label: labels.propose ?? "Propose", handler: () => onPropose(match.interactionId) });
+  }
+
+  if (onReject) {
+    actions.push({ action: "reject", label: labels.reject ?? "Reject", handler: () => onReject(match.interactionId) });
+  }
+
+  if (onInterview) {
+    actions.push({
+      action: "interview",
+      label: labels.interview ?? "Interview",
+      handler: () => onInterview(match.interactionId),
+    });
+  }
+
+  if (onViewDetail) {
+    actions.push({ action: "details", label: labels.details ?? "Details", handler: () => onViewDetail(match.interactionId) });
+  }
 
   return (
     <Card>
-      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <CardHeader className={componentTheme.layout.cardHeader}>
         <div className="space-y-2">
           <CardTitle>{match.talentName ?? `Talent #${match.talentId}`}</CardTitle>
           {match.headline ? <CardDescription>{match.headline}</CardDescription> : null}
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary">
+          <div className={componentTheme.layout.badgeRow}>
+            {statusLabel && statusState ? (
+              <InteractionBadge state={statusState} label={statusLabel} />
+            ) : null}
+            <Badge variant="secondary" className={componentTheme.badges.metric}>
               {labels.scoreLabel ?? "Score"}: {match.score.toFixed(1)}
             </Badge>
             {visibleSkills.map((skill) => (
@@ -53,42 +91,22 @@ export function TalentMatchCard({
             ) : null}
           </div>
         </div>
-        <div className="text-sm text-muted-foreground space-y-1 text-left sm:text-right">
+        <div className={componentTheme.layout.metaColumn}>
           {rateRange ? <div>{labels.rateLabel ?? "Rate"}: {rateRange}</div> : null}
         </div>
       </CardHeader>
-      <CardContent className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onPropose(match.interactionId)}
-            disabled={isDisabled}
-            aria-label={labels.propose}
-          >
-            {isBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ThumbsUp className="mr-2 h-4 w-4" />}
-            {labels.propose} 👍
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onReject(match.interactionId)}
-            disabled={isDisabled}
-            aria-label={labels.reject}
-          >
-            {isBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ThumbsDown className="mr-2 h-4 w-4" />}
-            {labels.reject} 👎
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onViewDetail(match.interactionId)}
-            disabled={isDisabled}
-            aria-label={labels.details}
-          >
-            <MessageCircle className="mr-2 h-4 w-4" />
-            {labels.details} 💬
-          </Button>
+      <CardContent className={componentTheme.spacing.cardStack}>
+        <div className={componentTheme.layout.actionRow}>
+          {actions.map(({ action, label, handler }) => (
+            <InteractionActionButton
+              key={action}
+              action={action}
+              label={label}
+              onClick={handler}
+              disabled={isDisabled}
+              isBusy={isBusy}
+            />
+          ))}
         </div>
       </CardContent>
     </Card>
