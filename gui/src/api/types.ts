@@ -70,6 +70,12 @@ export type FeedbackStatus = "created" | "already_exists";
 export interface FeedbackResponse {
   id?: number;
   status: FeedbackStatus;
+  feedbackType: FeedbackType;
+  interactionId: number;
+  matchResultId?: number | null;
+  matchRunId?: string | null;
+  projectId: number;
+  talentId: number;
 }
 
 // ============================================================
