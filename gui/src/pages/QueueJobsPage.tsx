@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,11 +21,13 @@ import { Inbox, Loader2 } from "lucide-react";
 const STATUSES = ["all", "pending", "processing", "completed"] as const;
 const PAGE_SIZE = 50;
 const ROW_HEIGHT = 64;
+const FILTER_DEBOUNCE_MS = 300;
 const COLUMN_LAYOUT =
   "grid grid-cols-[90px_210px_130px_100px_80px_90px_180px] items-center";
 
 export function QueueJobsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   const status = searchParams.get("status") ?? undefined;
   const requiresReview = searchParams.get("review") === "true";
@@ -51,6 +53,7 @@ export function QueueJobsPage() {
   );
 
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
+  const debounceRef = useRef<number | null>(null);
   // eslint-disable-next-line react-hooks/incompatible-library
   const rowVirtualizer = useVirtualizer({
     count: jobs.length,
@@ -83,7 +86,13 @@ export function QueueJobsPage() {
       return;
     }
 
-    const timeout = window.setTimeout(() => {
+    if (typeof window === "undefined") return;
+
+    if (debounceRef.current !== null) {
+      window.clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = window.setTimeout(() => {
       const next = new URLSearchParams(searchParams);
       if (pendingStatus === "all") {
         next.delete("status");
@@ -96,11 +105,16 @@ export function QueueJobsPage() {
         next.delete("review");
       }
 
-      setSearchParams(next);
+      setSearchParams(next, { replace: true });
       rowVirtualizer.scrollToIndex(0);
-    }, 300);
+    }, FILTER_DEBOUNCE_MS);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    };
   }, [
     pendingRequiresReview,
     pendingStatus,
@@ -165,6 +179,21 @@ export function QueueJobsPage() {
           current === null ? 0 : Math.max(current - 1, 0);
         return next;
       });
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      setActiveIndex(jobs.length ? 0 : null);
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      setActiveIndex(jobs.length ? jobs.length - 1 : null);
+    }
+
+    if ((event.key === "Enter" || event.key === " ") && activeJobId) {
+      event.preventDefault();
+      navigate(`/jobs/${activeJobId}`);
     }
   };
 
@@ -233,7 +262,7 @@ export function QueueJobsPage() {
             size="sm"
             aria-label="Clear active filters"
             onClick={() => {
-              setSearchParams({});
+              setSearchParams({}, { replace: true });
               setPendingStatus("all");
               setPendingRequiresReview(false);
               rowVirtualizer.scrollToIndex(0);

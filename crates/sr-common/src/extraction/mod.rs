@@ -385,6 +385,27 @@ mod tests {
     use chrono::Datelike;
 
     #[test]
+    fn priority_values_follow_documented_weights() {
+        let mut quality = ExtractionQuality {
+            tier1_extracted: 0,
+            tier1_total: 2,
+            tier2_extracted: 0,
+            tier2_total: 2,
+            ..Default::default()
+        };
+        assert_eq!(calculate_priority(&quality), PRIORITY_MISSING_TIER1);
+
+        quality.tier1_extracted = quality.tier1_total;
+        assert_eq!(calculate_priority(&quality), PRIORITY_NO_TIER2);
+
+        quality.tier2_extracted = 1;
+        assert_eq!(calculate_priority(&quality), PRIORITY_PARTIAL_TIER2);
+
+        quality.tier2_extracted = 2;
+        assert_eq!(calculate_priority(&quality), PRIORITY_COMPLETE);
+    }
+
+    #[test]
     fn tanka_extracts_range_min_max_and_single() {
         assert_eq!(extract_tanka("月額70〜90万円の案件です"), Some((70, 90)));
         assert_eq!(extract_tanka("70万円〜で検討"), Some((70, 90)));
