@@ -14,7 +14,7 @@ use html2text::from_read;
 use sr_common::db::{
     create_pool_from_url_checked, run_migrations, DbPoolError, MigrationError, PgPool,
 };
-use sr_common::logging::install_tracing_panic_hook;
+use sr_common::logging::{init_tracing_subscriber, install_tracing_panic_hook};
 use std::collections::HashSet;
 use tokio::time::{interval, timeout, Duration};
 use tracing::{debug, error, info, warn};
@@ -480,7 +480,7 @@ fn decode_part_body(part: &MessagePart) -> Result<Option<String>, IngestError> {
 
 async fn run() -> Result<(), IngestError> {
     dotenv().ok();
-    tracing_subscriber::fmt::init();
+    init_tracing_subscriber(env!("CARGO_PKG_NAME"));
     install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
 
     let cli = Cli::parse();

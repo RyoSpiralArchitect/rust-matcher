@@ -11,12 +11,13 @@ use sr_common::extraction::{
     extract_remote_onsite, extract_start_date_raw, extract_tanka, extract_work_todofuken,
     ExtractorOutput, PartialFields,
 };
-use sr_common::logging::install_tracing_panic_hook;
+use sr_common::logging::{init_tracing_subscriber, install_tracing_panic_hook};
 use sr_common::normalize::{calculate_content_hash, calculate_subject_hash, normalize_subject};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobOutcome, RecommendedMethod,
 };
 use std::collections::HashSet;
+use tokio::task::spawn_blocking;
 use tracing::{debug, error, info};
 
 #[derive(Debug, Parser)]
@@ -132,7 +133,7 @@ pub fn run_sample_flow() -> ExtractionQueue {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
-    tracing_subscriber::fmt::init();
+    init_tracing_subscriber(env!("CARGO_PKG_NAME"));
     install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
 
     let args = Cli::parse();
@@ -156,7 +157,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let (emails, deduped) = {
         let fetched = fetch_pending_emails(&pool, FETCH_LIMIT).await?;
-        let (unique, dropped) = dedup_emails_by_body(fetched);
+        let (unique, dropped) = spawn_blocking(|| dedup_emails_by_body(fetched))
+            .await
+            .map_err(|err| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("deduplication task failed: {err}"),
+                )
+            })?;
         (unique, dropped)
     };
     info!(
@@ -165,9 +173,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     for email in emails {
-        let normalized_subject = normalize_subject(&email.subject);
-        let subject_hash = calculate_subject_hash(&email.subject);
-        let extraction = extract_all_fields(&email.body_text, Some(&normalized_subject));
+        let (normalized_subject, subject_hash, extraction) = spawn_blocking({
+            let subject = email.subject.clone();
+            let body_text = email.body_text.clone();
+            move || {
+                let normalized_subject = normalize_subject(&subject);
+                let subject_hash = calculate_subject_hash(&subject);
+                let extraction = extract_all_fields(&body_text, Some(&normalized_subject));
+                (normalized_subject, subject_hash, extraction)
+            }
+        })
+        .await
+        .map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("extraction task failed: {err}"),
+            )
+        })?;
         let mut job = build_job_from_email(
             &normalized_subject,
             email.created_at,
