@@ -172,6 +172,8 @@ pub struct QueueJobListResponse {
     pub items: Vec<QueueJobListItem>,
     pub limit: i64,
     pub offset: i64,
+    /// Total number of jobs matching the current filters (for pagination)
+    pub total: i64,
     pub has_more: bool,
 }
 

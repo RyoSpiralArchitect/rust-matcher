@@ -1,9 +1,8 @@
 # API documentation plan
 
-This repository does not yet publish an OpenAPI document, but the API surface is small enough to keep a hand-written specification in sync until a generator is wired in. The immediate next steps are:
+Machine-readable API documentation now lives at `docs/openapi.yaml` (OpenAPI 3.1). All date/time fields are explicitly marked as RFC 3339 / ISO 8601 `date-time` strings, and pagination responses return `limit`, `offset`, and `total` alongside `has_more` for consistency across endpoints. The remaining wiring work is to serve that document and host Swagger UI:
 
-- Define a minimal `openapi.yaml` that documents the public endpoints already in service (`/livez`, `/readyz`, `/api/v1/queue/*`, `/api/v1/projects/{project_id}/candidates`, `/api/v1/feedback`). Existing `/api/*` routes should remain as backwards-compatible aliases while `/api/v1` becomes the canonical prefix.
-- Serve that document at `/openapi.json` (or `/openapi.yaml`) and mount Swagger UI at `/docs` so client developers can explore request/response shapes.
+- Serve the document at `/openapi.json` (or `/openapi.yaml`) and mount Swagger UI at `/docs` so client developers can explore request/response shapes.
 - Ensure authentication headers (`X-API-Key` or `Authorization: Bearer ...`) are called out per route and that admin-only operations such as `/api/v1/queue/retry/:id` and source-text includes are flagged with the correct scopes/roles. Document the deprecation/breaking-change policy alongside the version prefix so downstream clients know how long `/api/*` aliases remain supported.
 
 Until the served document exists, keep this file as the canonical description of what should be reflected in the OpenAPI spec:
