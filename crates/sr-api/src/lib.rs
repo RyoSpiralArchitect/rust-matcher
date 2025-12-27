@@ -408,10 +408,13 @@ fn request_ip<B>(req: &Request<B>) -> Option<IpAddr> {
 
 fn rate_limit_meta_from_snapshot(snapshot: StateSnapshot) -> RateLimitMeta {
     let quota = snapshot.quota();
+    let limit = quota.burst_size().get();
+    let remaining = snapshot.remaining_burst_capacity().min(limit);
+    let used = limit.saturating_sub(remaining);
     RateLimitMeta {
-        limit: quota.burst_size().get(),
-        remaining: snapshot.remaining_burst_capacity(),
-        reset_after: quota.replenish_interval(),
+        limit,
+        remaining,
+        reset_after: quota.replenish_interval().saturating_mul(used.max(1)),
         retry_after: None,
     }
 }
@@ -678,12 +681,13 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
+        extract::connect_info::ConnectInfo,
         http::{Request, StatusCode},
         routing::get,
     };
     use http_body_util::BodyExt;
     use serial_test::serial;
-    use std::sync::Mutex;
+    use std::{net::SocketAddr, sync::Mutex};
     use tower::ServiceExt;
 
     static ENV_GUARD: Mutex<()> = Mutex::new(());
@@ -768,6 +772,68 @@ mod tests {
                         match_burst: 11,
                     }
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn attaches_rate_limit_headers_on_successful_requests() {
+        with_envs(
+            &[
+                ("SR_RATE_LIMIT_GLOBAL_PER_SEC", None),
+                ("SR_RATE_LIMIT_GLOBAL_BURST", None),
+                ("SR_RATE_LIMIT_RETRY_PER_SEC", None),
+                ("SR_RATE_LIMIT_RETRY_BURST", None),
+                ("SR_RATE_LIMIT_HEALTH_PER_SEC", None),
+                ("SR_RATE_LIMIT_HEALTH_BURST", None),
+                ("SR_RATE_LIMIT_MATCH_PER_SEC", None),
+                ("SR_RATE_LIMIT_MATCH_BURST", None),
+            ],
+            || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let state = test_state("test-key");
+                        let app = Router::new()
+                            .route("/", get(|| async { "ok" }))
+                            .layer(middleware::from_fn_with_state(
+                                state.clone(),
+                                per_endpoint_rate_limit,
+                            ))
+                            .with_state(state);
+
+                        let req = Request::builder()
+                            .uri("/")
+                            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                            .body(Body::empty())
+                            .unwrap();
+
+                        let response = app.oneshot(req).await.expect("request should succeed");
+
+                        let limit = response.headers().get("ratelimit-limit");
+                        let remaining = response.headers().get("ratelimit-remaining");
+                        let reset = response.headers().get("ratelimit-reset");
+
+                        let limit =
+                            limit.and_then(|h| h.to_str().ok()).and_then(|v| v.parse::<u32>().ok());
+                        let remaining = remaining
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|v| v.parse::<u32>().ok());
+                        let reset =
+                            reset.and_then(|h| h.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+
+                        assert!(limit.is_some());
+                        assert!(remaining.is_some());
+                        assert!(reset.is_some());
+
+                        let limit = limit.unwrap();
+                        let remaining = remaining.unwrap();
+                        assert!(remaining <= limit);
+                        assert!(limit > 0);
+                        assert!(reset.unwrap() > 0);
+                    });
             },
         );
     }

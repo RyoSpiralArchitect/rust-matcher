@@ -26,35 +26,35 @@ pub struct RateLimitMeta {
 }
 
 impl RateLimitMeta {
-    fn seconds_value(duration: Duration) -> String {
-        // Keep millisecond precision for debugging without leaking floating point artifacts.
-        format!("{:.3}", duration.as_secs_f64())
+    fn ceil_seconds(duration: Duration) -> u64 {
+        let nanos = duration.as_nanos();
+        let mut secs = nanos / 1_000_000_000;
+        if nanos % 1_000_000_000 != 0 {
+            secs += 1;
+        }
+        secs as u64
     }
 
-    fn retry_after_seconds(duration: Duration) -> String {
-        duration
-            .as_secs()
-            .saturating_add((duration.subsec_nanos() > 0) as u64)
-            .to_string()
+    fn add_header(headers: &mut HeaderMap, name: &'static str, value: String) {
+        if let Ok(parsed) = HeaderValue::from_str(&value) {
+            headers.insert(HeaderName::from_static(name), parsed);
+        }
     }
 
     pub fn apply_headers(&self, headers: &mut HeaderMap) {
-        headers
-            .entry(HeaderName::from_static("ratelimit-limit"))
-            .or_insert_with(|| HeaderValue::from_str(&self.limit.to_string()).unwrap());
-        headers
-            .entry(HeaderName::from_static("ratelimit-remaining"))
-            .or_insert_with(|| HeaderValue::from_str(&self.remaining.to_string()).unwrap());
-        headers
-            .entry(HeaderName::from_static("ratelimit-reset"))
-            .or_insert_with(|| {
-                HeaderValue::from_str(Self::seconds_value(self.reset_after).as_str()).unwrap()
-            });
+        Self::add_header(headers, "ratelimit-limit", self.limit.to_string());
+        Self::add_header(headers, "ratelimit-remaining", self.remaining.to_string());
+        Self::add_header(
+            headers,
+            "ratelimit-reset",
+            Self::ceil_seconds(self.reset_after).to_string(),
+        );
 
         if let Some(retry_after) = self.retry_after {
-            headers.entry(RETRY_AFTER).or_insert_with(|| {
-                HeaderValue::from_str(&Self::retry_after_seconds(retry_after)).unwrap()
-            });
+            if let Ok(parsed) = HeaderValue::from_str(&Self::ceil_seconds(retry_after).to_string())
+            {
+                headers.insert(RETRY_AFTER, parsed);
+            }
         }
     }
 }
@@ -347,5 +347,43 @@ mod tests {
         let bytes = body.collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["message"], "internal server error");
+    }
+
+    #[test]
+    fn rate_limit_headers_are_attached_when_present() {
+        let meta = RateLimitMeta {
+            limit: 10,
+            remaining: 5,
+            reset_after: Duration::from_millis(1200),
+            retry_after: Some(Duration::from_millis(800)),
+        };
+
+        let err = ApiError::TooManyRequests {
+            message: "rate limit exceeded".into(),
+            rate_limit: Some(meta),
+        };
+
+        let response = err.into_response();
+        let headers = response.headers();
+
+        assert_eq!(
+            headers.get("ratelimit-limit").and_then(|h| h.to_str().ok()),
+            Some("10")
+        );
+        assert_eq!(
+            headers
+                .get("ratelimit-remaining")
+                .and_then(|h| h.to_str().ok()),
+            Some("5")
+        );
+        // ceil(1.2s) = 2
+        assert_eq!(
+            headers.get("ratelimit-reset").and_then(|h| h.to_str().ok()),
+            Some("2")
+        );
+        assert_eq!(
+            headers.get(RETRY_AFTER).and_then(|h| h.to_str().ok()),
+            Some("1")
+        );
     }
 }
