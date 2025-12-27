@@ -49,14 +49,4 @@ impl SecurityTxtConfig {
             hiring: None,
         }
     }
-
-    pub fn validate(&self) -> bool {
-        !self.contact.trim().is_empty()
-    }
-
-    pub fn update_expires_from_days(&mut self, days: i64) {
-        let adjusted_days = if days <= 0 { 30 } else { days };
-        self.expires = (Utc::now() + Duration::days(adjusted_days))
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    }
 }
