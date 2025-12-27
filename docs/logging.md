@@ -25,6 +25,7 @@ This retains structured panic logs while letting the default hook print the full
 `sr-llm-worker` now emits periodic operational summaries to `INFO`:
 
 - `jobs_total`: Total jobs processed since start
+- `worker_id`: Worker label from CLI/ENV
 - `successes`: Completed without manual review
 - `permanent_failures`: Completed but require manual review (e.g., fatal errors)
 - `retries_scheduled`: Jobs returned to the queue for retry

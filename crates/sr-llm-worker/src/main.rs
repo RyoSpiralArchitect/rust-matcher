@@ -1124,6 +1124,7 @@ fn apply_outcome(
 }
 
 struct WorkerSummary {
+    worker_id: String,
     started_at: chrono::DateTime<Utc>,
     last_logged_at: chrono::DateTime<Utc>,
     interval: chrono::Duration,
@@ -1134,9 +1135,10 @@ struct WorkerSummary {
 }
 
 impl WorkerSummary {
-    fn new(interval: chrono::Duration) -> Self {
+    fn new(worker_id: &str, interval: chrono::Duration) -> Self {
         let now = Utc::now();
         Self {
+            worker_id: worker_id.to_string(),
             started_at: now,
             last_logged_at: now,
             interval,
@@ -1179,6 +1181,7 @@ impl WorkerSummary {
             retries_scheduled = self.retries,
             jobs_per_hour = jobs_per_hour,
             success_rate = success_rate,
+            worker_id = %self.worker_id,
             "llm worker summary"
         );
 
@@ -1368,7 +1371,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|raw| raw.parse::<i64>().ok())
         .filter(|secs| *secs > 0)
         .unwrap_or(DEFAULT_SUMMARY_INTERVAL_SECS);
-    let mut summary = WorkerSummary::new(chrono::Duration::seconds(summary_interval_secs.max(60)));
+    let mut summary = WorkerSummary::new(
+        &args.worker_id,
+        chrono::Duration::seconds(summary_interval_secs.max(60)),
+    );
 
     // Health check LLM endpoint before entering the work loop to fail fast.
     if llm_config.enabled {
