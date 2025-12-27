@@ -29,7 +29,15 @@ enum CompareMode {
     Shadow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobResultKind {
+    Success,
+    PermanentFailure,
+    RetryScheduled,
+}
+
 const MAX_RETRY_COUNT: u32 = 100;
+const DEFAULT_SUMMARY_INTERVAL_SECS: i64 = 300;
 
 fn build_http_client(timeout_secs: u64) -> Result<Client, reqwest::Error> {
     Client::builder()
@@ -1040,7 +1048,7 @@ async fn handle_llm_job(
 fn apply_outcome(
     mut job: ExtractionJob,
     outcome: Result<JobOutcome, JobError>,
-) -> (ExtractionJob, QueueStatus) {
+) -> (ExtractionJob, QueueStatus, JobResultKind) {
     match outcome {
         Ok(outcome) => {
             let finished_at = Utc::now();
@@ -1054,6 +1062,7 @@ fn apply_outcome(
             job.updated_at = finished_at;
             job.requires_manual_review = outcome.requires_manual_review;
             job.locked_by = None;
+            (job, QueueStatus::Completed, JobResultKind::Success)
         }
         Err(JobError::Permanent { message }) => {
             let finished_at = Utc::now();
@@ -1066,6 +1075,7 @@ fn apply_outcome(
             job.updated_at = finished_at;
             job.requires_manual_review = true;
             job.locked_by = None;
+            (job, QueueStatus::Completed, JobResultKind::PermanentFailure)
         }
         Err(JobError::Retryable {
             message,
@@ -1090,6 +1100,7 @@ fn apply_outcome(
                 job.updated_at = finished_at;
                 job.processing_started_at = None;
                 job.locked_by = None;
+                (job, QueueStatus::Completed, JobResultKind::PermanentFailure)
             } else {
                 job.status = QueueStatus::Pending;
                 job.retry_count = next_retry_count;
@@ -1106,12 +1117,77 @@ fn apply_outcome(
                 job.requires_manual_review = false;
                 job.processing_started_at = None;
                 job.locked_by = None;
+                (job, QueueStatus::Pending, JobResultKind::RetryScheduled)
             }
         }
     }
+}
 
-    let status = job.status.clone();
-    (job, status)
+struct WorkerSummary {
+    started_at: chrono::DateTime<Utc>,
+    last_logged_at: chrono::DateTime<Utc>,
+    interval: chrono::Duration,
+    total: u64,
+    successes: u64,
+    permanent_failures: u64,
+    retries: u64,
+}
+
+impl WorkerSummary {
+    fn new(interval: chrono::Duration) -> Self {
+        let now = Utc::now();
+        Self {
+            started_at: now,
+            last_logged_at: now,
+            interval,
+            total: 0,
+            successes: 0,
+            permanent_failures: 0,
+            retries: 0,
+        }
+    }
+
+    fn record(&mut self, result: JobResultKind) {
+        self.total = self.total.saturating_add(1);
+        match result {
+            JobResultKind::Success => self.successes = self.successes.saturating_add(1),
+            JobResultKind::PermanentFailure => {
+                self.permanent_failures = self.permanent_failures.saturating_add(1)
+            }
+            JobResultKind::RetryScheduled => self.retries = self.retries.saturating_add(1),
+        }
+    }
+
+    fn maybe_log(&mut self) {
+        let now = Utc::now();
+        if now - self.last_logged_at < self.interval {
+            return;
+        }
+        self.log(now);
+    }
+
+    fn log(&mut self, now: chrono::DateTime<Utc>) {
+        let elapsed = now - self.started_at;
+        let elapsed_secs = elapsed.num_seconds().max(1);
+        let jobs_per_hour = (self.total as f64) / (elapsed_secs as f64 / 3600.0);
+        let success_rate = self.successes as f64 / (self.total.max(1) as f64);
+
+        info!(
+            jobs_total = self.total,
+            successes = self.successes,
+            permanent_failures = self.permanent_failures,
+            retries_scheduled = self.retries,
+            jobs_per_hour = jobs_per_hour,
+            success_rate = success_rate,
+            "llm worker summary"
+        );
+
+        self.last_logged_at = now;
+    }
+
+    fn log_final(&mut self) {
+        self.log(Utc::now());
+    }
 }
 
 async fn process_locked_job(
@@ -1121,7 +1197,7 @@ async fn process_locked_job(
     llm_config: &LlmRuntimeConfig,
     client: &Client,
     shadow_config: &ShadowCompareRuntime,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<JobResultKind, Box<dyn std::error::Error>> {
     info!(
         worker_id = %worker_id,
         message_id = %locked.message_id,
@@ -1139,14 +1215,14 @@ async fn process_locked_job(
                 job_id = locked.id,
                 "missing source_text in anken_emails; skipping job"
             );
-            let (processed, _) = apply_outcome(
+            let (processed, _, result) = apply_outcome(
                 locked.clone(),
                 Err(JobError::Permanent {
                     message: "missing source_text in anken_emails".into(),
                 }),
             );
             upsert_extraction_job(pool, &processed).await?;
-            return Ok(());
+            return Ok(result);
         }
         Err(err) => {
             warn!(
@@ -1156,7 +1232,7 @@ async fn process_locked_job(
                 error = %err,
                 "failed to fetch email body"
             );
-            let (processed, _) = apply_outcome(
+            let (processed, _, result) = apply_outcome(
                 locked.clone(),
                 Err(JobError::Retryable {
                     message: format!("failed to fetch email body: {err}"),
@@ -1164,7 +1240,7 @@ async fn process_locked_job(
                 }),
             );
             upsert_extraction_job(pool, &processed).await?;
-            return Ok(());
+            return Ok(result);
         }
     };
     if body_text.trim().is_empty() {
@@ -1174,14 +1250,14 @@ async fn process_locked_job(
             job_id = locked.id,
             "empty email body text; forcing manual review"
         );
-        let (processed, _) = apply_outcome(
+        let (processed, _, result) = apply_outcome(
             locked.clone(),
             Err(JobError::Permanent {
                 message: "missing_body_text".into(),
             }),
         );
         upsert_extraction_job(pool, &processed).await?;
-        return Ok(());
+        return Ok(result);
     }
 
     let outcome = handle_llm_job(&locked, &body_text, llm_config, client, worker_id).await;
@@ -1206,7 +1282,7 @@ async fn process_locked_job(
         );
     }
 
-    let (processed, status) = apply_outcome(locked.clone(), outcome);
+    let (processed, status, result) = apply_outcome(locked.clone(), outcome);
     let rows = upsert_extraction_job(pool, &processed).await?;
     let worker_label = worker_id.to_string();
     metrics::counter!(
@@ -1250,7 +1326,7 @@ async fn process_locked_job(
         "finished locked job processing"
     );
 
-    Ok(())
+    Ok(result)
 }
 
 async fn shutdown_signal() {
@@ -1287,6 +1363,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let shadow_runtime = ShadowCompareRuntime::new(shadow_config);
     let llm_client = build_http_client(llm_config.timeout_secs)
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let summary_interval_secs = std::env::var("SR_LOG_SUMMARY_INTERVAL_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(DEFAULT_SUMMARY_INTERVAL_SECS);
+    let mut summary = WorkerSummary::new(chrono::Duration::seconds(summary_interval_secs.max(60)));
 
     // Health check LLM endpoint before entering the work loop to fail fast.
     if llm_config.enabled {
@@ -1394,7 +1476,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .increment(1);
         metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone()).set(1.0);
 
-        process_locked_job(
+        let result = process_locked_job(
             &pool,
             &args.worker_id,
             job,
@@ -1404,6 +1486,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
         processed_jobs += 1;
+        summary.record(result);
+        summary.maybe_log();
         metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone()).set(0.0);
 
         if args.min_job_gap_ms > 0 {
@@ -1418,6 +1502,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    summary.log_final();
     shadow_runtime.wait_for_all().await;
 
     Ok(())
