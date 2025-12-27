@@ -1,4 +1,6 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
+import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
@@ -12,6 +14,7 @@ const navItems = [
 export function RootLayout() {
   const { t } = useI18n();
   const location = useLocation();
+  const { t } = useI18n();
 
   const isActive = (href: string) =>
     location.pathname === href || location.pathname.startsWith(`${href}/`);

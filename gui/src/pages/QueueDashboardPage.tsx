@@ -4,6 +4,7 @@ import { useQueueDashboard } from "@/api";
 import { LoadingState } from "@/components/LoadingState";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { useI18n } from "@/lib/i18n";
+import { Button } from "@/components/ui/button";
 
 export function QueueDashboardPage() {
   const { data, isLoading, error } = useQueueDashboard();
@@ -19,7 +20,12 @@ export function QueueDashboardPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">{t("queue.dashboard.title")}</h1>
+      <div className="space-y-1">
+        <h1 className="text-2xl font-bold">{t("queue.dashboard.title")}</h1>
+        <p className="text-sm text-muted-foreground">
+          {t("queue.dashboard.subtitle")}
+        </p>
+      </div>
 
       {/* Status Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -106,19 +112,36 @@ export function QueueDashboardPage() {
       </div>
 
       {/* Quick Links */}
-      <div className="flex gap-4">
-        <Link
-          to="/jobs"
-          className="text-sm text-primary hover:underline"
-        >
-          {t("queue.dashboard.viewAllJobs")}
-        </Link>
-        <Link
-          to="/jobs?status=pending"
-          className="text-sm text-primary hover:underline"
-        >
-          {t("queue.dashboard.viewPendingJobs")}
-        </Link>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-muted-foreground">
+            {t("queue.dashboard.quickLinks.main")}
+          </span>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild size="sm">
+              <Link to="/projects">{t("queue.dashboard.quickLinks.projects")}</Link>
+            </Button>
+            <Button asChild size="sm">
+              <Link to="/talents">{t("queue.dashboard.quickLinks.talents")}</Link>
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-muted-foreground">
+            {t("queue.dashboard.quickLinks.admin")}
+          </span>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="ghost" size="sm">
+              <Link to="/jobs">{t("queue.dashboard.viewAllJobs")}</Link>
+            </Button>
+            <Button asChild variant="ghost" size="sm">
+              <Link to="/jobs?status=pending">
+                {t("queue.dashboard.viewPendingJobs")}
+              </Link>
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

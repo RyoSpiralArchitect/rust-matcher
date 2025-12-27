@@ -53,10 +53,10 @@ export const router = createBrowserRouter([
     path: "/",
     element: <RootLayout />,
     children: [
-      // / → /queue にリダイレクト
+      // / → /projects にリダイレクト
       {
         index: true,
-        element: <Navigate to="/queue" replace />,
+        element: <Navigate to="/projects" replace />,
       },
       // Queue Dashboard
       {
@@ -95,6 +95,11 @@ export const router = createBrowserRouter([
       {
         path: "projects/:projectId",
         element: withSuspense(<ProjectDetailPage />),
+      },
+      // 候補一覧（プロジェクト単位）
+      {
+        path: "projects/:projectId/candidates",
+        element: withSuspense(<CandidatesPage />),
       },
     ],
   },
