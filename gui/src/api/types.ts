@@ -140,6 +140,14 @@ export type ProjectsListResponse =
 // Project Detail
 // ============================================================
 
+export type ProjectMatchStatus =
+  | "pending"
+  | "proposed"
+  | "rejected"
+  | "interview_scheduled"
+  | "accepted"
+  | "no_response";
+
 export interface ProjectMatch {
   interactionId: number;
   talentId: number;
@@ -149,6 +157,9 @@ export interface ProjectMatch {
   keySkills: string[];
   desiredRateMin: number | null;
   desiredRateMax: number | null;
+  status?: ProjectMatchStatus | FeedbackType | null;
+  lastFeedbackType?: FeedbackType | null;
+  lastFeedbackAt?: string | null;
 }
 
 export interface ProjectDetailResponse {
