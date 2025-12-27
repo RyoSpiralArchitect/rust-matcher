@@ -9,7 +9,7 @@ use sr_common::db::{
     create_pool_from_url_checked, fetch_email_body, lock_next_pending_job, run_migrations,
     upsert_extraction_job, PgPool,
 };
-use sr_common::logging::install_tracing_panic_hook;
+use sr_common::logging::{init_tracing_subscriber, install_tracing_panic_hook};
 use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
     RecommendedMethod,
@@ -367,6 +367,10 @@ struct Cli {
     /// Idle poll interval in milliseconds when running as a long-lived service
     #[arg(long, default_value_t = 5000)]
     idle_poll_interval_ms: u64,
+
+    /// Minimum delay in milliseconds between finishing a job and locking the next one
+    #[arg(long, env = "LLM_JOB_THROTTLE_MS", default_value_t = 100)]
+    min_job_gap_ms: u64,
 }
 
 pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
@@ -1273,7 +1277,7 @@ async fn shutdown_signal() {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
-    tracing_subscriber::fmt::init();
+    init_tracing_subscriber(env!("CARGO_PKG_NAME"));
     install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
     init_metrics("METRICS_PORT", 9898);
 
@@ -1401,6 +1405,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
         processed_jobs += 1;
         metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone()).set(0.0);
+
+        if args.min_job_gap_ms > 0 {
+            let throttle = Duration::from_millis(args.min_job_gap_ms);
+            tokio::select! {
+                _ = &mut shutdown => {
+                    info!("shutdown signal received during throttle wait; stopping work loop");
+                    break 'work;
+                }
+                _ = sleep(throttle) => {}
+            }
+        }
     }
 
     shadow_runtime.wait_for_all().await;
