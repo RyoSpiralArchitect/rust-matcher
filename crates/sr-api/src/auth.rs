@@ -83,6 +83,10 @@ pub struct AuthUser {
     pub role: UserRole,
 }
 
+const CSRF_COOKIE_NAME: &str = "__Host-sr-csrf";
+const CSRF_HEADER_NAME: &str = "x-sr-csrf";
+const TOKEN_COOKIE_NAME: &str = "__Host-sr-token";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserRole {
     Admin,
@@ -125,6 +129,16 @@ where
 }
 
 fn authorize_api_key(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, ApiError> {
+    if let Some(query) = parts.uri.query() {
+        let query_lower = query.to_ascii_lowercase();
+        if query_lower.contains("api_key=") || query_lower.contains("apikey=") {
+            warn!(uri = %parts.uri, "api key provided in query rejected");
+            return Err(ApiError::Unauthorized(
+                "API key must be provided via X-API-Key header".into(),
+            ));
+        }
+    }
+
     let expected = config
         .api_key
         .as_deref()
@@ -215,7 +229,8 @@ fn authorize_jwt(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, ApiErro
 
 fn extract_jwt_token(parts: &Parts, config: &AuthConfig) -> Result<String, ApiError> {
     if config.use_cookie_auth {
-        if let Some(token) = extract_cookie_token(parts) {
+        if let Some(token) = extract_cookie_value(parts, TOKEN_COOKIE_NAME) {
+            validate_csrf_token(parts)?;
             return Ok(token);
         }
     }
@@ -234,17 +249,34 @@ fn extract_jwt_token(parts: &Parts, config: &AuthConfig) -> Result<String, ApiEr
         .ok_or_else(|| ApiError::Unauthorized("expected Bearer token".into()))
 }
 
-fn extract_cookie_token(parts: &Parts) -> Option<String> {
+fn extract_cookie_value(parts: &Parts, name: &str) -> Option<String> {
     let cookie_header = parts.headers.get(COOKIE)?.to_str().ok()?;
     for cookie in cookie_header.split(';') {
         let trimmed = cookie.trim();
-        if let Some(value) = trimmed.strip_prefix("__Host-sr-token=") {
+        if let Some(value) = trimmed.strip_prefix(&format!("{name}=")) {
             if !value.is_empty() {
                 return Some(value.to_string());
             }
         }
     }
     None
+}
+
+fn validate_csrf_token(parts: &Parts) -> Result<(), ApiError> {
+    let header_value = parts
+        .headers
+        .get(CSRF_HEADER_NAME)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ApiError::Unauthorized("missing CSRF token".into()))?;
+
+    let cookie_value = extract_cookie_value(parts, CSRF_COOKIE_NAME)
+        .ok_or_else(|| ApiError::Unauthorized("missing CSRF token".into()))?;
+
+    if !bool::from(header_value.as_bytes().ct_eq(cookie_value.as_bytes())) {
+        return Err(ApiError::Unauthorized("invalid CSRF token".into()));
+    }
+
+    Ok(())
 }
 
 impl AuthUser {
@@ -279,6 +311,39 @@ mod tests {
     fn jwt_can_be_extracted_from_cookie_when_enabled() {
         let secret = "cookie-secret";
         let token = signed_token("cookie-user", secret);
+        let csrf = "csrf-token";
+
+        let parts = Request::builder()
+            .uri("/")
+            .header(
+                COOKIE,
+                HeaderValue::from_str(&format!("__Host-sr-token={token}; __Host-sr-csrf={csrf}"))
+                    .unwrap(),
+            )
+            .header(CSRF_HEADER_NAME, HeaderValue::from_static("csrf-token"))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let config = AuthConfig {
+            mode: AuthMode::Jwt,
+            api_key: None,
+            jwt_secret: Some(secret.into()),
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs256,
+            use_cookie_auth: true,
+        };
+
+        let user = authorize_jwt(&parts, &config).expect("cookie token should be accepted");
+        assert_eq!(user.subject, "cookie-user");
+        assert!(user.is_admin());
+    }
+
+    #[test]
+    fn cookie_auth_rejected_without_csrf_header() {
+        let secret = "cookie-secret";
+        let token = signed_token("cookie-user", secret);
 
         let parts = Request::builder()
             .uri("/")
@@ -300,9 +365,8 @@ mod tests {
             use_cookie_auth: true,
         };
 
-        let user = authorize_jwt(&parts, &config).expect("cookie token should be accepted");
-        assert_eq!(user.subject, "cookie-user");
-        assert!(user.is_admin());
+        let err = authorize_jwt(&parts, &config).unwrap_err();
+        assert!(matches!(err, ApiError::Unauthorized(_)));
     }
 
     #[test]
@@ -362,5 +426,27 @@ mod tests {
         let user = authorize_jwt(&parts, &config).expect("bearer token should be accepted");
         assert_eq!(user.subject, "header-user");
         assert!(user.is_admin());
+    }
+
+    #[test]
+    fn api_key_in_query_is_rejected() {
+        let parts = Request::builder()
+            .uri("/?api_key=secret")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let config = AuthConfig {
+            mode: AuthMode::ApiKey,
+            api_key: Some("secret".into()),
+            jwt_secret: None,
+            jwt_public_key: None,
+            jwt_algorithm: JwtAlgorithm::Hs256,
+            use_cookie_auth: false,
+        };
+
+        let err = authorize_api_key(&parts, &config).unwrap_err();
+        assert!(matches!(err, ApiError::Unauthorized(_)));
     }
 }

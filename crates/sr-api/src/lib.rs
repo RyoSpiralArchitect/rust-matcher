@@ -12,6 +12,7 @@ use axum::{
     http::header::{HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
     http::Method,
     http::Request,
+    http::StatusCode,
     middleware,
     middleware::Next,
     response::Response,
@@ -34,7 +35,7 @@ use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use tracing::info;
+use tracing::{error, info};
 
 pub mod auth;
 pub mod error;
@@ -385,6 +386,27 @@ async fn record_http_metrics(req: Request<Body>, next: Next) -> Result<Response,
     Ok(response)
 }
 
+async fn log_body_limit_rejections(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
+    let path = req.uri().path().to_string();
+    let client_ip = request_ip(&req)
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "".to_string());
+
+    let response = next.run(req).await;
+
+    if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        error!(
+            status = %response.status(),
+            request_id = error::current_request_id().as_deref().unwrap_or(""),
+            client_ip = client_ip.as_str(),
+            path = %path,
+            "request_body_too_large"
+        );
+    }
+
+    Ok(response)
+}
+
 pub fn create_router(state: SharedState) -> Router {
     let cors = cors_layer(&state.config.cors_origins);
 
@@ -448,6 +470,7 @@ pub fn create_router(state: SharedState) -> Router {
         .layer(middleware::from_fn(attach_request_id_context))
         .layer(middleware::from_fn(record_http_metrics))
         .layer(DefaultBodyLimit::max(256 * 1024))
+        .layer(middleware::from_fn(log_body_limit_rejections))
         .layer(trace)
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(
@@ -607,10 +630,10 @@ pub async fn run() -> Result<(), ApiError> {
     let match_config = MatchConfig::from_env_checked().map_err(ApiError::BadRequest)?;
     let pool = create_pool_from_url_checked(&config.database_url)
         .await
-        .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
+        .map_err(|err| ApiError::database_error(format!("failed to create pool: {err}")))?;
     run_migrations(&pool)
         .await
-        .map_err(|err| ApiError::Database(format!("failed to run migrations: {err}")))?;
+        .map_err(|err| ApiError::database_error(format!("failed to run migrations: {err}")))?;
 
     let rate_limits = default_rate_limits();
 

@@ -71,8 +71,8 @@ pub fn current_request_id() -> Option<String> {
 
 #[derive(Debug, Error)]
 pub enum ApiError {
-    #[error("database error: {0}")]
-    Database(String),
+    #[error("database error")]
+    Database { internal: Option<String> },
     #[error("not found: {0}")]
     NotFound(String),
     #[error("unauthorized: {0}")]
@@ -104,13 +104,27 @@ impl IntoResponse for ApiError {
         let code = self.code();
         let request_id = current_request_id();
 
-        error!(
-            code,
-            status = %status,
-            request_id = request_id.as_deref().unwrap_or(""),
-            error = %self,
-            "api_error"
-        );
+        match self.internal_message() {
+            Some(details) => {
+                error!(
+                    code,
+                    status = %status,
+                    request_id = request_id.as_deref().unwrap_or(""),
+                    error = %self,
+                    details,
+                    "api_error"
+                );
+            }
+            None => {
+                error!(
+                    code,
+                    status = %status,
+                    request_id = request_id.as_deref().unwrap_or(""),
+                    error = %self,
+                    "api_error"
+                );
+            }
+        }
 
         let body = Json(ErrorResponse {
             code,
@@ -132,7 +146,7 @@ impl ApiError {
             ApiError::Conflict(_) => "conflict",
             ApiError::TooManyRequests(_) => "too_many_requests",
             ApiError::ServiceUnavailable(_) => "service_unavailable",
-            ApiError::Database(_) => "database_error",
+            ApiError::Database { .. } => "database_error",
             ApiError::Internal(_) => "internal_error",
         }
     }
@@ -146,7 +160,9 @@ impl ApiError {
             ApiError::Conflict(msg) => Cow::Owned(sanitize_message(msg)),
             ApiError::TooManyRequests(_) => Cow::Borrowed("too many requests"),
             ApiError::ServiceUnavailable(_) => Cow::Borrowed("service unavailable"),
-            ApiError::Database(_) | ApiError::Internal(_) => Cow::Borrowed("internal server error"),
+            ApiError::Database { .. } | ApiError::Internal(_) => {
+                Cow::Borrowed("internal server error")
+            }
         }
     }
 
@@ -159,26 +175,40 @@ impl ApiError {
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-            ApiError::Database(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Database { .. } | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    pub fn database_error(err: impl ToString) -> Self {
+        ApiError::Database {
+            internal: Some(err.to_string()),
+        }
+    }
+
+    fn internal_message(&self) -> Option<&str> {
+        match self {
+            ApiError::Database { internal } => internal.as_deref(),
+            ApiError::Internal(msg) => Some(msg.as_str()),
+            _ => None,
         }
     }
 }
 
 impl From<QueueDashboardError> for ApiError {
     fn from(value: QueueDashboardError) -> Self {
-        ApiError::Database(value.to_string())
+        ApiError::database_error(value)
     }
 }
 
 impl From<MatchFetchError> for ApiError {
     fn from(value: MatchFetchError) -> Self {
-        ApiError::Database(value.to_string())
+        ApiError::database_error(value)
     }
 }
 
 impl From<FeedbackHistoryError> for ApiError {
     fn from(value: FeedbackHistoryError) -> Self {
-        ApiError::Database(value.to_string())
+        ApiError::database_error(value)
     }
 }
 
@@ -191,7 +221,7 @@ impl From<FeedbackStorageError> for ApiError {
             FeedbackStorageError::MissingActor => {
                 ApiError::BadRequest("feedback actor is required".into())
             }
-            other => ApiError::Database(other.to_string()),
+            other => ApiError::database_error(other),
         }
     }
 }
@@ -202,7 +232,7 @@ impl From<ConversionStorageError> for ApiError {
             ConversionStorageError::MissingActor => {
                 ApiError::BadRequest("conversion actor is required".into())
             }
-            other => ApiError::Database(other.to_string()),
+            other => ApiError::database_error(other),
         }
     }
 }
@@ -213,7 +243,7 @@ impl From<InteractionEventStorageError> for ApiError {
             InteractionEventStorageError::MissingActor => {
                 ApiError::BadRequest("interaction event actor is required".into())
             }
-            other => ApiError::Database(other.to_string()),
+            other => ApiError::database_error(other),
         }
     }
 }
@@ -223,7 +253,7 @@ impl From<QueueStorageError> for ApiError {
         match value {
             QueueStorageError::NotFound(msg) => ApiError::NotFound(msg),
             QueueStorageError::Conflict(msg) => ApiError::Conflict(msg),
-            other => ApiError::Database(other.to_string()),
+            other => ApiError::database_error(other),
         }
     }
 }
