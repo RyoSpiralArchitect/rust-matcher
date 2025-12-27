@@ -32,13 +32,13 @@ pub fn tokenize_project(project: &Project) -> Vec<WeightedToken> {
 
     for skill in &project.required_skills_keywords {
         tokens.push(WeightedToken::new(
-            format!("skill:{}", skill.to_lowercase()),
+            format!("skill:{}", normalize_skill_token(skill)),
             2.0,
         ));
     }
     for skill in &project.preferred_skills_keywords {
         tokens.push(WeightedToken::new(
-            format!("skill:{}", skill.to_lowercase()),
+            format!("skill:{}", normalize_skill_token(skill)),
             1.0,
         ));
     }
@@ -90,7 +90,7 @@ pub fn tokenize_talent(talent: &Talent) -> Vec<WeightedToken> {
 
     for skill in &talent.possessed_skills_keywords {
         tokens.push(WeightedToken::new(
-            format!("skill:{}", skill.to_lowercase()),
+            format!("skill:{}", normalize_skill_token(skill)),
             1.0,
         ));
     }
@@ -155,5 +155,28 @@ fn tanka_bucket(tanka: u32) -> &'static str {
         500_000..=699_999 => "50-70",
         700_000..=999_999 => "70-100",
         _ => "100+",
+    }
+}
+
+fn normalize_skill_token(token: &str) -> String {
+    token.trim().to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_tokens_are_lowercased_and_trimmed() {
+        let project = Project {
+            required_skills_keywords: vec![" Rust ".into()],
+            preferred_skills_keywords: vec!["GoLang".into()],
+            ..Default::default()
+        };
+
+        let tokens = tokenize_project(&project);
+        let values: Vec<String> = tokens.into_iter().map(|t| t.token).collect();
+        assert!(values.contains(&"skill:rust".to_string()));
+        assert!(values.contains(&"skill:golang".to_string()));
     }
 }

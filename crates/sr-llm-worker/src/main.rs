@@ -796,6 +796,7 @@ async fn handle_llm_job(
         .or_else(|| (Utc::now() - started).num_milliseconds().try_into().ok());
 
     let mut requires_manual_review = response.requires_manual_review;
+    let mut extracted_fields = Some(response.extracted.clone());
     let mut decorations: Vec<String> = Vec::new();
 
     if !response.status.is_empty() {
@@ -814,6 +815,7 @@ async fn handle_llm_job(
             job.message_id, response.message_id
         ));
         requires_manual_review = true;
+        extracted_fields = None;
     }
 
     if !response.missing_fields.is_empty() {
@@ -845,7 +847,7 @@ async fn handle_llm_job(
 
     Ok(JobOutcome {
         final_method: FinalMethod::LlmCompleted,
-        partial_fields: Some(response.extracted.clone()),
+        partial_fields: extracted_fields,
         decision_reason,
         llm_latency_ms: latency,
         requires_manual_review,
@@ -982,6 +984,22 @@ async fn process_locked_job(
             return Ok(());
         }
     };
+    if body_text.trim().is_empty() {
+        warn!(
+            worker_id = %worker_id,
+            message_id = %locked.message_id,
+            job_id = locked.id,
+            "empty email body text; forcing manual review"
+        );
+        let (processed, _) = apply_outcome(
+            locked.clone(),
+            Err(JobError::Permanent {
+                message: "missing_body_text".into(),
+            }),
+        );
+        upsert_extraction_job(pool, &processed).await?;
+        return Ok(());
+    }
 
     let outcome = handle_llm_job(&locked, &body_text, llm_config, worker_id).await;
     if let Err(err) = &outcome {
