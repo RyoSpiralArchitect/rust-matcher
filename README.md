@@ -60,6 +60,7 @@ Phase 2 完了 ─────────────────────�
   - **interaction_logs の柔軟化**: UNIQUE制約を `(talent_id, project_id, run_date)` から `(match_run_id, talent_id, project_id)` に変更。同日に複数回マッチングを実行しても全て記録され、学習データや監査ログが欠落しない。
   - **run_date Generated Column**: `created_at` から JST 日付を自動算出する Generated Column を導入。全バイナリで一貫した日付計算が保証される。
   - **run_id 自動生成**: プロセス起動時に ULID を自動生成する `sr_common::run_id` モジュールを追加。`run_id::get()` を呼ぶだけで、手動でUUID生成する必要がなくなった。
+  - **ログ運用ガイド**: ログ集約（ELK/Loki/CloudWatch）と Panic バックトレース制御、LLM ワーカーの業務メトリクスログを `docs/logging.md` にまとめた。
 
 #### 達成物の詳細（着地イメージ）
 
