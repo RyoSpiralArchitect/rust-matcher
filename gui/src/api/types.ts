@@ -6,6 +6,29 @@
  */
 
 // ============================================================
+// Talents
+// ============================================================
+
+export interface TalentListItem {
+  id: number;
+  name: string;
+  role: string | null;
+  location: string | null;
+  availabilityDate: string | null;
+  skills: string[];
+  score: number | null;
+  experienceHighlights: string[];
+}
+
+export interface TalentSearchResponse {
+  items: TalentListItem[];
+  limit: number;
+  offset: number;
+  total: number;
+  hasMore: boolean;
+}
+
+// ============================================================
 // Matching Candidates
 // ============================================================
 
