@@ -2,7 +2,6 @@ import { Outlet, Link, useLocation } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { useI18n } from "@/lib/i18n";
 import type { TranslationKey } from "@/lib/messages";
 
 const navItems: { href: string; labelKey: TranslationKey }[] = [
@@ -15,7 +14,7 @@ const navItems: { href: string; labelKey: TranslationKey }[] = [
 export function RootLayout() {
   const { t } = useI18n();
   const location = useLocation();
-  const { t } = useI18n();
+  const visibleNavItems = navItems;
 
   const isActive = (href: string) =>
     location.pathname === href || location.pathname.startsWith(`${href}/`);
