@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,36 +24,8 @@ export function TalentsPage() {
     [searchParams],
   );
 
-  const [formState, setFormState] = useState(() => ({
-    search: activeFilters.search ?? "",
-    skill: activeFilters.skill ?? "",
-    location: activeFilters.location ?? "",
-    availability: activeFilters.availability ?? "",
-  }));
-
-  useEffect(() => {
-    // Synchronize with URL changes while keeping the form controlled.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setFormState({
-      search: activeFilters.search ?? "",
-      skill: activeFilters.skill ?? "",
-      location: activeFilters.location ?? "",
-      availability: activeFilters.availability ?? "",
-    });
-  }, [activeFilters.search, activeFilters.skill, activeFilters.location, activeFilters.availability]);
-
   const talentsQuery = useTalents({ ...activeFilters, limit: DEFAULT_LIMIT });
   const { data, error, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = talentsQuery;
-
-  const handleSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    const next = new URLSearchParams();
-    if (formState.search.trim()) next.set("q", formState.search.trim());
-    if (formState.skill.trim()) next.set("skill", formState.skill.trim());
-    if (formState.location.trim()) next.set("location", formState.location.trim());
-    if (formState.availability.trim()) next.set("availability", formState.availability.trim());
-    setSearchParams(next, { replace: true });
-  };
 
   if (isLoading && !data) {
     return <LoadingState message={t("talents.loading")}/>;
@@ -78,59 +50,18 @@ export function TalentsPage() {
         </p>
       </div>
 
-      <Card>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <CardHeader>
-            <CardTitle className="text-base">{t("talents.filters.title")}</CardTitle>
-            <CardDescription>{t("talents.filters.description")}</CardDescription>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-muted-foreground">{t("talents.filters.search")}</span>
-              <input
-                type="text"
-                value={formState.search}
-                onChange={(e) => setFormState((prev) => ({ ...prev, search: e.target.value }))}
-                placeholder={t("talents.filters.searchPlaceholder")}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-            </label>
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-muted-foreground">{t("talents.filters.skill")}</span>
-              <input
-                type="text"
-                value={formState.skill}
-                onChange={(e) => setFormState((prev) => ({ ...prev, skill: e.target.value }))}
-                placeholder={t("talents.filters.skillPlaceholder")}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-            </label>
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-muted-foreground">{t("talents.filters.location")}</span>
-              <input
-                type="text"
-                value={formState.location}
-                onChange={(e) => setFormState((prev) => ({ ...prev, location: e.target.value }))}
-                placeholder={t("talents.filters.locationPlaceholder")}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-            </label>
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-muted-foreground">{t("talents.filters.availability")}</span>
-              <input
-                type="text"
-                value={formState.availability}
-                onChange={(e) => setFormState((prev) => ({ ...prev, availability: e.target.value }))}
-                placeholder={t("talents.filters.availabilityPlaceholder")}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-            </label>
-          </CardContent>
-          <CardFooter className="flex justify-end">
-            <Button type="submit">{t("talents.filters.apply")}</Button>
-          </CardFooter>
-        </form>
-      </Card>
+      <FiltersForm
+        key={JSON.stringify(activeFilters)}
+        activeFilters={activeFilters}
+        onApply={(values) => {
+          const next = new URLSearchParams();
+          if (values.search.trim()) next.set("q", values.search.trim());
+          if (values.skill.trim()) next.set("skill", values.skill.trim());
+          if (values.location.trim()) next.set("location", values.location.trim());
+          if (values.availability.trim()) next.set("availability", values.availability.trim());
+          setSearchParams(next, { replace: true });
+        }}
+      />
 
       <TalentsList
         talents={items}
@@ -228,5 +159,91 @@ export function TalentsList({ talents, isEmpty, hasMore, isLoadingMore, onLoadMo
         </div>
       )}
     </div>
+  );
+}
+
+interface FiltersFormProps {
+  activeFilters: {
+    search?: string;
+    skill?: string;
+    location?: string;
+    availability?: string;
+  };
+  onApply: (values: { search: string; skill: string; location: string; availability: string }) => void;
+}
+
+function FiltersForm({ activeFilters, onApply }: FiltersFormProps) {
+  const { t } = useI18n();
+  const [formState, setFormState] = useState(() => ({
+    search: activeFilters.search ?? "",
+    skill: activeFilters.skill ?? "",
+    location: activeFilters.location ?? "",
+    availability: activeFilters.availability ?? "",
+  }));
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    onApply({
+      search: formState.search,
+      skill: formState.skill,
+      location: formState.location,
+      availability: formState.availability,
+    });
+  };
+
+  return (
+    <Card>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <CardHeader>
+          <CardTitle className="text-base">{t("talents.filters.title")}</CardTitle>
+          <CardDescription>{t("talents.filters.description")}</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-muted-foreground">{t("talents.filters.search")}</span>
+            <input
+              type="text"
+              value={formState.search}
+              onChange={(e) => setFormState((prev) => ({ ...prev, search: e.target.value }))}
+              placeholder={t("talents.filters.searchPlaceholder")}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+          </label>
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-muted-foreground">{t("talents.filters.skill")}</span>
+            <input
+              type="text"
+              value={formState.skill}
+              onChange={(e) => setFormState((prev) => ({ ...prev, skill: e.target.value }))}
+              placeholder={t("talents.filters.skillPlaceholder")}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+          </label>
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-muted-foreground">{t("talents.filters.location")}</span>
+            <input
+              type="text"
+              value={formState.location}
+              onChange={(e) => setFormState((prev) => ({ ...prev, location: e.target.value }))}
+              placeholder={t("talents.filters.locationPlaceholder")}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+          </label>
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-muted-foreground">{t("talents.filters.availability")}</span>
+            <input
+              type="text"
+              value={formState.availability}
+              onChange={(e) => setFormState((prev) => ({ ...prev, availability: e.target.value }))}
+              placeholder={t("talents.filters.availabilityPlaceholder")}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+          </label>
+        </CardContent>
+        <CardFooter className="flex justify-end">
+          <Button type="submit">{t("talents.filters.apply")}</Button>
+        </CardFooter>
+      </form>
+    </Card>
   );
 }

@@ -5,19 +5,15 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
 const navItems = [
-  { href: "/queue", labelKey: "nav.queue" },
-  { href: "/jobs", labelKey: "nav.jobs" },
-  { href: "/projects", labelKey: "nav.projects" },
-  { href: "/talents", labelKey: "nav.talents" },
+  { href: "/projects", labelKey: "nav.projects", isAdmin: false },
+  { href: "/queue", labelKey: "nav.queueAdmin", isAdmin: true },
+  { href: "/jobs", labelKey: "nav.jobsAdmin", isAdmin: true },
 ] as const;
 
 export function RootLayout() {
   const { t } = useI18n();
   const location = useLocation();
   const { t } = useI18n();
-
-  const isActive = (href: string) =>
-    location.pathname === href || location.pathname.startsWith(`${href}/`);
 
   return (
     <div className="min-h-screen bg-background">
@@ -33,11 +29,22 @@ export function RootLayout() {
                 key={item.href}
                 to={item.href}
                 className={cn(
-                  "text-sm font-medium transition-colors hover:text-primary",
-                  isActive(item.href) ? "text-primary" : "text-muted-foreground",
+                  "inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm font-medium transition-colors hover:text-primary",
+                  location.pathname === item.href ||
+                    location.pathname.startsWith(item.href + "/")
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground"
                 )}
               >
-                {t(item.labelKey)}
+                <span>{t(item.labelKey)}</span>
+                {item.isAdmin ? (
+                  <Badge
+                    variant="secondary"
+                    className="px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wide"
+                  >
+                    {t("nav.adminBadge")}
+                  </Badge>
+                ) : null}
               </Link>
             ))}
           </nav>

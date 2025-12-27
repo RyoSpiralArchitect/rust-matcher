@@ -87,11 +87,6 @@ export const router = createBrowserRouter([
         path: "projects",
         element: withSuspense(<ProjectsIndexPage />),
       },
-      // 候補一覧（プロジェクト単位）
-      {
-        path: "projects/:projectId/candidates",
-        element: withSuspense(<CandidatesPage />),
-      },
       {
         path: "projects/:projectId",
         element: withSuspense(<ProjectDetailPage />),
