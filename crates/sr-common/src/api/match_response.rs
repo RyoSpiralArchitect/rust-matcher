@@ -210,16 +210,38 @@ impl Default for MatchConfig {
 impl MatchConfig {
     /// 環境変数から設定を読み込み
     pub fn from_env() -> Self {
-        Self {
-            auto_match_threshold: std::env::var("AUTO_MATCH_THRESHOLD")
-                .ok()
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.7),
-            manual_review_margin: std::env::var("MANUAL_REVIEW_MARGIN")
-                .ok()
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.1),
+        Self::from_env_checked().unwrap_or_default()
+    }
+
+    pub fn from_env_checked() -> Result<Self, String> {
+        fn parse_env_f64(key: &str, default: f64) -> Result<f64, String> {
+            match std::env::var(key) {
+                Ok(raw) => raw.parse::<f64>().map_err(|_| {
+                    format!("{key} must be a number between 0.0 and 1.0 (got `{raw}`)")
+                }),
+                Err(std::env::VarError::NotPresent) => Ok(default),
+                Err(err) => Err(format!("failed to read {key}: {err}")),
+            }
         }
+
+        let auto_match_threshold = parse_env_f64("AUTO_MATCH_THRESHOLD", 0.7)?;
+        let manual_review_margin = parse_env_f64("MANUAL_REVIEW_MARGIN", 0.1)?;
+
+        if !(0.0..=1.0).contains(&auto_match_threshold) {
+            return Err(format!(
+                "AUTO_MATCH_THRESHOLD must be between 0.0 and 1.0 (got {auto_match_threshold})"
+            ));
+        }
+        if !(0.0..=1.0).contains(&manual_review_margin) {
+            return Err(format!(
+                "MANUAL_REVIEW_MARGIN must be between 0.0 and 1.0 (got {manual_review_margin})"
+            ));
+        }
+
+        Ok(Self {
+            auto_match_threshold,
+            manual_review_margin,
+        })
     }
 }
 
@@ -229,6 +251,78 @@ mod tests {
     use crate::matching::ko_unified::{
         KoDecision, MatchResult, ScoreBreakdown as CoreScoreBreakdown,
     };
+    use serial_test::serial;
+    use std::sync::Mutex;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = ENV_GUARD.lock().unwrap();
+
+        let previous: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(key, value)| {
+                let old = std::env::var(key).ok();
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+                (key.to_string(), old)
+            })
+            .collect();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        for (key, value) in previous {
+            if let Some(v) = value {
+                std::env::set_var(&key, v);
+            } else {
+                std::env::remove_var(&key);
+            }
+        }
+
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_checked_validates_numbers_and_ranges() {
+        with_env(
+            &[
+                ("AUTO_MATCH_THRESHOLD", Some("not-a-number")),
+                ("MANUAL_REVIEW_MARGIN", Some("0.2")),
+            ],
+            || {
+                let err = MatchConfig::from_env_checked().unwrap_err();
+                assert!(err.contains("AUTO_MATCH_THRESHOLD"));
+            },
+        );
+
+        with_env(
+            &[
+                ("AUTO_MATCH_THRESHOLD", Some("0.8")),
+                ("MANUAL_REVIEW_MARGIN", Some("2.5")),
+            ],
+            || {
+                let err = MatchConfig::from_env_checked().unwrap_err();
+                assert!(err.contains("MANUAL_REVIEW_MARGIN"));
+            },
+        );
+
+        with_env(
+            &[
+                ("AUTO_MATCH_THRESHOLD", Some("0.6")),
+                ("MANUAL_REVIEW_MARGIN", Some("0.05")),
+            ],
+            || {
+                let cfg = MatchConfig::from_env_checked().expect("config should parse");
+                assert_eq!(cfg.auto_match_threshold, 0.6);
+                assert_eq!(cfg.manual_review_margin, 0.05);
+            },
+        );
+    }
 
     #[test]
     fn builds_response_from_match_result() {
