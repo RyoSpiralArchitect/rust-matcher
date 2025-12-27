@@ -1,7 +1,6 @@
 use chrono::Utc;
 use clap::Parser;
 use dotenvy::dotenv;
-use rand::Rng;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -16,6 +15,8 @@ use sr_common::queue::{
     RecommendedMethod,
 };
 use sr_metrics::init_metrics;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::Semaphore;
@@ -157,6 +158,23 @@ impl LlmRuntimeConfig {
                 .unwrap_or(default)
         }
 
+        fn parse_timeout_secs(key: &str, default: u64) -> u64 {
+            match std::env::var(key) {
+                Ok(raw) => match raw.parse::<u64>() {
+                    Ok(value) if value > 0 => value,
+                    Ok(_) => {
+                        warn!(
+                            key,
+                            default, "timeout must be greater than 0 seconds; using default"
+                        );
+                        default
+                    }
+                    Err(_) => default,
+                },
+                Err(_) => default,
+            }
+        }
+
         fn parse_sample_percent() -> u8 {
             std::env::var("LLM_SHADOW_SAMPLE_PERCENT")
                 .ok()
@@ -207,7 +225,7 @@ impl LlmRuntimeConfig {
             model: std::env::var("LLM_MODEL").unwrap_or_else(|_| default_model),
             endpoint: std::env::var("LLM_ENDPOINT").unwrap_or_else(|_| default_endpoint),
             api_key,
-            timeout_secs: parse_u64("LLM_TIMEOUT_SECONDS", 30),
+            timeout_secs: parse_timeout_secs("LLM_TIMEOUT_SECONDS", 30),
             max_retries: parse_u32("LLM_MAX_RETRIES", 3),
             retry_backoff_secs: parse_u64("LLM_RETRY_BACKOFF_SECONDS", 5),
             compare_mode: match compare_mode.as_str() {
@@ -407,12 +425,16 @@ fn shadow_config_from_env(config: &LlmRuntimeConfig) -> ShadowCompareConfig {
     }
 }
 
-fn should_sample_shadow(sample_percent: u8) -> bool {
+fn should_sample_shadow(sample_percent: u8, salt: &str) -> bool {
     if sample_percent == 0 {
         return false;
     }
 
-    rand::thread_rng().gen_ratio(u32::from(sample_percent), 100)
+    let normalized_percent = sample_percent.min(100);
+    let mut hasher = DefaultHasher::new();
+    salt.hash(&mut hasher);
+    let bucket = (hasher.finish() % 100) as u8;
+    bucket < normalized_percent
 }
 
 fn build_extractor_hints(partial_fields: &Option<serde_json::Value>) -> serde_json::Value {
@@ -619,7 +641,15 @@ async fn perform_llm_request(
 }
 
 fn mark_shadow_canary(job: &mut ExtractionJob, config: &ShadowCompareConfig) -> bool {
-    if config.mode == CompareMode::Shadow && should_sample_shadow(config.sample_percent) {
+    let sampling_key = if job.message_id.is_empty() {
+        job.subject_hash.as_str()
+    } else {
+        job.message_id.as_str()
+    };
+
+    if config.mode == CompareMode::Shadow
+        && should_sample_shadow(config.sample_percent, sampling_key)
+    {
         job.canary_target = true;
         return true;
     }
@@ -1692,6 +1722,29 @@ mod tests {
 
         assert!(!mark_shadow_canary(&mut job, &cfg));
         assert!(!job.canary_target);
+    }
+
+    #[test]
+    fn shadow_sampling_is_deterministic() {
+        assert_eq!(
+            should_sample_shadow(25, "shadow-key"),
+            should_sample_shadow(25, "shadow-key")
+        );
+
+        let sampled = (0..1000)
+            .filter(|i| should_sample_shadow(10, &format!("job-{i}")))
+            .count();
+
+        assert!(sampled >= 70 && sampled <= 130);
+    }
+
+    #[test]
+    #[serial]
+    fn llm_timeout_rejects_zero() {
+        with_env(&[("LLM_TIMEOUT_SECONDS", Some("0"))], || {
+            let cfg = LlmRuntimeConfig::from_env();
+            assert_eq!(cfg.timeout_secs, 30);
+        });
     }
 
     #[test]
