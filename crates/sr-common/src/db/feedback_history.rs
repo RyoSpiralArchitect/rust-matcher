@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use tracing::instrument;
 
 use crate::api::models::queue::FeedbackEventRow;
+use crate::db::util::TimedClientExt;
 use crate::db::{db_error, PgPool};
 
 db_error!(FeedbackHistoryError {});
@@ -46,6 +47,12 @@ pub async fn fetch_feedback_history(
         )
         .await?;
 
-    let rows = client.query(&stmt, &[&interaction_id, &limit_i64]).await?;
+    let rows = client
+        .timed_query(
+            &stmt,
+            &[&interaction_id, &limit_i64],
+            "fetch_feedback_history",
+        )
+        .await?;
     Ok(rows.into_iter().map(map_feedback_row).collect())
 }

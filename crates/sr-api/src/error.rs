@@ -13,6 +13,47 @@ tokio::task_local! {
     static REQUEST_ID: String;
 }
 
+fn sanitize_message(message: &str) -> String {
+    const MAX_LEN: usize = 240;
+
+    let mut cleaned = message
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .replace(['\n', '\r'], " ");
+
+    cleaned = cleaned
+        .split_whitespace()
+        .map(|token| {
+            if token.contains("://") {
+                "[redacted-url]".to_string()
+            } else if let Some((base, _)) = token.split_once('?') {
+                if base.is_empty() {
+                    "[redacted-query]".to_string()
+                } else {
+                    format!("{base}?[redacted]")
+                }
+            } else if token.starts_with('/') || token.contains('\\') {
+                "[redacted-path]".to_string()
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if cleaned.len() > MAX_LEN {
+        cleaned.truncate(MAX_LEN);
+        cleaned.push('…');
+    }
+
+    if cleaned.trim().is_empty() {
+        "unexpected error".to_string()
+    } else {
+        cleaned
+    }
+}
+
 pub async fn with_request_id<Fut, T>(request_id: Option<String>, fut: Fut) -> T
 where
     Fut: Future<Output = T>,
@@ -98,11 +139,11 @@ impl ApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
-            ApiError::BadRequest(msg) => Cow::Owned(msg.clone()),
+            ApiError::BadRequest(msg) => Cow::Owned(sanitize_message(msg)),
             ApiError::Unauthorized(_) => Cow::Borrowed("unauthorized"),
             ApiError::Forbidden(_) => Cow::Borrowed("forbidden"),
-            ApiError::NotFound(msg) => Cow::Owned(msg.clone()),
-            ApiError::Conflict(msg) => Cow::Owned(msg.clone()),
+            ApiError::NotFound(msg) => Cow::Owned(sanitize_message(msg)),
+            ApiError::Conflict(msg) => Cow::Owned(sanitize_message(msg)),
             ApiError::TooManyRequests(_) => Cow::Borrowed("too many requests"),
             ApiError::ServiceUnavailable(_) => Cow::Borrowed("service unavailable"),
             ApiError::Database(_) | ApiError::Internal(_) => Cow::Borrowed("internal server error"),

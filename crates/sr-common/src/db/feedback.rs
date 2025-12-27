@@ -5,6 +5,7 @@ use tracing::instrument;
 
 use crate::api::feedback_request::{FeedbackRequest, NgReasonCategory};
 use crate::api::feedback_response::{FeedbackResponse, FeedbackStatus};
+use crate::db::util::TimedClientExt;
 use crate::db::{db_error, validated_actor, PgPool};
 
 db_error!(FeedbackStorageError {
@@ -32,11 +33,11 @@ fn map_ng_reason(value: &Option<NgReasonCategory>) -> Option<&str> {
 /// non-revoked feedback_events using the priority rules from
 /// TwoTower_SalesFBアルゴ概観.md.
 async fn recompute_interaction_outcome(
-    client: &impl GenericClient,
+    client: &(impl GenericClient + TimedClientExt),
     interaction_id: i64,
 ) -> Result<(), PgError> {
     let row = client
-        .query_opt(
+        .timed_query_opt(
             "SELECT feedback_type, created_at
              FROM ses.feedback_events
              WHERE interaction_id = $1 AND is_revoked = false
@@ -55,6 +56,7 @@ async fn recompute_interaction_outcome(
                created_at DESC
              LIMIT 1",
             &[&interaction_id],
+            "recompute_interaction_outcome_fetch",
         )
         .await?;
 
@@ -64,11 +66,12 @@ async fn recompute_interaction_outcome(
     };
 
     client
-        .execute(
+        .timed_execute(
             "UPDATE ses.interaction_logs
              SET outcome = $1, feedback_at = $2
              WHERE id = $3",
             &[&outcome, &feedback_at, &interaction_id],
+            "recompute_interaction_outcome_update",
         )
         .await?;
 
@@ -77,11 +80,11 @@ async fn recompute_interaction_outcome(
 
 #[instrument(skip(client, interaction_id))]
 async fn fetch_interaction_context(
-    client: &impl GenericClient,
+    client: &(impl GenericClient + TimedClientExt),
     interaction_id: i64,
 ) -> Result<InteractionContext, FeedbackStorageError> {
     let row = client
-        .query_opt(
+        .timed_query_opt(
             "SELECT\
                 id,\
                 match_result_id,\
@@ -93,6 +96,7 @@ async fn fetch_interaction_context(
             FROM ses.interaction_logs\
             WHERE id = $1",
             &[&interaction_id],
+            "fetch_interaction_context",
         )
         .await?
         .ok_or(FeedbackStorageError::InteractionNotFound(interaction_id))?;
@@ -122,7 +126,7 @@ pub async fn insert_feedback_event(
 }
 
 pub async fn insert_feedback_event_tx(
-    client: &impl GenericClient,
+    client: &(impl GenericClient + TimedClientExt),
     actor: &str,
     request: &FeedbackRequest,
 ) -> Result<FeedbackResponse, FeedbackStorageError> {
@@ -154,7 +158,7 @@ pub async fn insert_feedback_event_tx(
         .await?;
 
     let row = client
-        .query_opt(
+        .timed_query_opt(
             &stmt,
             &[
                 &interaction.interaction_id,
@@ -170,6 +174,7 @@ pub async fn insert_feedback_event_tx(
                 &actor,
                 &request.source.as_ref(),
             ],
+            "insert_feedback_event",
         )
         .await?;
 

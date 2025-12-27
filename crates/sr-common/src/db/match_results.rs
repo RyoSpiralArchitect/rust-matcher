@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tracing::instrument;
 
+use crate::db::util::TimedClientExt;
 use crate::db::{normalize_json, PgPool};
 
 db_error!(MatchResultStorageError {});
@@ -70,7 +71,7 @@ pub async fn insert_match_result(
     let now = Utc::now();
     let created_at = result.created_at.unwrap_or(now);
     let rows = client
-        .execute(
+        .timed_execute(
             &stmt,
             &[
                 &result.talent_id,
@@ -85,6 +86,7 @@ pub async fn insert_match_result(
                 &result.match_run_id,
                 &created_at,
             ],
+            "insert_match_result",
         )
         .await?;
 
