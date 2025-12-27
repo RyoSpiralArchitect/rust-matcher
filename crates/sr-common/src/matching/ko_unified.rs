@@ -55,6 +55,20 @@ pub struct KnockoutResultV2 {
     pub decisions: Vec<(&'static str, KoDecision)>,
 }
 
+/// KO理由の優先順位（上にあるほど優先）
+const KO_REASON_PRIORITY: &[&str] = &[
+    "tanka",
+    "required_skills",
+    "contract",
+    "flow",
+    "ng_keyword",
+    "availability",
+    "age",
+    "location",
+    "language",
+    "foreigner",
+];
+
 impl KnockoutResultV2 {
     pub fn new(decisions: Vec<(&'static str, KoDecision)>) -> Self {
         let is_hard_knockout = decisions.iter().any(|(_, d)| d.is_hard_ko());
@@ -86,6 +100,35 @@ impl KnockoutResultV2 {
         } else {
             Some(soft_reasons.join("; "))
         }
+    }
+
+    /// 優先順位付きの KO 理由リストを返す。
+    /// - KO_REASON_PRIORITY に従って並べる
+    /// - HardKo を SoftKo より優先
+    pub fn prioritized_reasons(&self) -> Vec<String> {
+        fn priority_of(name: &str) -> usize {
+            KO_REASON_PRIORITY
+                .iter()
+                .position(|p| p == &name)
+                .unwrap_or_else(|| KO_REASON_PRIORITY.len())
+        }
+
+        let mut entries: Vec<_> = self
+            .decisions
+            .iter()
+            .filter_map(|(name, decision)| {
+                decision.reason().map(|reason| {
+                    (
+                        priority_of(name),
+                        decision.is_hard_ko(),
+                        format!("[{name}] {reason}"),
+                    )
+                })
+            })
+            .collect();
+
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        entries.into_iter().map(|(_, _, reason)| reason).collect()
     }
 }
 
@@ -198,5 +241,36 @@ mod tests {
         assert_eq!(result.score, 0.0); // hard KO zeroes score
         assert!(result.manual_review_required);
         assert_eq!(result.ko_decisions.len(), ko.len());
+    }
+
+    #[test]
+    fn prioritized_reasons_respect_priority_and_hardko_first() {
+        let ko = vec![
+            (
+                "language",
+                KoDecision::SoftKo {
+                    reason: "english_skill_unknown".into(),
+                },
+            ),
+            (
+                "tanka",
+                KoDecision::HardKo {
+                    reason: "tanka_ko".into(),
+                },
+            ),
+            (
+                "ng_keyword",
+                KoDecision::HardKo {
+                    reason: "ng_keyword_overlap".into(),
+                },
+            ),
+        ];
+
+        let result = KnockoutResultV2::new(ko);
+        let reasons = result.prioritized_reasons();
+
+        assert_eq!(reasons[0], "[tanka] tanka_ko");
+        assert_eq!(reasons[1], "[ng_keyword] ng_keyword_overlap");
+        assert!(reasons.last().unwrap().contains("english_skill_unknown"));
     }
 }

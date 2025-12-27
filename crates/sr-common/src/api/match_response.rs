@@ -86,7 +86,10 @@ impl MatchResponse {
             ko_reasons: result.ko_reasons.clone(),
             details: MatchDetails::default(),
             engine_version: "unknown".to_string(),
-            rule_version: "unknown".to_string(),
+            rule_version: config
+                .rule_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
             matched_at,
         };
 
@@ -196,6 +199,8 @@ pub struct MatchConfig {
     pub auto_match_threshold: f64,
     /// 手動レビュー推奨のマージン（閾値±margin で manual_review_required = true）
     pub manual_review_margin: f64,
+    /// 期待する rule_version（None の場合はフィルタしない）
+    pub rule_version: Option<String>,
 }
 
 impl Default for MatchConfig {
@@ -203,6 +208,7 @@ impl Default for MatchConfig {
         Self {
             auto_match_threshold: 0.7,
             manual_review_margin: 0.1,
+            rule_version: None,
         }
     }
 }
@@ -226,6 +232,7 @@ impl MatchConfig {
 
         let auto_match_threshold = parse_env_f64("AUTO_MATCH_THRESHOLD", 0.7)?;
         let manual_review_margin = parse_env_f64("MANUAL_REVIEW_MARGIN", 0.1)?;
+        let rule_version = std::env::var("MATCH_RULE_VERSION").ok();
 
         if !(0.0..=1.0).contains(&auto_match_threshold) {
             return Err(format!(
@@ -241,6 +248,7 @@ impl MatchConfig {
         Ok(Self {
             auto_match_threshold,
             manual_review_margin,
+            rule_version,
         })
     }
 }
@@ -315,11 +323,13 @@ mod tests {
             &[
                 ("AUTO_MATCH_THRESHOLD", Some("0.6")),
                 ("MANUAL_REVIEW_MARGIN", Some("0.05")),
+                ("MATCH_RULE_VERSION", Some("v2025-01")),
             ],
             || {
                 let cfg = MatchConfig::from_env_checked().expect("config should parse");
                 assert_eq!(cfg.auto_match_threshold, 0.6);
                 assert_eq!(cfg.manual_review_margin, 0.05);
+                assert_eq!(cfg.rule_version.as_deref(), Some("v2025-01"));
             },
         );
     }

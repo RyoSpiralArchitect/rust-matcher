@@ -76,7 +76,7 @@ pub fn calculate_total_score_with_two_tower(
         return base_score;
     }
 
-    let tt_score = two_tower_score.unwrap_or(0.5);
+    let tt_score = two_tower_config.normalize_score(two_tower_score.unwrap_or(0.5));
     let total_weight = 1.0 + two_tower_config.weight as f64;
     let combined = (base_score + two_tower_config.weight as f64 * tt_score) / total_weight;
 
@@ -1148,5 +1148,32 @@ mod tests {
         let expected = (0.3 + 2.0 * 0.5) / 3.0;
 
         assert!((score - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn two_tower_score_is_normalized_before_combining() {
+        let weights = TotalScoreWeights {
+            business: 1.0,
+            semantic: 0.0,
+            historical: 0.0,
+        };
+        let two_tower_config = TwoTowerConfig {
+            enabled: true,
+            weight: 1.0,
+            score_min: -1.0,
+            score_max: 1.0,
+            ..TwoTowerConfig::default()
+        };
+
+        let score = calculate_total_score_with_two_tower(
+            0.5,
+            0.0,
+            0.0,
+            Some(2.0), // beyond max -> should clamp to 1.0
+            &weights,
+            &two_tower_config,
+        );
+
+        assert!((score - 0.75).abs() < 1e-6);
     }
 }

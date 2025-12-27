@@ -122,7 +122,12 @@ pub async fn fetch_candidates_for_project(
 ) -> Result<Vec<MatchResponse>, MatchFetchError> {
     let client = pool.get().await?;
 
-    let mut conditions = vec!["il.project_id = $1".to_string(), "mr.deleted_at IS NULL".to_string()];
+    let rule_version = config.rule_version.as_deref();
+    let mut conditions = vec![
+        "il.project_id = $1".to_string(),
+        "mr.deleted_at IS NULL".to_string(),
+        "($3::text IS NULL OR mr.rule_version = $3)".to_string(),
+    ];
     if !include_softko {
         conditions.push("mr.is_knockout = false".to_string());
         conditions.push("mr.needs_manual_review = false".to_string());
@@ -153,7 +158,7 @@ pub async fn fetch_candidates_for_project(
             ORDER BY mr.id, il.created_at DESC\
         ) t\
         ORDER BY t.score_total DESC NULLS LAST, t.interaction_created_at DESC\
-        LIMIT $3 OFFSET $4"
+        LIMIT $4 OFFSET $5"
     );
 
     let bounded_limit = limit.min(200) as i64;
@@ -161,7 +166,13 @@ pub async fn fetch_candidates_for_project(
     let rows = client
         .timed_query_cached(
             query.as_str(),
-            &[&project_id, &talent_ids, &bounded_limit, &offset],
+            &[
+                &project_id,
+                &talent_ids,
+                &rule_version,
+                &bounded_limit,
+                &offset,
+            ],
             "fetch_candidates_for_project",
         )
         .await?;
@@ -181,6 +192,7 @@ pub async fn fetch_match_by_id(
     config: &MatchConfig,
 ) -> Result<Option<MatchResponse>, MatchFetchError> {
     let client = pool.get().await?;
+    let rule_version = config.rule_version.as_deref();
 
     let row = client
         .timed_query_opt_cached(
@@ -201,10 +213,11 @@ pub async fn fetch_match_by_id(
             il.created_at AS interaction_created_at\
         FROM ses.match_results mr\
         JOIN ses.interaction_logs il ON il.match_result_id = mr.id\
-            WHERE mr.id = $1 AND mr.deleted_at IS NULL\
+        WHERE mr.id = $1 AND mr.deleted_at IS NULL\
+            AND ($2::text IS NULL OR mr.rule_version = $2)\
             ORDER BY il.created_at DESC\
             LIMIT 1",
-            &[&match_id],
+            &[&match_id, &rule_version],
             "fetch_match_by_id",
         )
         .await?;
