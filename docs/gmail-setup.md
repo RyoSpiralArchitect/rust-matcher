@@ -84,14 +84,14 @@ export GWS_JINZAI_QUERY="label:partner has:attachment"  # 人材メールのク�
 
 ### 環境変数一覧
 
-| 変数名 | 必須 | デフォルト | 説明 |
-|--------|------|------------|------|
-| `DATABASE_URL` | Yes | - | PostgreSQL 接続文字列 |
-| `GWS_SERVICE_ACCOUNT_KEY` | Yes | - | サービスアカウント JSON のパス |
-| `GWS_IMPERSONATE_USER` | Yes | - | 委任対象のメールアドレス |
-| `GWS_POLL_INTERVAL_SECONDS` | No | `60` | ポーリング間隔（秒） |
-| `GWS_ANKEN_QUERY` | No | `label:partner -has:attachment` | 案件メール検索クエリ |
-| `GWS_JINZAI_QUERY` | No | `label:partner has:attachment` | 人材メール検索クエリ |
+| 変数名 | 必須 | 既定値 | 説明 |
+|--------|------|--------|------|
+| `DATABASE_URL` | 必須 | - | PostgreSQL 接続文字列 |
+| `GWS_SERVICE_ACCOUNT_KEY` | 必須 | - | サービスアカウント JSON のパス |
+| `GWS_IMPERSONATE_USER` | 必須 | - | 委任対象のメールアドレス |
+| `GWS_POLL_INTERVAL_SECONDS` | 任意 | `60` | ポーリング間隔（秒） |
+| `GWS_ANKEN_QUERY` | 任意 | `label:partner -has:attachment` | 案件メール検索クエリ |
+| `GWS_JINZAI_QUERY` | 任意 | `label:partner has:attachment` | 人材メール検索クエリ |
 
 ---
 
