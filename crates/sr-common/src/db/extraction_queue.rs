@@ -12,6 +12,7 @@ use crate::api::models::queue::{
     MatchResultRow, Pagination, PairDetail, ProjectSnapshot, QueueJobDetail,
     QueueJobDetailResponse, QueueJobFilter, QueueJobListItem, QueueJobListResponse, TalentSnapshot,
 };
+use crate::db::util::TimedClientExt;
 use crate::db::{db_error, normalize_json, PgPool};
 use crate::queue::{ExtractionJob, QueueStatus};
 
@@ -152,7 +153,7 @@ pub async fn upsert_extraction_job(
     let final_method = job.final_method.as_ref().map(|f| f.as_str());
 
     let rows = client
-        .execute(
+        .timed_execute(
             &stmt,
             &[
                 &job.message_id,
@@ -181,6 +182,7 @@ pub async fn upsert_extraction_job(
                 &job.reprocess_after,
                 &job.canary_target,
             ],
+            "upsert_extraction_job",
         )
         .await?;
 
@@ -209,7 +211,9 @@ pub async fn recover_stuck_jobs(
         )
         .await?;
 
-    let rows = client.execute(&stmt, &[&now, &cutoff]).await?;
+    let rows = client
+        .timed_execute(&stmt, &[&now, &cutoff], "recover_stuck_jobs")
+        .await?;
     Ok(rows)
 }
 
@@ -426,7 +430,9 @@ RETURNING *;",
         )
         .await?;
 
-    let row = client.query_opt(&stmt, &[&worker_id, &now]).await?;
+    let row = client
+        .timed_query_opt(&stmt, &[&worker_id, &now], "lock_next_pending_job")
+        .await?;
     row.map(|r| row_to_job(&r)).transpose()
 }
 
@@ -481,7 +487,9 @@ pub async fn list_jobs(
         .iter()
         .map(|v| v.as_ref() as &(dyn ToSql + Sync))
         .collect();
-    let rows = client.query(&query, &params).await?;
+    let rows = client
+        .timed_query(query.as_str(), &params, "list_jobs")
+        .await?;
 
     let mut items: Vec<QueueJobListItem> = rows.iter().map(row_to_list_item).collect();
     let has_more = (items.len() as i64) > pagination.limit;
@@ -528,7 +536,7 @@ pub async fn get_job_by_id(
 }
 
 async fn fetch_talent_snapshot(
-    client: &impl GenericClient,
+    client: &(impl GenericClient + TimedClientExt),
     message_id: &str,
     include_source: bool,
 ) -> Result<Option<TalentSnapshot>, QueueStorageError> {
@@ -538,7 +546,9 @@ async fn fetch_talent_snapshot(
         )
         .await?;
 
-    let row = client.query_opt(&stmt, &[&message_id]).await?;
+    let row = client
+        .timed_query_opt(&stmt, &[&message_id], "fetch_talent_snapshot")
+        .await?;
     let snapshot = row.map(|r| TalentSnapshot {
         id: r.get::<_, i64>("id"),
         message_id: r.get("message_id"),
@@ -558,7 +568,7 @@ async fn fetch_talent_snapshot(
 }
 
 async fn fetch_project_snapshot(
-    client: &impl GenericClient,
+    client: &(impl GenericClient + TimedClientExt),
     message_id: &str,
     include_source: bool,
 ) -> Result<Option<ProjectSnapshot>, QueueStorageError> {
@@ -568,7 +578,9 @@ async fn fetch_project_snapshot(
         )
         .await?;
 
-    let row = client.query_opt(&stmt, &[&message_id]).await?;
+    let row = client
+        .timed_query_opt(&stmt, &[&message_id], "fetch_project_snapshot")
+        .await?;
     let snapshot = row.map(|r| ProjectSnapshot {
         project_code: r.get("project_code"),
         message_id: r.get("message_id"),
@@ -614,7 +626,7 @@ fn map_match_result(row: &Row) -> MatchResultRow {
 }
 
 async fn fetch_match_results(
-    client: &impl GenericClient,
+    client: &(impl GenericClient + TimedClientExt),
     talent_id: Option<i64>,
     project_id: Option<i64>,
     days: i32,
@@ -641,7 +653,11 @@ async fn fetch_match_results(
         .await?;
 
     let rows = client
-        .query(&stmt, &[&talent_id, &project_id, &days, &limit])
+        .timed_query(
+            &stmt,
+            &[&talent_id, &project_id, &days, &limit],
+            "fetch_recent_match_results",
+        )
         .await?;
 
     let mut results = Vec::with_capacity(rows.len());
@@ -658,7 +674,7 @@ async fn fetch_match_results(
 }
 
 async fn fetch_interactions(
-    client: &impl GenericClient,
+    client: &(impl GenericClient + TimedClientExt),
     match_result_ids: &[i64],
 ) -> Result<Vec<InteractionLogRow>, QueueStorageError> {
     if match_result_ids.is_empty() {
@@ -671,7 +687,13 @@ async fn fetch_interactions(
         )
         .await?;
 
-    let rows = client.query(&stmt, &[&match_result_ids]).await?;
+    let rows = client
+        .timed_query(
+            &stmt,
+            &[&match_result_ids],
+            "fetch_interactions_by_match_result_ids",
+        )
+        .await?;
 
     let interactions = rows
         .into_iter()
@@ -722,7 +744,11 @@ async fn fetch_feedback_events(
         .await?;
 
     let rows = client
-        .query(&stmt, &[&interaction_ids, &match_result_ids, &limit_i64])
+        .timed_query(
+            &stmt,
+            &[&interaction_ids, &match_result_ids, &limit_i64],
+            "fetch_feedback_events",
+        )
         .await?;
 
     let mut events: Vec<FeedbackEventRow> = rows.into_iter().map(map_feedback_row).collect();
@@ -760,7 +786,7 @@ fn map_feedback_row(row: tokio_postgres::Row) -> FeedbackEventRow {
 
 /// GUI行動イベント（clicked_contact, copied_template 等）を取得
 async fn fetch_interaction_events(
-    client: &impl GenericClient,
+    client: &(impl GenericClient + TimedClientExt),
     interaction_ids: &[i64],
     limit: usize,
 ) -> Result<HashMap<i64, Vec<InteractionEventRow>>, QueueStorageError> {
@@ -781,7 +807,13 @@ async fn fetch_interaction_events(
         )
         .await?;
 
-    let rows = client.query(&stmt, &[&interaction_ids, &limit_i64]).await?;
+    let rows = client
+        .timed_query(
+            &stmt,
+            &[&interaction_ids, &limit_i64],
+            "fetch_interaction_events",
+        )
+        .await?;
 
     let mut by_interaction: HashMap<i64, Vec<InteractionEventRow>> = HashMap::new();
     for row in rows {
@@ -870,9 +902,10 @@ pub async fn get_job_detail_with_includes(
     if set_statement_timeout {
         let transaction = client.transaction().await?;
         transaction
-            .execute(
+            .timed_execute(
                 "SET LOCAL statement_timeout = $1::text",
                 &[&format!("{statement_timeout_ms}ms")],
+                "set_local_statement_timeout",
             )
             .await?;
 
@@ -901,7 +934,7 @@ pub async fn get_job_detail_with_includes(
     }
 }
 
-async fn get_job_detail_with_client<C: GenericClient>(
+async fn get_job_detail_with_client<C: GenericClient + TimedClientExt>(
     client: &C,
     id: i64,
     includes: JobDetailIncludes,
@@ -910,9 +943,10 @@ async fn get_job_detail_with_client<C: GenericClient>(
     safe_days: i32,
 ) -> Result<Option<QueueJobDetailResponse>, QueueStorageError> {
     let row = client
-        .query_opt(
+        .timed_query_opt(
             "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at, partial_fields, last_error, llm_latency_ms, processing_started_at, completed_at FROM ses.extraction_queue WHERE id = $1",
             &[&id],
+            "get_job_detail_with_client",
         )
         .await?;
 
@@ -1074,9 +1108,10 @@ pub async fn retry_job(pool: &PgPool, id: i64) -> Result<(), QueueStorageError> 
     let tx = client.transaction().await?;
 
     let status_row = tx
-        .query_opt(
+        .timed_query_opt(
             "SELECT status FROM ses.extraction_queue WHERE id = $1 FOR UPDATE",
             &[&id],
+            "retry_job_status",
         )
         .await?;
 
@@ -1091,9 +1126,10 @@ pub async fn retry_job(pool: &PgPool, id: i64) -> Result<(), QueueStorageError> 
         )));
     }
 
-    tx.execute(
+    tx.timed_execute(
         "UPDATE ses.extraction_queue SET status = 'pending', locked_by = NULL, processing_started_at = NULL, completed_at = NULL, next_retry_at = NULL, retry_count = 0, requires_manual_review = false, manual_review_reason = NULL, updated_at = NOW() WHERE id = $1",
         &[&id],
+        "retry_job_update",
     )
     .await?;
 

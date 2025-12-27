@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 
+use crate::db::util::TimedClientExt;
 use crate::db::{db_error, PgPool};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +23,9 @@ pub async fn fetch_email_body(
         .prepare_cached("SELECT body_text FROM ses.anken_emails WHERE message_id = $1")
         .await?;
 
-    let row = client.query_opt(&stmt, &[&message_id]).await?;
+    let row = client
+        .timed_query_opt(&stmt, &[&message_id], "fetch_email_body")
+        .await?;
     Ok(row.and_then(|r| r.get::<_, Option<String>>("body_text")))
 }
 
@@ -48,7 +51,9 @@ pub async fn fetch_pending_emails(
         )
         .await?;
 
-    let rows = client.query(&stmt, &[&limit]).await?;
+    let rows = client
+        .timed_query(&stmt, &[&limit], "fetch_pending_emails")
+        .await?;
 
     Ok(rows
         .into_iter()

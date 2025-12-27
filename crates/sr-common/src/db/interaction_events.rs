@@ -4,6 +4,7 @@ use crate::api::interaction_event::{
     InteractionEventRequest, InteractionEventResponse, InteractionEventSource,
     InteractionEventStatus, InteractionEventType,
 };
+use crate::db::util::TimedClientExt;
 use crate::db::{db_error, validated_actor, PgPool};
 
 db_error!(InteractionEventStorageError {
@@ -38,7 +39,7 @@ pub async fn insert_interaction_event(
             .await?;
 
         if let Some(row) = client
-            .query_opt(
+            .timed_query_opt(
                 &update_stmt,
                 &[
                     &request.meta,
@@ -47,6 +48,7 @@ pub async fn insert_interaction_event(
                     &request.interaction_id,
                     &actor,
                 ],
+                "update_shortlisted_event",
             )
             .await?
         {
@@ -78,7 +80,7 @@ pub async fn insert_interaction_event(
         .await?;
 
     let row = client
-        .query_one(
+        .timed_query_one(
             &insert_stmt,
             &[
                 &request.interaction_id,
@@ -88,6 +90,7 @@ pub async fn insert_interaction_event(
                 &request.idempotency_key,
                 &request.meta,
             ],
+            "insert_interaction_event",
         )
         .await?;
 

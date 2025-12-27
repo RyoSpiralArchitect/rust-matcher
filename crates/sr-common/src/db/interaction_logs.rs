@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use tracing::instrument;
 
+use crate::db::util::TimedClientExt;
 use crate::db::{db_error, PgPool};
 
 db_error!(InteractionLogStorageError {});
@@ -60,7 +61,7 @@ pub async fn insert_interaction_log(
 
     let created_at = log.created_at.unwrap_or_else(Utc::now);
     let rows = client
-        .execute(
+        .timed_execute(
             &stmt,
             &[
                 &log.match_result_id,
@@ -78,6 +79,7 @@ pub async fn insert_interaction_log(
                 &log.variant,
                 &created_at,
             ],
+            "insert_interaction_log",
         )
         .await?;
 

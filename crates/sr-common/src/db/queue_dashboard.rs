@@ -1,6 +1,7 @@
 use tracing::instrument;
 
 use crate::api::models::queue::{QueueDashboard, StatusCounts};
+use crate::db::util::TimedClientExt;
 use crate::db::PgPool;
 
 db_error!(QueueDashboardError {});
@@ -10,7 +11,7 @@ pub async fn fetch_dashboard(pool: &PgPool) -> Result<QueueDashboard, QueueDashb
     let client = pool.get().await?;
 
     let row = client
-        .query_one(
+        .timed_query_one(
             "SELECT \
                 COUNT(*) FILTER (WHERE status = 'pending') AS pending, \
                 COUNT(*) FILTER (WHERE status = 'processing') AS processing, \
@@ -24,6 +25,7 @@ pub async fn fetch_dashboard(pool: &PgPool) -> Result<QueueDashboard, QueueDashb
                 COALESCE(MAX(updated_at), timezone('utc', NOW())) AS updated_at \
             FROM ses.extraction_queue",
             &[],
+            "fetch_queue_dashboard",
         )
         .await?;
 

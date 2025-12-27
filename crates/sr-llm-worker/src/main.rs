@@ -4,10 +4,11 @@ use dotenvy::dotenv;
 use rand::Rng;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
+use sr_common::db::util::TimedClientExt;
 use sr_common::db::{
     create_pool_from_url_checked, fetch_email_body, lock_next_pending_job, run_migrations,
-    upsert_extraction_job,
+    upsert_extraction_job, PgPool,
 };
 use sr_common::logging::install_tracing_panic_hook;
 use sr_common::queue::{
@@ -289,7 +290,7 @@ struct LlmRequest {
     timeout_seconds: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 struct LlmResponse {
     #[serde(default)]
     message_id: String,
@@ -375,6 +376,7 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
                 &shadow_runtime,
                 &client,
                 worker_id,
+                None,
             ));
             rt.block_on(shadow_runtime.wait_for_all());
         }
@@ -638,6 +640,61 @@ fn shadow_endpoint_and_model(config: &LlmRuntimeConfig) -> (String, String) {
     )
 }
 
+#[derive(Debug)]
+struct ShadowComparisonRecord {
+    message_id: String,
+    primary_provider: String,
+    shadow_provider: String,
+    primary_response: Value,
+    shadow_response: Option<Value>,
+    primary_latency_ms: Option<i32>,
+    shadow_latency_ms: Option<i32>,
+    diff_summary: Value,
+}
+
+async fn persist_shadow_comparison(
+    pool: PgPool,
+    record: ShadowComparisonRecord,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let client = pool.get().await?;
+    let stmt = client
+        .prepare_cached(
+            "INSERT INTO ses.llm_comparison_results (
+                message_id,
+                primary_provider,
+                shadow_provider,
+                primary_response,
+                shadow_response,
+                primary_latency_ms,
+                shadow_latency_ms,
+                diff_summary
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8
+            )",
+        )
+        .await?;
+
+    client
+        .timed_execute(
+            &stmt,
+            &[
+                &record.message_id,
+                &record.primary_provider,
+                &record.shadow_provider,
+                &record.primary_response,
+                &record.shadow_response,
+                &record.primary_latency_ms,
+                &record.shadow_latency_ms,
+                &record.diff_summary,
+            ],
+            "insert_llm_comparison_result",
+        )
+        .await
+        .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>)?;
+
+    Ok(())
+}
+
 async fn spawn_shadow_compare(
     job: ExtractionJob,
     body_text: String,
@@ -645,6 +702,7 @@ async fn spawn_shadow_compare(
     shadow: &ShadowCompareRuntime,
     client: &Client,
     worker_id: &str,
+    pool: Option<PgPool>,
 ) -> bool {
     let shadow_config = shadow.config();
 
@@ -689,6 +747,7 @@ async fn spawn_shadow_compare(
     let job_id = job.id;
     let message_id = job.message_id.clone();
     let client = client.clone();
+    let pool = pool.clone();
     let shadow_span = info_span!(
         "shadow_compare",
         worker_id = %worker_label,
@@ -701,6 +760,10 @@ async fn spawn_shadow_compare(
             async move {
                 let _permit = permit;
                 let request = build_llm_request(&job, &body_text, &shadow_config);
+                let primary_final_method = job.final_method.clone();
+                let primary_decision = job.decision_reason.clone();
+                let primary_requires_review = job.requires_manual_review;
+                let primary_latency_ms = job.llm_latency_ms;
                 match perform_llm_request(
                     &client,
                     &shadow_config,
@@ -713,9 +776,8 @@ async fn spawn_shadow_compare(
                 .await
                 {
                     Ok(shadow_resp) => {
-                        let diff = if shadow_resp.extracted
-                            == job.partial_fields.clone().unwrap_or_default()
-                        {
+                        let primary_fields = job.partial_fields.clone().unwrap_or_default();
+                        let diff = if shadow_resp.extracted == primary_fields {
                             "match"
                         } else {
                             "diff"
@@ -731,6 +793,37 @@ async fn spawn_shadow_compare(
                             shadow_latency_ms = shadow_resp.latency_ms,
                             "shadow comparison completed",
                         );
+
+                        if let Some(pool) = pool.clone() {
+                            let record = ShadowComparisonRecord {
+                                message_id: message_id.clone(),
+                                primary_provider: primary_provider.clone(),
+                                shadow_provider: shadow_provider.clone(),
+                                primary_response: json!({
+                                    "extracted": primary_fields,
+                                    "decision_reason": primary_decision,
+                                    "final_method": primary_final_method.as_ref().map(|m| m.as_str()),
+                                    "requires_manual_review": primary_requires_review,
+                                }),
+                                shadow_response: serde_json::to_value(&shadow_resp).ok(),
+                                primary_latency_ms,
+                                shadow_latency_ms: shadow_resp.latency_ms,
+                                diff_summary: json!({
+                                    "match": diff == "match",
+                                    "diff": diff,
+                                    "missing_fields": shadow_resp.missing_fields,
+                                }),
+                            };
+
+                            if let Err(err) = persist_shadow_comparison(pool, record).await {
+                                warn!(
+                                    worker_id = %worker_label,
+                                    message_id = %message_id,
+                                    error = %err,
+                                    "failed to persist shadow comparison"
+                                );
+                            }
+                        }
                     }
                     Err(err) => {
                         let err_message = match err {
@@ -746,6 +839,35 @@ async fn spawn_shadow_compare(
                             error = %err_message,
                             "shadow comparison failed",
                         );
+
+                        if let Some(pool) = pool.clone() {
+                            let record = ShadowComparisonRecord {
+                                message_id: message_id.clone(),
+                                primary_provider: primary_provider.clone(),
+                                shadow_provider: shadow_provider.clone(),
+                                primary_response: json!({
+                                    "extracted": job.partial_fields.clone().unwrap_or_default(),
+                                    "decision_reason": primary_decision,
+                                    "final_method": primary_final_method.as_ref().map(|m| m.as_str()),
+                                    "requires_manual_review": primary_requires_review,
+                                }),
+                                shadow_response: None,
+                                primary_latency_ms,
+                                shadow_latency_ms: None,
+                                diff_summary: json!({
+                                    "error": err_message,
+                                }),
+                            };
+
+                            if let Err(err) = persist_shadow_comparison(pool, record).await {
+                                warn!(
+                                    worker_id = %worker_label,
+                                    message_id = %message_id,
+                                    error = %err,
+                                    "failed to persist failed shadow comparison"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1067,6 +1189,7 @@ async fn process_locked_job(
             shadow_config,
             client,
             worker_id,
+            Some(pool.clone()),
         )
         .await;
     }
@@ -1777,6 +1900,7 @@ mod tests {
             &shadow_runtime,
             &client,
             "test-worker",
+            None,
         )
         .await;
         assert!(spawned, "shadow compare should spawn");
@@ -1814,6 +1938,7 @@ mod tests {
             &shadow_runtime,
             &client,
             "test-worker",
+            None,
         )
         .await;
         assert!(!spawned);
@@ -1868,6 +1993,7 @@ mod tests {
             &shadow_runtime,
             &client,
             "test-worker",
+            None,
         )
         .await;
         assert!(spawned_first, "first shadow compare should spawn");
@@ -1878,6 +2004,7 @@ mod tests {
             &shadow_runtime,
             &client,
             "test-worker",
+            None,
         )
         .await;
         assert!(

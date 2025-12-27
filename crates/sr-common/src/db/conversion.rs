@@ -1,6 +1,7 @@
 use tracing::instrument;
 
 use crate::api::conversion::{ConversionRequest, ConversionResponse, ConversionSource};
+use crate::db::util::TimedClientExt;
 use crate::db::{db_error, validated_actor, PgPool};
 
 db_error!(ConversionStorageError {
@@ -42,7 +43,7 @@ pub async fn insert_conversion_event(
         .await?;
 
     let row = client
-        .query_one(
+        .timed_query_one(
             &stmt,
             &[
                 &request.interaction_id,
@@ -53,6 +54,7 @@ pub async fn insert_conversion_event(
                 &source,
                 &request.meta,
             ],
+            "insert_conversion_event",
         )
         .await?;
 

@@ -8,6 +8,7 @@ use tracing::instrument;
 use crate::api::match_response::{
     KoDecisionDto, MatchConfig, MatchDetails, MatchResponse, ScoreBreakdown,
 };
+use crate::db::util::TimedClientExt;
 use crate::db::{db_error, PgPool};
 
 db_error!(MatchFetchError {
@@ -158,7 +159,11 @@ pub async fn fetch_candidates_for_project(
     let bounded_limit = limit.min(200) as i64;
     let offset = offset as i64;
     let rows = client
-        .query(&query, &[&project_id, &talent_ids, &bounded_limit, &offset])
+        .timed_query(
+            query.as_str(),
+            &[&project_id, &talent_ids, &bounded_limit, &offset],
+            "fetch_candidates_for_project",
+        )
         .await?;
 
     let responses = rows
@@ -178,7 +183,7 @@ pub async fn fetch_match_by_id(
     let client = pool.get().await?;
 
     let row = client
-        .query_opt(
+        .timed_query_opt(
             "SELECT\
                 il.id AS interaction_id,\
                 mr.id AS match_result_id,\
@@ -200,6 +205,7 @@ pub async fn fetch_match_by_id(
             ORDER BY il.created_at DESC\
             LIMIT 1",
             &[&match_id],
+            "fetch_match_by_id",
         )
         .await?;
 
