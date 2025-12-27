@@ -2,22 +2,23 @@ import { Outlet, Link, useLocation } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { useFlags } from "@/lib/auth";
+import { useI18n } from "@/lib/i18n";
+import type { TranslationKey } from "@/lib/messages";
 
-const navItems = [
-  { href: "/queue", label: "Dashboard", requiresQueueAdmin: true },
-  { href: "/jobs", label: "Jobs", requiresQueueAdmin: true },
-  { href: "/projects", label: "Projects", requiresQueueAdmin: false },
+const navItems: { href: string; labelKey: TranslationKey }[] = [
+  { href: "/queue", labelKey: "navigation.dashboard" },
+  { href: "/jobs", labelKey: "navigation.jobs" },
+  { href: "/projects", labelKey: "navigation.projects" },
+  { href: "/talents", labelKey: "navigation.talents" },
 ];
 
 export function RootLayout() {
   const { t } = useI18n();
   const location = useLocation();
-  const { isQueueAdmin } = useFlags();
+  const { t } = useI18n();
 
-  const visibleNavItems = navItems.filter(
-    (item) => !item.requiresQueueAdmin || isQueueAdmin,
-  );
+  const isActive = (href: string) =>
+    location.pathname === href || location.pathname.startsWith(`${href}/`);
 
   return (
     <div className="min-h-screen bg-background">
@@ -33,19 +34,11 @@ export function RootLayout() {
                 key={item.href}
                 to={item.href}
                 className={cn(
-                  "inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm font-medium transition-colors hover:text-primary",
-                  location.pathname === item.href ||
-                    location.pathname.startsWith(item.href + "/")
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground"
+                  "text-sm font-medium transition-colors hover:text-primary",
+                  isActive(item.href) ? "text-primary" : "text-muted-foreground",
                 )}
               >
-                {item.label}
-                {item.requiresQueueAdmin && isQueueAdmin && (
-                  <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
-                    Ops
-                  </span>
-                )}
+                {t(item.labelKey)}
               </Link>
             ))}
           </nav>

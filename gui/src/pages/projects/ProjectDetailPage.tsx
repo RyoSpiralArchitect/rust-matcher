@@ -10,6 +10,7 @@ import type { FeedbackType, ProjectMatch } from "@/api";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
+import { Breadcrumbs } from "@/components/Breadcrumbs";
 
 function SummaryField({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
@@ -152,15 +153,15 @@ export function ProjectDetailPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <nav className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Link to="/projects" className="hover:text-foreground">
-              {t("projectDetail.breadcrumb.projects")}
-            </Link>
-            <span>/</span>
-            <span className="text-foreground">
-              {data?.name ?? t("projectDetail.title.fallback", { id: projectId ?? "" })}
-            </span>
-          </nav>
+          <Breadcrumbs
+            items={[
+              { label: t("navigation.projects"), href: "/projects" },
+              {
+                label: data?.name ?? t("projectDetail.title.fallback", { id: projectId ?? "" }),
+                isCurrent: true,
+              },
+            ]}
+          />
           <Button variant="ghost" size="sm" asChild>
             <Link to="/projects">
               <ArrowLeft className="mr-2 h-4 w-4" />

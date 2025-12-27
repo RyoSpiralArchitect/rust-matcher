@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,7 +32,7 @@ import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
-import { useFlags } from "@/lib/auth";
+import { Breadcrumbs } from "@/components/Breadcrumbs";
 
 export function JobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();
@@ -144,15 +144,15 @@ export function JobDetailPage() {
     );
   };
 
-  const breadcrumb = (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <Link to="/jobs" className="hover:underline">
-        {t("jobDetail.breadcrumb.jobs")}
-      </Link>
-      <span>/</span>
-      <span>{jobId}</span>
-    </div>
-  );
+  return (
+    <div className="space-y-6">
+      {/* Breadcrumb */}
+      <Breadcrumbs
+        items={[
+          { label: t("navigation.jobs"), href: "/jobs" },
+          { label: t("jobDetail.breadcrumb.job", { id: jobId ?? "" }), isCurrent: true },
+        ]}
+      />
 
   const header = (
     <div className="space-y-2">
