@@ -1,6 +1,10 @@
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    http::{header::RETRY_AFTER, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use serde::Serialize;
-use std::{borrow::Cow, future::Future};
+use std::{borrow::Cow, future::Future, time::Duration};
 use thiserror::Error;
 use tracing::error;
 
@@ -11,6 +15,48 @@ use sr_common::db::{
 
 tokio::task_local! {
     static REQUEST_ID: String;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitMeta {
+    pub limit: u32,
+    pub remaining: u32,
+    pub reset_after: Duration,
+    pub retry_after: Option<Duration>,
+}
+
+impl RateLimitMeta {
+    fn ceil_seconds(duration: Duration) -> u64 {
+        let nanos = duration.as_nanos();
+        let mut secs = nanos / 1_000_000_000;
+        if nanos % 1_000_000_000 != 0 {
+            secs += 1;
+        }
+        secs as u64
+    }
+
+    fn add_header(headers: &mut HeaderMap, name: &'static str, value: String) {
+        if let Ok(parsed) = HeaderValue::from_str(&value) {
+            headers.insert(HeaderName::from_static(name), parsed);
+        }
+    }
+
+    pub fn apply_headers(&self, headers: &mut HeaderMap) {
+        Self::add_header(headers, "ratelimit-limit", self.limit.to_string());
+        Self::add_header(headers, "ratelimit-remaining", self.remaining.to_string());
+        Self::add_header(
+            headers,
+            "ratelimit-reset",
+            Self::ceil_seconds(self.reset_after).to_string(),
+        );
+
+        if let Some(retry_after) = self.retry_after {
+            if let Ok(parsed) = HeaderValue::from_str(&Self::ceil_seconds(retry_after).to_string())
+            {
+                headers.insert(RETRY_AFTER, parsed);
+            }
+        }
+    }
 }
 
 fn sanitize_message(message: &str) -> String {
@@ -83,8 +129,11 @@ pub enum ApiError {
     BadRequest(String),
     #[error("conflict: {0}")]
     Conflict(String),
-    #[error("too many requests: {0}")]
-    TooManyRequests(String),
+    #[error("too many requests: {message}")]
+    TooManyRequests {
+        message: String,
+        rate_limit: Option<RateLimitMeta>,
+    },
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
     #[error("internal server error: {0}")]
@@ -132,7 +181,17 @@ impl IntoResponse for ApiError {
             request_id,
         });
 
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+
+        if let ApiError::TooManyRequests {
+            rate_limit: Some(rate_limit),
+            ..
+        } = &self
+        {
+            rate_limit.apply_headers(response.headers_mut());
+        }
+
+        response
     }
 }
 
@@ -144,7 +203,7 @@ impl ApiError {
             ApiError::Forbidden(_) => "forbidden",
             ApiError::NotFound(_) => "not_found",
             ApiError::Conflict(_) => "conflict",
-            ApiError::TooManyRequests(_) => "too_many_requests",
+            ApiError::TooManyRequests { .. } => "too_many_requests",
             ApiError::ServiceUnavailable(_) => "service_unavailable",
             ApiError::Database { .. } => "database_error",
             ApiError::Internal(_) => "internal_error",
@@ -158,7 +217,7 @@ impl ApiError {
             ApiError::Forbidden(_) => Cow::Borrowed("forbidden"),
             ApiError::NotFound(msg) => Cow::Owned(sanitize_message(msg)),
             ApiError::Conflict(msg) => Cow::Owned(sanitize_message(msg)),
-            ApiError::TooManyRequests(_) => Cow::Borrowed("too many requests"),
+            ApiError::TooManyRequests { .. } => Cow::Borrowed("too many requests"),
             ApiError::ServiceUnavailable(_) => Cow::Borrowed("service unavailable"),
             ApiError::Database { .. } | ApiError::Internal(_) => {
                 Cow::Borrowed("internal server error")
@@ -173,7 +232,7 @@ impl ApiError {
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
-            ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Database { .. } | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -189,6 +248,7 @@ impl ApiError {
         match self {
             ApiError::Database { internal } => internal.as_deref().map(sanitize_message),
             ApiError::Internal(msg) => Some(sanitize_message(msg)),
+            ApiError::TooManyRequests { message, .. } => Some(sanitize_message(message)),
             _ => None,
         }
     }
@@ -287,5 +347,43 @@ mod tests {
         let bytes = body.collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["message"], "internal server error");
+    }
+
+    #[test]
+    fn rate_limit_headers_are_attached_when_present() {
+        let meta = RateLimitMeta {
+            limit: 10,
+            remaining: 5,
+            reset_after: Duration::from_millis(1200),
+            retry_after: Some(Duration::from_millis(800)),
+        };
+
+        let err = ApiError::TooManyRequests {
+            message: "rate limit exceeded".into(),
+            rate_limit: Some(meta),
+        };
+
+        let response = err.into_response();
+        let headers = response.headers();
+
+        assert_eq!(
+            headers.get("ratelimit-limit").and_then(|h| h.to_str().ok()),
+            Some("10")
+        );
+        assert_eq!(
+            headers
+                .get("ratelimit-remaining")
+                .and_then(|h| h.to_str().ok()),
+            Some("5")
+        );
+        // ceil(1.2s) = 2
+        assert_eq!(
+            headers.get("ratelimit-reset").and_then(|h| h.to_str().ok()),
+            Some("2")
+        );
+        assert_eq!(
+            headers.get(RETRY_AFTER).and_then(|h| h.to_str().ok()),
+            Some("1")
+        );
     }
 }

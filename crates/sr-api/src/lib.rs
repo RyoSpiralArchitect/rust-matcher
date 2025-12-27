@@ -23,8 +23,10 @@ use chrono::{Duration as ChronoDuration, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
 use governor::{
-    clock::DefaultClock, middleware::NoOpMiddleware, state::keyed::DashMapStateStore, Quota,
-    RateLimiter,
+    clock::{Clock, DefaultClock},
+    middleware::{StateInformationMiddleware, StateSnapshot},
+    state::keyed::DashMapStateStore,
+    Quota, RateLimiter,
 };
 use metrics::{counter, gauge, histogram};
 use sr_common::api::match_response::MatchConfig;
@@ -45,7 +47,7 @@ pub mod handlers;
 pub mod security;
 
 use auth::{AuthConfig, AuthMode, JwtAlgorithm};
-use error::ApiError;
+use error::{ApiError, RateLimitMeta};
 use handlers::{
     candidates, conversion, feedback, health, interactions, matches, queue,
     security as security_handler,
@@ -154,7 +156,8 @@ pub struct AppConfig {
     pub security_txt: SecurityTxtConfig,
 }
 
-type IpRateLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock, NoOpMiddleware>;
+type IpRateLimiter =
+    RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock, StateInformationMiddleware>;
 
 #[derive(Clone)]
 pub struct RateLimits {
@@ -384,7 +387,7 @@ fn build_ip_limiter(per_second: u64, burst_size: u32) -> Arc<IpRateLimiter> {
         .unwrap()
         .allow_burst(NonZeroU32::new(burst_size).unwrap());
 
-    Arc::new(RateLimiter::keyed(quota))
+    Arc::new(RateLimiter::keyed(quota).with_middleware::<StateInformationMiddleware>())
 }
 
 pub fn default_rate_limits() -> RateLimits {
@@ -403,14 +406,47 @@ fn request_ip<B>(req: &Request<B>) -> Option<IpAddr> {
         .map(|info| info.0.ip())
 }
 
-fn enforce_rate_limit(limiter: &IpRateLimiter, ip: Option<IpAddr>) -> Result<(), ApiError> {
-    if let Some(client_ip) = ip {
-        if limiter.check_key(&client_ip).is_err() {
-            return Err(ApiError::TooManyRequests("rate limit exceeded".into()));
-        }
+fn rate_limit_meta_from_snapshot(snapshot: StateSnapshot) -> RateLimitMeta {
+    let quota = snapshot.quota();
+    let limit = quota.burst_size().get();
+    let remaining = snapshot.remaining_burst_capacity().min(limit);
+    let used = limit.saturating_sub(remaining);
+    RateLimitMeta {
+        limit,
+        remaining,
+        reset_after: quota.replenish_interval().saturating_mul(used.max(1)),
+        retry_after: None,
     }
+}
 
-    Ok(())
+fn rate_limit_meta_from_rejection(
+    rejection: governor::NotUntil<<DefaultClock as Clock>::Instant>,
+) -> RateLimitMeta {
+    let wait_time = rejection.wait_time_from(DefaultClock::default().now());
+    let quota = rejection.quota();
+    RateLimitMeta {
+        limit: quota.burst_size().get(),
+        remaining: 0,
+        reset_after: wait_time,
+        retry_after: Some(wait_time),
+    }
+}
+
+fn enforce_rate_limit(
+    limiter: &IpRateLimiter,
+    ip: Option<IpAddr>,
+) -> Result<Option<RateLimitMeta>, ApiError> {
+    if let Some(client_ip) = ip {
+        match limiter.check_key(&client_ip) {
+            Ok(snapshot) => Ok(Some(rate_limit_meta_from_snapshot(snapshot))),
+            Err(rejection) => Err(ApiError::TooManyRequests {
+                message: "rate limit exceeded".into(),
+                rate_limit: Some(rate_limit_meta_from_rejection(rejection)),
+            }),
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 fn rate_limiter_for_path<'a>(rate_limits: &'a RateLimits, path: &str) -> &'a IpRateLimiter {
@@ -431,8 +467,12 @@ async fn per_endpoint_rate_limit(
     next: Next,
 ) -> Result<Response, ApiError> {
     let limiter = rate_limiter_for_path(&state.rate_limits, req.uri().path());
-    enforce_rate_limit(limiter, request_ip(&req))?;
-    Ok(next.run(req).await)
+    let meta = enforce_rate_limit(limiter, request_ip(&req))?;
+    let mut response = next.run(req).await;
+    if let Some(meta) = meta {
+        meta.apply_headers(response.headers_mut());
+    }
+    Ok(response)
 }
 
 async fn retry_rate_limit(
@@ -440,8 +480,12 @@ async fn retry_rate_limit(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    enforce_rate_limit(&state.rate_limits.retry, request_ip(&req))?;
-    Ok(next.run(req).await)
+    let meta = enforce_rate_limit(&state.rate_limits.retry, request_ip(&req))?;
+    let mut response = next.run(req).await;
+    if let Some(meta) = meta {
+        meta.apply_headers(response.headers_mut());
+    }
+    Ok(response)
 }
 
 async fn attach_request_id_context(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
@@ -637,12 +681,13 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
+        extract::connect_info::ConnectInfo,
         http::{Request, StatusCode},
         routing::get,
     };
     use http_body_util::BodyExt;
     use serial_test::serial;
-    use std::sync::Mutex;
+    use std::{net::SocketAddr, sync::Mutex};
     use tower::ServiceExt;
 
     static ENV_GUARD: Mutex<()> = Mutex::new(());
@@ -727,6 +772,68 @@ mod tests {
                         match_burst: 11,
                     }
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn attaches_rate_limit_headers_on_successful_requests() {
+        with_envs(
+            &[
+                ("SR_RATE_LIMIT_GLOBAL_PER_SEC", None),
+                ("SR_RATE_LIMIT_GLOBAL_BURST", None),
+                ("SR_RATE_LIMIT_RETRY_PER_SEC", None),
+                ("SR_RATE_LIMIT_RETRY_BURST", None),
+                ("SR_RATE_LIMIT_HEALTH_PER_SEC", None),
+                ("SR_RATE_LIMIT_HEALTH_BURST", None),
+                ("SR_RATE_LIMIT_MATCH_PER_SEC", None),
+                ("SR_RATE_LIMIT_MATCH_BURST", None),
+            ],
+            || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let state = test_state("test-key");
+                        let app = Router::new()
+                            .route("/", get(|| async { "ok" }))
+                            .layer(middleware::from_fn_with_state(
+                                state.clone(),
+                                per_endpoint_rate_limit,
+                            ))
+                            .with_state(state);
+
+                        let req = Request::builder()
+                            .uri("/")
+                            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                            .body(Body::empty())
+                            .unwrap();
+
+                        let response = app.oneshot(req).await.expect("request should succeed");
+
+                        let limit = response.headers().get("ratelimit-limit");
+                        let remaining = response.headers().get("ratelimit-remaining");
+                        let reset = response.headers().get("ratelimit-reset");
+
+                        let limit =
+                            limit.and_then(|h| h.to_str().ok()).and_then(|v| v.parse::<u32>().ok());
+                        let remaining = remaining
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|v| v.parse::<u32>().ok());
+                        let reset =
+                            reset.and_then(|h| h.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+
+                        assert!(limit.is_some());
+                        assert!(remaining.is_some());
+                        assert!(reset.is_some());
+
+                        let limit = limit.unwrap();
+                        let remaining = remaining.unwrap();
+                        assert!(remaining <= limit);
+                        assert!(limit > 0);
+                        assert!(reset.unwrap() > 0);
+                    });
             },
         );
     }
