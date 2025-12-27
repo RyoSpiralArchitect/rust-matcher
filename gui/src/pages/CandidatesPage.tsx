@@ -15,16 +15,18 @@ import {
 import type { MatchCandidate, FeedbackType } from "@/api";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
+import { useI18n } from "@/lib/i18n";
 
 export function CandidatesPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const id = Number(projectId);
+  const { t } = useI18n();
 
   const { data, isLoading, error } = useCandidates(id);
   const feedbackMutation = useSendFeedback();
 
   if (isLoading) {
-    return <LoadingState message="Loading candidates..." />;
+    return <LoadingState message={t("candidates.loading")} />;
   }
 
   if (error) {
@@ -36,10 +38,10 @@ export function CandidatesPage() {
       { interactionId, feedbackType, source: "gui" },
       {
         onSuccess: () => {
-          toast.success("Feedback sent");
+          toast.success(t("candidates.feedback.success"));
         },
         onError: (err) => {
-          toast.error(`Failed to send feedback: ${err.message}`);
+          toast.error(t("candidates.feedback.error", { message: err.message }));
         },
       }
     );
@@ -48,9 +50,9 @@ export function CandidatesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">{data?.projectName ?? "Project"}</h1>
+        <h1 className="text-2xl font-bold">{data?.projectName ?? t("candidates.titleFallback")}</h1>
         <p className="text-sm text-muted-foreground">
-          {data?.candidates.length ?? 0} candidates found
+          {t("candidates.count", { count: data?.candidates.length ?? 0 })}
         </p>
       </div>
 
@@ -68,7 +70,7 @@ export function CandidatesPage() {
       {(!data?.candidates || data.candidates.length === 0) && (
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground">
-            No candidates found for this project.
+            {t("candidates.none")}
           </CardContent>
         </Card>
       )}
@@ -83,6 +85,7 @@ interface CandidateCardProps {
 }
 
 function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardProps) {
+  const { t } = useI18n();
   const interactionId = candidate.interactionId;
 
   const handleViewDetail = () => {
@@ -106,18 +109,18 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
       <CardHeader>
         <div className="flex items-center justify-between">
           <div onClick={handleViewDetail} className="cursor-pointer">
-            <CardTitle>{candidate.talentName ?? `Talent #${candidate.talentId}`}</CardTitle>
+            <CardTitle>{candidate.talentName ?? t("candidates.talentFallback", { id: candidate.talentId })}</CardTitle>
             <CardDescription>
               {candidate.skills.join(" / ")}
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="secondary">
-              Score: {candidate.totalScore.toFixed(2)}
+              {t("candidates.score")}: {candidate.totalScore.toFixed(2)}
             </Badge>
             {candidate.twoTowerScore && (
               <Badge variant="outline">
-                TT: {candidate.twoTowerScore.toFixed(2)}
+                {t("candidates.twoTowerScore")}: {candidate.twoTowerScore.toFixed(2)}
               </Badge>
             )}
           </div>
@@ -127,14 +130,19 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
         <div className="flex items-center justify-between">
           <div className="text-sm text-muted-foreground space-y-1">
             <div>
-              希望単価: {candidate.desiredPriceMin ? `${candidate.desiredPriceMin / 10000}万〜` : "-"}
+              {t("candidates.priceLabel")}: {candidate.desiredPriceMin ? `${candidate.desiredPriceMin / 10000}万〜` : "-"}
             </div>
             <div>
-              {candidate.residentialTodofuken ?? "-"} / {candidate.availabilityDate ?? "未定"}
+              {t("candidates.locationAvailability", {
+                location: candidate.residentialTodofuken ?? "-",
+                availability: candidate.availabilityDate ?? "-",
+              })}
             </div>
             {candidate.koResult.needsManualReview && (
               <Badge variant="secondary" className="mt-1">
-                要レビュー: {candidate.koResult.reasons.join(", ")}
+                {t("candidates.reviewRequired", {
+                  reason: candidate.koResult.reasons.join(", "),
+                })}
               </Badge>
             )}
           </div>
@@ -145,8 +153,8 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               variant="ghost"
               size="sm"
               onClick={handleShortlist}
-              title="Shortlist"
-              aria-label="Shortlist"
+              title={t("candidates.buttons.shortlist")}
+              aria-label={t("candidates.buttons.shortlist")}
             >
               <Star className="h-4 w-4" />
             </Button>
@@ -154,8 +162,8 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               variant="ghost"
               size="sm"
               onClick={handleCopy}
-              title="Copy Template"
-              aria-label="Copy Template"
+              title={t("candidates.buttons.copyTemplate")}
+              aria-label={t("candidates.buttons.copyTemplate")}
             >
               <Copy className="h-4 w-4" />
             </Button>
@@ -163,8 +171,8 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               variant="ghost"
               size="sm"
               onClick={handleContact}
-              title="Contact"
-              aria-label="Contact"
+              title={t("candidates.buttons.contact")}
+              aria-label={t("candidates.buttons.contact")}
             >
               <Mail className="h-4 w-4" />
             </Button>
@@ -181,7 +189,7 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               ) : (
                 <ThumbsUp className="h-4 w-4 mr-1" />
               )}
-              {isSubmitting ? "Submitting..." : "Good"}
+              {isSubmitting ? t("candidates.buttons.submitting") : t("candidates.buttons.good")}
             </Button>
             <Button
               variant="outline"
@@ -194,7 +202,7 @@ function CandidateCard({ candidate, onFeedback, isSubmitting }: CandidateCardPro
               ) : (
                 <ThumbsDown className="h-4 w-4 mr-1" />
               )}
-              {isSubmitting ? "Submitting..." : "NG"}
+              {isSubmitting ? t("candidates.buttons.submitting") : t("candidates.buttons.ng")}
             </Button>
           </div>
         </div>

@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +31,7 @@ import type {
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LoadingState } from "@/components/LoadingState";
+import { useI18n } from "@/lib/i18n";
 
 export function JobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();
@@ -37,6 +39,49 @@ export function JobDetailPage() {
   const retryMutation = useRetryJob();
   const feedbackMutation = useSendFeedback();
   const conversionMutation = useSendConversion();
+  const { t, locale } = useI18n();
+
+  const feedbackLabels = useMemo(
+    () => ({
+      thumbs_up: t("feedback.thumbs_up"),
+      thumbs_down: t("feedback.thumbs_down"),
+      review_ok: t("feedback.review_ok"),
+      review_ng: t("feedback.review_ng"),
+      review_pending: t("feedback.review_pending"),
+      accepted: t("feedback.accepted"),
+      rejected: t("feedback.rejected"),
+      interview_scheduled: t("feedback.interview_scheduled"),
+      no_response: t("feedback.no_response"),
+    }),
+    [t],
+  );
+
+  const conversionStageLabels = useMemo(
+    () => ({
+      contacted: t("conversionStage.contacted"),
+      entry: t("conversionStage.entry"),
+      interview_scheduled: t("conversionStage.interview_scheduled"),
+      offer: t("conversionStage.offer"),
+      contract_signed: t("conversionStage.contract_signed"),
+      lost: t("conversionStage.lost"),
+    }),
+    [t],
+  );
+
+  const conversionStages = useMemo(
+    () =>
+      CONVERSION_STAGE_VALUES.map((stage) => ({
+        value: stage,
+        label: conversionStageLabels[stage],
+      })),
+    [conversionStageLabels],
+  );
+
+  const formatDateTime = (value: string) =>
+    new Intl.DateTimeFormat(locale, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(value));
 
   if (error) {
     return <ErrorDisplay error={error} />;
@@ -52,25 +97,25 @@ export function JobDetailPage() {
     if (jobId) {
       retryMutation.mutate(jobId, {
         onSuccess: () => {
-          toast.success("Job retry initiated");
+          toast.success(t("jobDetail.retry.success"));
         },
         onError: (err) => {
-          toast.error(`Failed to retry job: ${err.message}`);
+          toast.error(t("jobDetail.retry.failed", { message: err.message }));
         },
       });
     }
   };
 
   const handleFeedback = (interactionId: number, feedbackType: FeedbackType) => {
+    const label = feedbackLabels[feedbackType] ?? feedbackType.replace("_", " ");
     feedbackMutation.mutate(
       { interactionId, feedbackType, source: "gui" },
       {
         onSuccess: () => {
-          const label = feedbackType.replace("_", " ");
-          toast.success(`Feedback "${label}" submitted`);
+          toast.success(t("jobDetail.feedback.submitted", { label }));
         },
         onError: (err) => {
-          toast.error(`Failed to submit feedback: ${err.message}`);
+          toast.error(t("jobDetail.feedback.failed", { message: err.message }));
         },
       }
     );
@@ -86,11 +131,11 @@ export function JobDetailPage() {
       { interactionId, talentId, projectId, stage },
       {
         onSuccess: () => {
-          const label = stage.replace("_", " ");
-          toast.success(`Stage updated to "${label}"`);
+          const label = conversionStageLabels[stage] ?? stage.replace("_", " ");
+          toast.success(t("jobDetail.conversion.success", { label }));
         },
         onError: (err) => {
-          toast.error(`Failed to update stage: ${err.message}`);
+          toast.error(t("jobDetail.conversion.failed", { message: err.message }));
         },
       }
     );
@@ -101,7 +146,7 @@ export function JobDetailPage() {
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Link to="/jobs" className="hover:underline">
-          Jobs
+          {t("jobDetail.breadcrumb.jobs")}
         </Link>
         <span>/</span>
         <span>{jobId}</span>
@@ -110,10 +155,10 @@ export function JobDetailPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">Job #{jobId}</h1>
+          <h1 className="text-2xl font-bold">{t("jobDetail.title", { id: jobId ?? "" })}</h1>
           <StatusBadge status={job.status} />
           {job.requiresManualReview && (
-            <Badge variant="secondary">Review Required</Badge>
+            <Badge variant="secondary">{t("jobDetail.reviewRequired")}</Badge>
           )}
         </div>
         <Button
@@ -121,43 +166,43 @@ export function JobDetailPage() {
           disabled={retryMutation.isPending || job.status === "processing"}
           variant="outline"
         >
-          {retryMutation.isPending ? "Retrying..." : "Retry"}
+          {retryMutation.isPending ? t("jobDetail.retrying") : t("jobDetail.retry")}
         </Button>
       </div>
 
       {/* Summary */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Summary</CardTitle>
+          <CardTitle className="text-lg">{t("jobDetail.summary")}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <div className="text-muted-foreground">Priority</div>
+              <div className="text-muted-foreground">{t("jobDetail.priority")}</div>
               <div className="font-medium">{job.priority}</div>
             </div>
             <div>
-              <div className="text-muted-foreground">Retry Count</div>
+              <div className="text-muted-foreground">{t("jobDetail.retryCount")}</div>
               <div className="font-medium">{job.retryCount}</div>
             </div>
             <div>
-              <div className="text-muted-foreground">Final Method</div>
+              <div className="text-muted-foreground">{t("jobDetail.finalMethod")}</div>
               <div className="font-medium">{job.finalMethod ?? "-"}</div>
             </div>
             <div>
-              <div className="text-muted-foreground">LLM Latency</div>
+              <div className="text-muted-foreground">{t("jobDetail.llmLatency")}</div>
               <div className="font-medium">
                 {llmLatencyMs ? `${llmLatencyMs}ms` : "-"}
               </div>
             </div>
             <div className="col-span-2">
-              <div className="text-muted-foreground">Decision</div>
+              <div className="text-muted-foreground">{t("jobDetail.decision")}</div>
               <div className="font-medium">{job.decisionReason ?? "-"}</div>
             </div>
             <div className="col-span-2">
-              <div className="text-muted-foreground">Updated</div>
+              <div className="text-muted-foreground">{t("jobDetail.updated")}</div>
               <div className="font-medium">
-                {new Date(job.updatedAt).toLocaleString("ja-JP")}
+                {formatDateTime(job.updatedAt)}
               </div>
             </div>
           </div>
@@ -165,7 +210,7 @@ export function JobDetailPage() {
           {lastError && (
             <div className="mt-4 p-3 bg-destructive/10 rounded-md border border-destructive/20">
               <div className="text-sm font-medium text-destructive">
-                Last Error
+                {t("jobDetail.lastError")}
               </div>
               <pre className="text-xs mt-1 whitespace-pre-wrap text-destructive/80">
                 {lastError}
@@ -176,7 +221,7 @@ export function JobDetailPage() {
           {partialFields && Object.keys(partialFields).length > 0 && (
             <div className="mt-4">
               <div className="text-sm text-muted-foreground mb-2">
-                Extracted Fields
+                {t("jobDetail.extractedFields")}
               </div>
               <pre className="text-xs p-3 bg-muted rounded-md overflow-auto">
                 {JSON.stringify(partialFields, null, 2)}
@@ -190,7 +235,7 @@ export function JobDetailPage() {
       {entity && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Entity</CardTitle>
+            <CardTitle className="text-lg">{t("jobDetail.entity")}</CardTitle>
           </CardHeader>
           <CardContent>
             <EntityDisplay entity={entity} />
@@ -202,13 +247,17 @@ export function JobDetailPage() {
       {pairs && pairs.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Match Pairs ({pairs.length})</CardTitle>
+            <CardTitle className="text-lg">
+              {t("jobDetail.matchPairs", { count: pairs.length })}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <PairsTable
               pairs={pairs}
               onFeedback={handleFeedback}
               onConversion={handleConversion}
+              conversionStages={conversionStages}
+              feedbackLabels={feedbackLabels}
               isSubmitting={feedbackMutation.isPending || conversionMutation.isPending}
             />
           </CardContent>
@@ -216,49 +265,46 @@ export function JobDetailPage() {
       )}
 
       {/* Timeline */}
-      {pairs && pairs.length > 0 && <TimelineCard pairs={pairs} />}
+      {pairs && pairs.length > 0 && (
+        <TimelineCard
+          pairs={pairs}
+          feedbackLabels={feedbackLabels}
+          formatDateTime={formatDateTime}
+        />
+      )}
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "completed"
-      ? "default"
-      : status === "processing"
-        ? "secondary"
-        : "outline";
-
-  return <Badge variant={variant}>{status}</Badge>;
-}
-
 function EntityDisplay({ entity }: { entity: JobEntity }) {
+  const { t } = useI18n();
+
   if (entity.type === "talent") {
     return (
       <div className="space-y-2">
-        <Badge>Talent</Badge>
+        <Badge>{t("jobDetail.field.talent")}</Badge>
         <div className="grid grid-cols-2 gap-4 text-sm mt-2">
           <div>
-            <div className="text-muted-foreground">ID</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.id")}</div>
             <div className="font-medium">{entity.id}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">Name</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.name")}</div>
             <div className="font-medium">{entity.talentName ?? "-"}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">Desired Price Min</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.desiredPriceMin")}</div>
             <div className="font-medium">
               {entity.desiredPriceMin ? `¥${entity.desiredPriceMin.toLocaleString()}` : "-"}
             </div>
           </div>
           <div>
-            <div className="text-muted-foreground">Available Date</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.availableDate")}</div>
             <div className="font-medium">{entity.availableDate ?? "-"}</div>
           </div>
           {entity.summaryText && (
             <div className="col-span-2">
-              <div className="text-muted-foreground">Summary</div>
+              <div className="text-muted-foreground">{t("jobDetail.field.summary")}</div>
               <div className="font-medium text-xs">{entity.summaryText}</div>
             </div>
           )}
@@ -270,18 +316,18 @@ function EntityDisplay({ entity }: { entity: JobEntity }) {
   if (entity.type === "project") {
     return (
       <div className="space-y-2">
-        <Badge variant="secondary">Project</Badge>
+        <Badge variant="secondary">{t("jobDetail.field.project")}</Badge>
         <div className="grid grid-cols-2 gap-4 text-sm mt-2">
           <div>
-            <div className="text-muted-foreground">Code</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.code")}</div>
             <div className="font-medium">{entity.projectCode}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">Name</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.name")}</div>
             <div className="font-medium">{entity.projectName}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">Price Range</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.priceRange")}</div>
             <div className="font-medium">
               {entity.monthlyTankaMin || entity.monthlyTankaMax
                 ? `¥${entity.monthlyTankaMin?.toLocaleString() ?? "?"} - ¥${entity.monthlyTankaMax?.toLocaleString() ?? "?"}`
@@ -289,7 +335,7 @@ function EntityDisplay({ entity }: { entity: JobEntity }) {
             </div>
           </div>
           <div>
-            <div className="text-muted-foreground">Start Date</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.startDate")}</div>
             <div className="font-medium">{entity.startDate ?? "-"}</div>
           </div>
         </div>
@@ -301,18 +347,18 @@ function EntityDisplay({ entity }: { entity: JobEntity }) {
   return (
     <div className="grid md:grid-cols-2 gap-6">
       <div className="space-y-2">
-        <Badge>Talent</Badge>
+        <Badge>{t("jobDetail.field.talent")}</Badge>
         <div className="grid grid-cols-2 gap-3 text-sm mt-2">
           <div>
-            <div className="text-muted-foreground">ID</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.id")}</div>
             <div className="font-medium">{entity.talent.id}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">Name</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.name")}</div>
             <div className="font-medium">{entity.talent.talentName ?? "-"}</div>
           </div>
           <div className="col-span-2">
-            <div className="text-muted-foreground">Desired Price</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.desiredPrice")}</div>
             <div className="font-medium">
               {entity.talent.desiredPriceMin
                 ? `¥${entity.talent.desiredPriceMin.toLocaleString()}`
@@ -322,18 +368,18 @@ function EntityDisplay({ entity }: { entity: JobEntity }) {
         </div>
       </div>
       <div className="space-y-2">
-        <Badge variant="secondary">Project</Badge>
+        <Badge variant="secondary">{t("jobDetail.field.project")}</Badge>
         <div className="grid grid-cols-2 gap-3 text-sm mt-2">
           <div>
-            <div className="text-muted-foreground">Code</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.code")}</div>
             <div className="font-medium">{entity.project.projectCode}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">Name</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.name")}</div>
             <div className="font-medium">{entity.project.projectName}</div>
           </div>
           <div className="col-span-2">
-            <div className="text-muted-foreground">Price Range</div>
+            <div className="text-muted-foreground">{t("jobDetail.field.priceRange")}</div>
             <div className="font-medium">
               {entity.project.monthlyTankaMin || entity.project.monthlyTankaMax
                 ? `¥${entity.project.monthlyTankaMin?.toLocaleString() ?? "?"} - ¥${entity.project.monthlyTankaMax?.toLocaleString() ?? "?"}`
@@ -346,13 +392,13 @@ function EntityDisplay({ entity }: { entity: JobEntity }) {
   );
 }
 
-const CONVERSION_STAGES: { value: ConversionStage; label: string }[] = [
-  { value: "contacted", label: "Contacted" },
-  { value: "entry", label: "Entry" },
-  { value: "interview_scheduled", label: "Interview" },
-  { value: "offer", label: "Offer" },
-  { value: "contract_signed", label: "Contract" },
-  { value: "lost", label: "Lost" },
+const CONVERSION_STAGE_VALUES: ConversionStage[] = [
+  "contacted",
+  "entry",
+  "interview_scheduled",
+  "offer",
+  "contract_signed",
+  "lost",
 ];
 
 interface PairsTableProps {
@@ -364,21 +410,31 @@ interface PairsTableProps {
     projectId: number,
     stage: ConversionStage
   ) => void;
+  conversionStages: { value: ConversionStage; label: string }[];
+  feedbackLabels: Record<FeedbackType, string>;
   isSubmitting: boolean;
 }
 
-function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTableProps) {
+function PairsTable({
+  pairs,
+  onFeedback,
+  onConversion,
+  conversionStages,
+  feedbackLabels,
+  isSubmitting,
+}: PairsTableProps) {
+  const { t } = useI18n();
   return (
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Talent ID</TableHead>
-          <TableHead>Project ID</TableHead>
-          <TableHead>Score</TableHead>
-          <TableHead>KO</TableHead>
-          <TableHead>Feedback</TableHead>
-          <TableHead>Stage</TableHead>
-          <TableHead>Actions</TableHead>
+          <TableHead>{t("jobDetail.table.talentId")}</TableHead>
+          <TableHead>{t("jobDetail.table.projectId")}</TableHead>
+          <TableHead>{t("jobDetail.table.score")}</TableHead>
+          <TableHead>{t("jobDetail.table.ko")}</TableHead>
+          <TableHead>{t("jobDetail.table.feedback")}</TableHead>
+          <TableHead>{t("jobDetail.table.stage")}</TableHead>
+          <TableHead>{t("jobDetail.table.actions")}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -400,11 +456,11 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
               </TableCell>
               <TableCell>
                 {pair.matchResult.isKnockout ? (
-                  <Badge variant="destructive">KO</Badge>
+                  <Badge variant="destructive">{t("jobDetail.table.ko")}</Badge>
                 ) : pair.matchResult.needsManualReview ? (
-                  <Badge variant="secondary">Review</Badge>
+                  <Badge variant="secondary">{t("jobDetail.table.reviewLabel")}</Badge>
                 ) : (
-                  <Badge variant="outline">OK</Badge>
+                  <Badge variant="outline">{t("jobDetail.table.okLabel")}</Badge>
                 )}
               </TableCell>
               <TableCell>
@@ -413,7 +469,11 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                     <span className="text-muted-foreground text-xs">-</span>
                   ) : (
                     pair.feedbackEvents.map((fb) => (
-                      <FeedbackBadge key={fb.id} feedback={fb} />
+                      <FeedbackBadge
+                        key={fb.id}
+                        feedback={fb}
+                        label={feedbackLabels[fb.feedbackType] ?? fb.feedbackType}
+                      />
                     ))
                   )}
                 </div>
@@ -431,10 +491,10 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                   disabled={isSubmitting}
                 >
                   <SelectTrigger size="sm" className="w-28">
-                    <SelectValue placeholder="Stage" />
+                    <SelectValue placeholder={t("jobDetail.table.stage")} />
                   </SelectTrigger>
                   <SelectContent>
-                    {CONVERSION_STAGES.map((stage) => (
+                    {conversionStages.map((stage) => (
                       <SelectItem key={stage.value} value={stage.value}>
                         {stage.label}
                       </SelectItem>
@@ -452,7 +512,7 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                           size="sm"
                           onClick={() => onFeedback(interactionId, "review_ok")}
                           disabled={isSubmitting}
-                          title="Review OK"
+                          title={t("jobDetail.table.reviewOk")}
                         >
                           {isSubmitting ? (
                             <Loader2 className="h-3 w-3 animate-spin" />
@@ -465,7 +525,7 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                           size="sm"
                           onClick={() => onFeedback(interactionId, "review_ng")}
                           disabled={isSubmitting}
-                          title="Review NG"
+                          title={t("jobDetail.table.reviewNg")}
                         >
                           {isSubmitting ? (
                             <Loader2 className="h-3 w-3 animate-spin" />
@@ -481,7 +541,7 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                           size="sm"
                           onClick={() => onFeedback(interactionId, "thumbs_up")}
                           disabled={isSubmitting}
-                          title="Thumbs Up"
+                          title={t("jobDetail.table.thumbsUp")}
                         >
                           {isSubmitting ? (
                             <Loader2 className="h-3 w-3 animate-spin" />
@@ -494,7 +554,7 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                           size="sm"
                           onClick={() => onFeedback(interactionId, "thumbs_down")}
                           disabled={isSubmitting}
-                          title="Thumbs Down"
+                          title={t("jobDetail.table.thumbsDown")}
                         >
                           {isSubmitting ? (
                             <Loader2 className="h-3 w-3 animate-spin" />
@@ -517,7 +577,7 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
   );
 }
 
-function FeedbackBadge({ feedback }: { feedback: FeedbackEventRow }) {
+function FeedbackBadge({ feedback, label }: { feedback: FeedbackEventRow; label: string }) {
   const variant = feedback.feedbackType.includes("up") || feedback.feedbackType.includes("ok")
     ? "default"
     : feedback.feedbackType.includes("down") || feedback.feedbackType.includes("ng")
@@ -526,7 +586,7 @@ function FeedbackBadge({ feedback }: { feedback: FeedbackEventRow }) {
 
   return (
     <Badge variant={variant} className="text-xs">
-      {feedback.feedbackType}
+      {label}
     </Badge>
   );
 }
@@ -541,7 +601,26 @@ interface TimelineItem {
   projectId: number;
 }
 
-function TimelineCard({ pairs }: { pairs: PairDetail[] }) {
+function TimelineCard({
+  pairs,
+  feedbackLabels,
+  formatDateTime,
+}: {
+  pairs: PairDetail[];
+  feedbackLabels: Record<FeedbackType, string>;
+  formatDateTime: (value: string) => string;
+}) {
+  const { t } = useI18n();
+  const eventLabels = useMemo(
+    () => ({
+      viewed_candidate_detail: t("event.viewed_candidate_detail"),
+      copied_template: t("event.copied_template"),
+      clicked_contact: t("event.clicked_contact"),
+      shortlisted: t("event.shortlisted"),
+    }),
+    [t],
+  );
+
   const items: TimelineItem[] = [];
 
   for (const pair of pairs) {
@@ -551,7 +630,7 @@ function TimelineCard({ pairs }: { pairs: PairDetail[] }) {
         id: fb.id,
         date: fb.createdAt,
         actor: fb.actor,
-        label: fb.feedbackType,
+        label: feedbackLabels[fb.feedbackType] ?? fb.feedbackType,
         talentId: fb.talentId,
         projectId: fb.projectId,
       });
@@ -562,7 +641,7 @@ function TimelineCard({ pairs }: { pairs: PairDetail[] }) {
         id: ev.id,
         date: ev.createdAt,
         actor: ev.actor,
-        label: ev.eventType,
+        label: eventLabels[ev.eventType] ?? ev.eventType,
         talentId: pair.matchResult.talentId,
         projectId: pair.matchResult.projectId,
       });
@@ -578,16 +657,20 @@ function TimelineCard({ pairs }: { pairs: PairDetail[] }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg">Timeline</CardTitle>
+        <CardTitle className="text-lg">{t("jobDetail.timeline")}</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
           {items.slice(0, 20).map((item) => (
-            <TimelineRow key={`${item.type}-${item.id}-${item.date}`} item={item} />
+            <TimelineRow
+              key={`${item.type}-${item.id}-${item.date}`}
+              item={item}
+              formatDateTime={formatDateTime}
+            />
           ))}
           {items.length > 20 && (
             <div className="text-sm text-muted-foreground">
-              ... and {items.length - 20} more events
+              {t("jobDetail.timeline.more", { count: items.length - 20 })}
             </div>
           )}
         </div>
@@ -596,14 +679,16 @@ function TimelineCard({ pairs }: { pairs: PairDetail[] }) {
   );
 }
 
-function TimelineRow({ item }: { item: TimelineItem }) {
+function TimelineRow({
+  item,
+  formatDateTime,
+}: {
+  item: TimelineItem;
+  formatDateTime: (value: string) => string;
+}) {
+  const { t } = useI18n();
   const icon = item.type === "feedback" ? "💬" : "👁";
-  const formattedDate = new Date(item.date).toLocaleString("ja-JP", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const formattedDate = formatDateTime(item.date);
 
   return (
     <div className="flex items-start gap-3 text-sm">
@@ -611,7 +696,9 @@ function TimelineRow({ item }: { item: TimelineItem }) {
       <span>{icon}</span>
       <div className="flex-1">
         <span className="font-medium">{item.label}</span>
-        <span className="text-muted-foreground ml-2">by {item.actor}</span>
+        <span className="text-muted-foreground ml-2">
+          {t("jobDetail.timeline.byActor", { actor: item.actor })}
+        </span>
       </div>
       <span className="text-xs text-muted-foreground font-mono">
         T{item.talentId}/P{item.projectId}

@@ -1,3 +1,11 @@
+use once_cell::sync::Lazy;
+
+use crate::timezone::RUN_DATE_TIMEZONE;
+
+/// Shared expression for deriving run_date/event_date columns.
+pub static RUN_DATE_EXPRESSION: Lazy<String> =
+    Lazy::new(|| format!("(created_at AT TIME ZONE '{}')::date", RUN_DATE_TIMEZONE));
+
 /// DDL-1: ses.extraction_queue スキーマ定義
 pub const EXTRACTION_QUEUE_DDL: &str = r#"
 CREATE TABLE ses.extraction_queue (
@@ -196,9 +204,11 @@ CREATE INDEX idx_projects_enum_message_id ON ses.projects_enum(message_id);
 "#;
 
 /// Proposed schema for daily match results snapshots.
-/// run_date is a generated column based on created_at in JST timezone.
+/// run_date is a generated column based on created_at in RUN_DATE_TIMEZONE.
 /// Same-day updates overwrite the previous record (UPSERT pattern).
-pub const MATCH_RESULTS_DDL: &str = r#"
+pub static MATCH_RESULTS_DDL: Lazy<String> = Lazy::new(|| {
+    format!(
+        r#"
 CREATE TABLE ses.match_results (
     id BIGSERIAL PRIMARY KEY,
     talent_id BIGINT NOT NULL,
@@ -226,9 +236,9 @@ CREATE TABLE ses.match_results (
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
 
-    -- JST基準の日付（自動算出 - アプリは触れない）
+    -- 基準タイムゾーンの日付（自動算出 - アプリは触れない）
     run_date DATE GENERATED ALWAYS AS (
-        (created_at AT TIME ZONE 'Asia/Tokyo')::date
+        {run_date}
     ) STORED,
 
     CONSTRAINT uniq_match_results_active UNIQUE (talent_id, project_id, run_date, last_match_run_id)
@@ -249,7 +259,10 @@ CREATE INDEX idx_match_results_match_run ON ses.match_results(last_match_run_id)
 CREATE INDEX idx_match_results_score_breakdown_json
   ON ses.match_results USING GIN(score_breakdown jsonb_path_ops)
   WHERE score_breakdown IS NOT NULL AND deleted_at IS NULL;
-"#;
+"#,
+        run_date = RUN_DATE_EXPRESSION.as_str(),
+    )
+});
 
 /// 保存場所: `ses.llm_comparison_results` (LLM shadow/AB比較ログ)
 pub const LLM_COMPARISON_RESULTS_DDL: &str = r#"
@@ -272,7 +285,9 @@ CREATE INDEX idx_llm_comparison_providers ON ses.llm_comparison_results(primary_
 "#;
 
 /// Unified event log for GUI and sales feedback.
-pub const FEEDBACK_EVENTS_DDL: &str = r#"
+pub static FEEDBACK_EVENTS_DDL: Lazy<String> = Lazy::new(|| {
+    format!(
+        r#"
 CREATE TABLE ses.feedback_events (
     id BIGSERIAL PRIMARY KEY,
 
@@ -319,9 +334,9 @@ CREATE TABLE ses.feedback_events (
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
 
-    -- パーティションキー（JST日単位）
+    -- パーティションキー（指定タイムゾーンの日付）
     event_date DATE GENERATED ALWAYS AS (
-        (created_at AT TIME ZONE 'Asia/Tokyo')::date
+        {run_date}
     ) STORED,
 
     CONSTRAINT uniq_feedback_events_actor_type UNIQUE (interaction_id, feedback_type, actor, event_date)
@@ -385,7 +400,10 @@ BEFORE INSERT ON ses.feedback_events
 FOR EACH ROW EXECUTE FUNCTION ses.feedback_events_align_created_at();
 
 COMMENT ON TABLE ses.feedback_events IS '営業/GUIフィードバックの統一イベントログ（Two-Tower学習の正解ラベル源）';
-"#;
+"#,
+        run_date = RUN_DATE_EXPRESSION.as_str(),
+    )
+});
 
 /// GUI行動ログ: FBを押さなくても残る「良い兆候」イベント
 /// idempotency_key で同じ操作のリトライを冪等に処理
@@ -478,7 +496,9 @@ COMMENT ON TABLE ses.conversion_events IS 'CV（面談化/成約）ログ（Two-
 /// Interaction logging for recommendations and downstream training views.
 /// run_date is a generated column based on created_at in JST timezone.
 /// UNIQUE is per (match_run_id, talent_id, project_id) to allow multiple runs per day.
-pub const INTERACTION_LOGS_DDL: &str = r#"
+pub static INTERACTION_LOGS_DDL: Lazy<String> = Lazy::new(|| {
+    format!(
+        r#"
 CREATE TABLE ses.interaction_logs (
     id BIGSERIAL PRIMARY KEY,
 
@@ -511,9 +531,9 @@ CREATE TABLE ses.interaction_logs (
     -- メタデータ
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
 
-    -- JST基準の日付（自動算出 - アプリは触れない、検索/集計用）
+    -- 基準タイムゾーンの日付（自動算出 - アプリは触れない、検索/集計用）
     run_date DATE GENERATED ALWAYS AS (
-        (created_at AT TIME ZONE 'Asia/Tokyo')::date
+        {run_date}
     ) STORED,
 
     -- 同一 run 内の二重INSERT（リトライ/バグ）を抑止、別 run なら同日でも記録可
@@ -687,7 +707,10 @@ LEFT JOIN behavior_best bb ON bb.interaction_id = il.id
 WHERE cv.cv_label IS NOT NULL
    OR fb.fb_label IS NOT NULL
    OR bb.behavior_label IS NOT NULL;
-"#;
+"#,
+        run_date = RUN_DATE_EXPRESSION.as_str(),
+    )
+});
 
 #[cfg(test)]
 mod tests {
@@ -747,7 +770,7 @@ mod tests {
             "last_match_run_id VARCHAR(64) NOT NULL",
             "updated_at",
             "run_date DATE GENERATED ALWAYS",
-            "Asia/Tokyo",
+            RUN_DATE_TIMEZONE,
             "is_deleted",
             "deleted_at",
             "deleted_by",
@@ -759,7 +782,10 @@ mod tests {
             "idx_match_results_match_run",
             "idx_match_results_score_breakdown_json",
         ] {
-            assert!(MATCH_RESULTS_DDL.contains(required), "missing: {required}");
+            assert!(
+                MATCH_RESULTS_DDL.as_str().contains(required),
+                "missing: {required}"
+            );
         }
     }
 
@@ -782,7 +808,10 @@ mod tests {
             "PARTITION BY RANGE (event_date)",
             "COMMENT ON TABLE ses.feedback_events",
         ] {
-            assert!(FEEDBACK_EVENTS_DDL.contains(required), "missing: {required}");
+            assert!(
+                FEEDBACK_EVENTS_DDL.as_str().contains(required),
+                "missing: {required}"
+            );
         }
     }
 
@@ -798,7 +827,7 @@ mod tests {
             "engine_version",
             "config_version",
             "run_date DATE GENERATED ALWAYS",
-            "Asia/Tokyo",
+            RUN_DATE_TIMEZONE,
             "interaction_logs_unique_run_pair",
             "UNIQUE (match_run_id, talent_id, project_id)",
             "idx_interaction_logs_match_run",
@@ -811,7 +840,7 @@ mod tests {
             "labeled_count", // Cold Start判定用
         ] {
             assert!(
-                INTERACTION_LOGS_DDL.contains(required),
+                INTERACTION_LOGS_DDL.as_str().contains(required),
                 "missing: {required}"
             );
         }
@@ -828,7 +857,7 @@ mod tests {
             "CASE",
         ] {
             assert!(
-                INTERACTION_LOGS_DDL.contains(required),
+                INTERACTION_LOGS_DDL.as_str().contains(required),
                 "missing in training_pairs view: {required}"
             );
         }
@@ -920,7 +949,7 @@ mod tests {
             "Phase 2:",
         ] {
             assert!(
-                INTERACTION_LOGS_DDL.contains(required),
+                INTERACTION_LOGS_DDL.as_str().contains(required),
                 "missing: {required}"
             );
         }

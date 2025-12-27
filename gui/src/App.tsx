@@ -4,18 +4,21 @@ import { initializeAuthFromEnv, queryClient } from "@/api";
 import { router } from "./router";
 import { Toaster } from "@/components/ui/sonner";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { I18nProvider } from "@/lib/i18n";
 
 // Build-time env から API Key / JWT を読み込み、デフォルト認証をセット
 initializeAuthFromEnv();
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <ErrorBoundary>
-        <RouterProvider router={router} />
-        <Toaster position="top-right" richColors />
-      </ErrorBoundary>
-    </QueryClientProvider>
+    <I18nProvider>
+      <QueryClientProvider client={queryClient}>
+        <ErrorBoundary>
+          <RouterProvider router={router} />
+          <Toaster position="top-right" richColors />
+        </ErrorBoundary>
+      </QueryClientProvider>
+    </I18nProvider>
   );
 }
 

@@ -1,6 +1,11 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { get, post } from "../client";
-import type { QueueDashboard, QueueJobListResponse, QueueJobDetailResponse } from "../types";
+import type {
+  QueueDashboard,
+  QueueJobDetailResponse,
+  QueueJobListResponse,
+  QueueJobStatus,
+} from "../types";
 
 /**
  * Queue Dashboard 取得
@@ -18,7 +23,7 @@ export function useQueueDashboard() {
 export function useQueueJobs(params?: {
   limit?: number;
   offset?: number;
-  status?: string;
+  status?: QueueJobStatus;
   requiresManualReview?: boolean;
 }) {
   const searchParams = new URLSearchParams();
@@ -43,7 +48,7 @@ export function useQueueJobs(params?: {
 
 export function useInfiniteQueueJobs(params?: {
   limit?: number;
-  status?: string;
+  status?: QueueJobStatus;
   requiresManualReview?: boolean;
 }) {
   const baseSearchParams = new URLSearchParams();
@@ -102,7 +107,7 @@ export function useRetryJob() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (jobId: number | string) =>
-      post<{ success: boolean; status: string }>(`/api/queue/retry/${jobId}`, {}),
+      post<{ success: boolean; status: QueueJobStatus }>(`/api/queue/retry/${jobId}`, {}),
     onSuccess: (_data, jobId) => {
       queryClient.invalidateQueries({ queryKey: ["queue", "job", jobId] });
       queryClient.invalidateQueries({ queryKey: ["queue", "jobs"] });
