@@ -12,6 +12,11 @@ export const MESSAGES = {
     "status.ok": "OK",
     "status.ko": "KO",
 
+    "nav.queue": "Queue",
+    "nav.jobs": "Jobs",
+    "nav.projects": "Projects",
+    "nav.talents": "Talents",
+
     "queue.dashboard.title": "Queue Dashboard",
     "queue.dashboard.subtitle": "Operations view for monitoring issues and retrying jobs — not for everyday workflows.",
     "queue.dashboard.manualReview": "Manual Review",
@@ -187,6 +192,11 @@ export const MESSAGES = {
     "status.reviewRequired": "要レビュー",
     "status.ok": "OK",
     "status.ko": "KO",
+
+    "nav.queue": "キュー",
+    "nav.jobs": "ジョブ",
+    "nav.projects": "プロジェクト",
+    "nav.talents": "タレント",
 
     "queue.dashboard.title": "キューダッシュボード",
     "queue.dashboard.subtitle": "監視と再実行のための運用ビューであり、日常業務向けではありません。",
