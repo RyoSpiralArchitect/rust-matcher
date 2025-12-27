@@ -104,7 +104,7 @@ impl IntoResponse for ApiError {
         let code = self.code();
         let request_id = current_request_id();
 
-        match self.internal_message() {
+        match self.sanitized_internal_message() {
             Some(details) => {
                 error!(
                     code,
@@ -185,10 +185,10 @@ impl ApiError {
         }
     }
 
-    fn internal_message(&self) -> Option<&str> {
+    fn sanitized_internal_message(&self) -> Option<String> {
         match self {
-            ApiError::Database { internal } => internal.as_deref(),
-            ApiError::Internal(msg) => Some(msg.as_str()),
+            ApiError::Database { internal } => internal.as_deref().map(sanitize_message),
+            ApiError::Internal(msg) => Some(sanitize_message(msg)),
             _ => None,
         }
     }
@@ -275,5 +275,17 @@ mod tests {
         let bytes = body.collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["request_id"], "req-123");
+    }
+
+    #[tokio::test]
+    async fn database_errors_mask_public_message() {
+        let err = ApiError::database_error("relation secret_table does not exist");
+        let response = err.into_response();
+
+        let (parts, body) = response.into_parts();
+        assert_eq!(parts.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["message"], "internal server error");
     }
 }
