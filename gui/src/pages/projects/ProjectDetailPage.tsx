@@ -331,26 +331,26 @@ export function ProjectDetailPage() {
               )}
             </CardContent>
           </Card>
-        )}
 
-        <div className="space-y-4">
-          {matches.map((match) => (
-            <TalentCard
-              key={match.interactionId}
-              match={match}
-              onFeedback={handleFeedback}
-              onViewDetail={handleViewDetail}
-              isBusy={feedbackMutation.isPending && pendingInteractionId === match.interactionId}
-              isDisabled={feedbackMutation.isPending}
-              labels={{
-                propose: t("projectDetail.cta.propose"),
-                reject: t("projectDetail.cta.reject"),
-                interview: t("projectDetail.cta.interview"),
-                details: t("projectDetail.cta.details"),
-              }}
-            />
-          ))}
-        </div>
+          <div className="space-y-4">
+            {matches.map((match) => (
+              <TalentCard
+                key={match.interactionId}
+                match={match}
+                onFeedback={handleFeedback}
+                onViewDetail={handleViewDetail}
+                isBusy={feedbackMutation.isPending && pendingInteractionId === match.interactionId}
+                isDisabled={feedbackMutation.isPending}
+                labels={{
+                  propose: t("projectDetail.cta.propose"),
+                  reject: t("projectDetail.cta.reject"),
+                  interview: t("projectDetail.cta.interview"),
+                  details: t("projectDetail.cta.details"),
+                }}
+              />
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   );
