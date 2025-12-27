@@ -64,6 +64,31 @@ export interface MatchCandidatesResponse {
 }
 
 // ============================================================
+// Projects List
+// ============================================================
+
+export interface ProjectListItem {
+  id?: number | null;
+  projectId?: number | null;
+  projectName: string | null;
+  monthlyTankaMin: number | null;
+  monthlyTankaMax: number | null;
+  matchedCount?: number | null;
+  proposedCount?: number | null;
+  interviewingCount?: number | null;
+}
+
+export type ProjectsListResponse =
+  | ProjectListItem[]
+  | {
+      items: ProjectListItem[];
+      limit?: number;
+      offset?: number;
+      total?: number;
+      hasMore?: boolean;
+    };
+
+// ============================================================
 // Project Detail
 // ============================================================
 
