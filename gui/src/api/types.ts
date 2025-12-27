@@ -41,6 +41,32 @@ export interface MatchCandidatesResponse {
 }
 
 // ============================================================
+// Project Detail
+// ============================================================
+
+export interface ProjectMatch {
+  interactionId: number;
+  talentId: number;
+  talentName: string | null;
+  score: number;
+  headline: string | null;
+  keySkills: string[];
+  desiredRateMin: number | null;
+  desiredRateMax: number | null;
+}
+
+export interface ProjectDetailResponse {
+  id: number;
+  name: string;
+  summary?: string | null;
+  rateMin: number | null;
+  rateMax: number | null;
+  workStyle: string | null;
+  skills: string[];
+  matches: ProjectMatch[];
+}
+
+// ============================================================
 // Feedback
 // ============================================================
 
