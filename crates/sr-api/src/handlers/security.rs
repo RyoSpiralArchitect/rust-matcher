@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{security::SecurityTxtConfig, SharedState};
+use crate::{compute_weak_etag, security::SecurityTxtConfig, SharedState, STATIC_CACHE_CONTROL};
 
 pub async fn security_txt(State(state): State<SharedState>) -> impl IntoResponse {
     let SecurityTxtConfig {
@@ -48,12 +48,18 @@ pub async fn security_txt(State(state): State<SharedState>) -> impl IntoResponse
         body.push_str(&format!("Hiring: {hiring}\n"));
     }
 
+    let etag = compute_weak_etag(body.as_bytes());
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; charset=utf-8"),
     );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(STATIC_CACHE_CONTROL),
+    );
+    response.headers_mut().insert(header::ETAG, etag);
 
     response
 }

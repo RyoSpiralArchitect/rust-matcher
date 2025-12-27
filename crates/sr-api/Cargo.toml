@@ -26,6 +26,7 @@ jsonwebtoken.workspace = true
 subtle.workspace = true
 metrics.workspace = true
 sr-metrics = { path = "../sr-metrics" }
+sha2.workspace = true
 
 [dev-dependencies]
 http-body-util = "0.1"
