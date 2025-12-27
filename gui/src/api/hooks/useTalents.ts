@@ -36,7 +36,13 @@ function buildSearchParams(params: TalentSearchParams, offset: number) {
 export function useTalents(params: TalentSearchParams) {
   const limit = params.limit ?? 20;
 
-  return useInfiniteQuery<TalentSearchResponse, unknown, CombinedTalentPages>({
+  return useInfiniteQuery<
+    TalentSearchResponse,
+    unknown,
+    CombinedTalentPages,
+    ["talents", TalentSearchParams],
+    number
+  >({
     queryKey: ["talents", params],
     initialPageParam: 0,
     queryFn: ({ pageParam }) => {
@@ -54,6 +60,7 @@ export function useTalents(params: TalentSearchParams) {
 
       return {
         ...data,
+        pageParams: data.pageParams,
         items,
         total,
         hasMore,
