@@ -1,7 +1,4 @@
-use axum::{
-    extract::{Path, Query, State},
-    Json,
-};
+use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 use sr_common::api::match_response::MatchResponse;
 use sr_common::db::fetch_candidates_for_project;
@@ -10,7 +7,7 @@ use tracing::info;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::handlers::pagination::validate_pagination;
-use crate::SharedState;
+use crate::{CacheableJson, SharedState, SHORT_CACHE_CONTROL};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CandidateQuery {
@@ -37,7 +34,7 @@ pub async fn list_candidates(
     Path(project_id): Path<i64>,
     Query(query): Query<CandidateQuery>,
     auth: AuthUser,
-) -> Result<Json<CandidateListResponse>, ApiError> {
+) -> Result<CacheableJson<CandidateListResponse>, ApiError> {
     let (limit, offset) = validate_pagination(i64::from(query.limit), i64::from(query.offset))?;
     let limit = limit as u32;
     let offset = offset as u32;
@@ -50,6 +47,7 @@ pub async fn list_candidates(
         "listing candidates"
     );
 
+    let match_config = state.match_config.read().await.clone();
     let candidates = fetch_candidates_for_project(
         &state.pool,
         project_id,
@@ -57,12 +55,15 @@ pub async fn list_candidates(
         limit,
         offset,
         None,
-        &state.match_config,
+        &match_config,
     )
     .await?;
 
-    Ok(Json(CandidateListResponse {
-        project_id,
-        candidates,
-    }))
+    Ok(CacheableJson::new(
+        CandidateListResponse {
+            project_id,
+            candidates,
+        },
+        SHORT_CACHE_CONTROL,
+    ))
 }

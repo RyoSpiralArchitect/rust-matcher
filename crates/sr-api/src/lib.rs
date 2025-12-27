@@ -9,19 +9,19 @@ use axum::{
     extract::connect_info::ConnectInfo,
     extract::DefaultBodyLimit,
     extract::State,
-    http::header::{HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
+    http::header::{HeaderName, HeaderValue, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, ETAG},
     http::Method,
     http::Request,
     http::StatusCode,
     middleware,
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use clap::Parser;
-use dotenvy::dotenv;
+use dotenvy::{dotenv, dotenv_override};
 use governor::{
     clock::{Clock, DefaultClock},
     middleware::{StateInformationMiddleware, StateSnapshot},
@@ -29,10 +29,12 @@ use governor::{
     Quota, RateLimiter,
 };
 use metrics::{counter, gauge, histogram};
+use sha2::{Digest, Sha256};
 use sr_common::api::match_response::MatchConfig;
 use sr_common::db::create_pool_from_url_checked;
 use sr_common::db::{run_migrations, PgPool};
 use sr_metrics::init_metrics;
+use tokio::sync::RwLock;
 use tokio::time::Duration as TokioDuration;
 use tower_http::{
     cors::CorsLayer,
@@ -56,6 +58,8 @@ use security::SecurityTxtConfig;
 use sr_common::logging::{init_tracing_subscriber, install_tracing_panic_hook};
 
 const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+pub(crate) const SHORT_CACHE_CONTROL: &str = "private, max-age=60, must-revalidate";
+pub(crate) const STATIC_CACHE_CONTROL: &str = "public, max-age=86400, must-revalidate";
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "sr-api", about = "HTTP API for sr-match GUI integration")]
@@ -343,7 +347,7 @@ impl AppConfig {
 pub struct AppState {
     pub pool: PgPool,
     pub config: AppConfig,
-    pub match_config: MatchConfig,
+    pub match_config: Arc<RwLock<MatchConfig>>,
     pub(crate) rate_limits: RateLimits,
     pub readiness: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -575,6 +579,71 @@ fn spawn_pool_metrics(pool: PgPool) {
     });
 }
 
+pub(crate) fn compute_weak_etag(body: &[u8]) -> HeaderValue {
+    let hash = Sha256::digest(body);
+    let value = format!("W/\"{:x}\"", hash);
+    HeaderValue::from_str(&value).unwrap_or_else(|_| HeaderValue::from_static("\"invalid-etag\""))
+}
+
+pub struct CacheableJson<T> {
+    payload: T,
+    cache_control: &'static str,
+}
+
+impl<T> CacheableJson<T> {
+    pub fn new(payload: T, cache_control: &'static str) -> Self {
+        Self {
+            payload,
+            cache_control,
+        }
+    }
+}
+
+impl<T> IntoResponse for CacheableJson<T>
+where
+    T: serde::Serialize,
+{
+    fn into_response(self) -> Response {
+        let body = serde_json::to_vec(&self.payload).unwrap_or_else(|err| {
+            error!(error = %err, "failed to serialize cacheable json payload");
+            Vec::new()
+        });
+
+        let mut response = Response::new(Body::from(body.clone()));
+        *response.status_mut() = StatusCode::OK;
+        response
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static(self.cache_control));
+        response
+            .headers_mut()
+            .insert(ETAG, compute_weak_etag(&body));
+
+        response
+    }
+}
+
+async fn add_deprecation_headers(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        HeaderName::from_static("deprecation"),
+        HeaderValue::from_static("true"),
+    );
+    response.headers_mut().append(
+        HeaderName::from_static("link"),
+        HeaderValue::from_static("</api/v1>; rel=\"successor-version\""),
+    );
+    let sunset = (Utc::now() + ChronoDuration::days(90)).to_rfc2822();
+    if let Ok(value) = HeaderValue::from_str(&sunset) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("sunset"), value);
+    }
+    Ok(response)
+}
+
 pub fn create_router(state: SharedState) -> Router {
     let cors = cors_layer(&state.config.cors_origins);
 
@@ -624,6 +693,9 @@ pub fn create_router(state: SharedState) -> Router {
             post(interactions::submit_interaction_event),
         )
         .route("/conversions", post(conversion::submit_conversion));
+    let deprecated_api_routes = api_routes
+        .clone()
+        .layer(middleware::from_fn(add_deprecation_headers));
 
     Router::new()
         .route(
@@ -634,7 +706,7 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/livez", get(health::livez))
         .route("/readyz", get(health::readyz))
         .nest("/api/v1", api_routes.clone())
-        .nest("/api", api_routes)
+        .nest("/api", deprecated_api_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             per_endpoint_rate_limit,
@@ -670,7 +742,7 @@ pub fn test_state(api_key: &str) -> SharedState {
     Arc::new(AppState {
         pool,
         config: AppConfig::for_tests(auth),
-        match_config: MatchConfig::default(),
+        match_config: Arc::new(RwLock::new(MatchConfig::default())),
         rate_limits: default_rate_limits(),
         readiness: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     })
@@ -682,8 +754,10 @@ mod tests {
     use axum::{
         body::Body,
         extract::connect_info::ConnectInfo,
-        http::{Request, StatusCode},
+        http::{header, Request, StatusCode},
+        middleware,
         routing::get,
+        Router,
     };
     use http_body_util::BodyExt;
     use serial_test::serial;
@@ -949,17 +1023,187 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
+        let headers = response.headers().clone();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
 
         assert!(body_str.contains("Contact: mailto:security@example.com"));
         assert!(body_str.contains("Expires:"));
         assert!(body_str.contains("Preferred-Languages: en"));
+
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL),
+            Some(HeaderValue::from_static(STATIC_CACHE_CONTROL)).as_ref()
+        );
+        assert!(headers.get(header::ETAG).is_some());
     }
+
+    #[tokio::test]
+    async fn security_txt_returns_not_modified_when_etag_matches() {
+        let state = test_state("test-key");
+        let app = create_router(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/security.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let etag = first.headers().get(header::ETAG).unwrap().clone();
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/security.txt")
+                    .header(header::IF_NONE_MATCH, etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            second.headers().get(header::CACHE_CONTROL),
+            Some(HeaderValue::from_static(STATIC_CACHE_CONTROL)).as_ref()
+        );
+        assert_eq!(
+            second.headers().get(header::ETAG),
+            first.headers().get(header::ETAG)
+        );
+    }
+
+    #[tokio::test]
+    async fn cacheable_json_sets_etag_and_cache_control() {
+        let payload = serde_json::json!({ "hello": "world" });
+        let response = CacheableJson::new(payload, SHORT_CACHE_CONTROL).into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static(SHORT_CACHE_CONTROL))
+        );
+        assert!(response.headers().get(header::ETAG).is_some());
+    }
+
+    #[test]
+    fn reload_match_config_updates_values() {
+        with_envs(
+            &[
+                ("AUTO_MATCH_THRESHOLD", Some("0.9")),
+                ("MANUAL_REVIEW_MARGIN", Some("0.05")),
+            ],
+            || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let state = test_state("test-key");
+                        reload_match_config_from_env(&state)
+                            .await
+                            .expect("reload should succeed");
+                        let guard = state.match_config.read().await;
+                        assert!((guard.auto_match_threshold - 0.9).abs() < f64::EPSILON);
+                        assert!((guard.manual_review_margin - 0.05).abs() < f64::EPSILON);
+                    });
+            },
+        );
+    }
+
+    #[test]
+    fn reload_match_config_rejects_invalid_values() {
+        with_envs(&[("AUTO_MATCH_THRESHOLD", Some("invalid"))], || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let state = test_state("test-key");
+                    let before = state.match_config.read().await.clone();
+                    let result = reload_match_config_from_env(&state).await;
+                    assert!(result.is_err());
+                    let after = state.match_config.read().await.clone();
+                    assert_eq!(before.auto_match_threshold, after.auto_match_threshold);
+                });
+        });
+    }
+
+    #[tokio::test]
+    async fn unversioned_api_routes_include_deprecation_header() {
+        let state = test_state("test-key");
+        let app = Router::new()
+            .route("/api/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(add_deprecation_headers))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("deprecation"),
+            Some(&HeaderValue::from_static("true"))
+        );
+    }
+}
+
+async fn reload_match_config_from_env(state: &SharedState) -> Result<(), String> {
+    dotenv_override().ok();
+    let updated = MatchConfig::from_env_checked()?;
+    let mut guard = state.match_config.write().await;
+    *guard = updated;
+    Ok(())
+}
+
+fn spawn_match_config_reload_listener(state: SharedState) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut hup = signal(SignalKind::hangup()).expect("failed to install SIGHUP handler");
+        tokio::spawn(async move {
+            while hup.recv().await.is_some() {
+                match reload_match_config_from_env(&state).await {
+                    Ok(_) => info!("reloaded match configuration from environment"),
+                    Err(err) => error!(error = %err, "failed to reload match configuration"),
+                }
+            }
+        });
+    }
+
+    #[cfg(not(unix))]
+    let _ = state;
+}
+
+fn deny_sensitive_cli_args() -> Result<(), ApiError> {
+    const SENSITIVE_FLAGS: &[&str] = &["--api-key", "--jwt-secret", "--jwt-public-key"];
+    for arg in std::env::args() {
+        for flag in SENSITIVE_FLAGS {
+            if arg == *flag || arg.starts_with(&format!("{flag}=")) {
+                return Err(ApiError::BadRequest(
+                    "Refusing to read secrets from CLI args; use SR_API_KEY/JWT_SECRET/JWT_PUBLIC_KEY env vars instead".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub async fn run() -> Result<(), ApiError> {
     dotenv().ok();
+    deny_sensitive_cli_args()?;
     init_tracing_subscriber(env!("CARGO_PKG_NAME"));
     install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
     init_metrics("SR_API_METRICS_PORT", 9899);
@@ -979,13 +1223,14 @@ pub async fn run() -> Result<(), ApiError> {
     let state = Arc::new(AppState {
         pool,
         config: config.clone(),
-        match_config,
+        match_config: Arc::new(RwLock::new(match_config)),
         rate_limits,
         readiness: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     let addr: SocketAddr = ([0, 0, 0, 0], config.port).into();
     let app = create_router(state.clone());
+    spawn_match_config_reload_listener(state.clone());
     spawn_pool_metrics(state.pool.clone());
 
     info!(%addr, auth_mode = ?config.auth.mode, "sr-api listening");

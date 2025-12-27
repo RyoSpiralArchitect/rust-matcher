@@ -1,13 +1,16 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 
-use crate::{security::SecurityTxtConfig, SharedState};
+use crate::{compute_weak_etag, security::SecurityTxtConfig, SharedState, STATIC_CACHE_CONTROL};
 
-pub async fn security_txt(State(state): State<SharedState>) -> impl IntoResponse {
+pub async fn security_txt(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     let SecurityTxtConfig {
         contact,
         expires,
@@ -48,12 +51,33 @@ pub async fn security_txt(State(state): State<SharedState>) -> impl IntoResponse
         body.push_str(&format!("Hiring: {hiring}\n"));
     }
 
+    let etag = compute_weak_etag(body.as_bytes());
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|candidate| candidate.trim() == etag.to_str().unwrap_or_default())
+    {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(STATIC_CACHE_CONTROL),
+        );
+        response.headers_mut().insert(header::ETAG, etag);
+        return response;
+    }
+
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; charset=utf-8"),
     );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(STATIC_CACHE_CONTROL),
+    );
+    response.headers_mut().insert(header::ETAG, etag);
 
     response
 }
