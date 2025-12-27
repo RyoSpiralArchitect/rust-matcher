@@ -12,14 +12,19 @@ export const MESSAGES = {
     "status.ok": "OK",
     "status.ko": "KO",
 
-    "queue.dashboard.title": "Queue Dashboard",
+    "nav.queueAdmin": "Queue (Admin)",
+    "nav.jobsAdmin": "Jobs (Admin)",
+    "nav.projects": "Projects",
+    "nav.adminBadge": "Admin",
+
+    "queue.dashboard.title": "Queue Dashboard (Admin/Ops)",
     "queue.dashboard.manualReview": "Manual Review",
     "queue.dashboard.errors": "Errors",
     "queue.dashboard.staleProcessing": "Stale Processing",
     "queue.dashboard.viewAllJobs": "View All Jobs →",
     "queue.dashboard.viewPendingJobs": "View Pending Jobs →",
 
-    "queue.jobs.title": "Queue Jobs",
+    "queue.jobs.title": "Queue Jobs (Admin/Ops)",
     "queue.jobs.filter.statusLabel": "Status:",
     "queue.jobs.filter.statusAria": "Filter queue by status",
     "queue.jobs.filter.all": "All",
@@ -182,14 +187,19 @@ export const MESSAGES = {
     "status.ok": "OK",
     "status.ko": "KO",
 
-    "queue.dashboard.title": "キューダッシュボード",
+    "nav.queueAdmin": "処理キュー（管理）",
+    "nav.jobsAdmin": "ジョブ一覧（管理）",
+    "nav.projects": "プロジェクト",
+    "nav.adminBadge": "管理",
+
+    "queue.dashboard.title": "処理キュー（管理者向け）",
     "queue.dashboard.manualReview": "要レビュー",
     "queue.dashboard.errors": "エラー",
     "queue.dashboard.staleProcessing": "処理中（滞留）",
     "queue.dashboard.viewAllJobs": "すべてのジョブを見る →",
     "queue.dashboard.viewPendingJobs": "待機中のジョブを見る →",
 
-    "queue.jobs.title": "キュージョブ",
+    "queue.jobs.title": "キュージョブ（管理者向け）",
     "queue.jobs.filter.statusLabel": "ステータス:",
     "queue.jobs.filter.statusAria": "ステータスでキューをフィルタ",
     "queue.jobs.filter.all": "すべて",
