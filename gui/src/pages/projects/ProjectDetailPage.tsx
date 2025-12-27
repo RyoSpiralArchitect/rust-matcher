@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, CalendarClock, Loader2, MessageCircle, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useProjectDetail, useProjectFeedback, trackViewedDetail } from "@/api";
-import type { FeedbackType, ProjectMatch, ProjectMatchStatus } from "@/api";
+import { TalentMatchCard } from "@/components/projects/TalentMatchCard";
+import { useProjectDetail, useProjectFeedback, useProjectMatches, trackViewedDetail } from "@/api";
+import type { FeedbackType } from "@/api";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
@@ -57,105 +58,6 @@ function SummaryField({ label, value }: { label: string; value: string | number 
   );
 }
 
-function TalentCard({
-  match,
-  onFeedback,
-  onViewDetail,
-  isBusy,
-  isDisabled,
-  labels,
-}: {
-  match: ProjectMatch;
-  onFeedback: (interactionId: number, feedbackType: FeedbackType) => void;
-  onViewDetail: (interactionId: number) => void;
-  isBusy: boolean;
-  isDisabled: boolean;
-  labels: { propose: string; reject: string; interview: string; details: string };
-}) {
-  const { t } = useI18n();
-  const resolvedStatus: ProjectMatchStatus = (match.status as ProjectMatchStatus) ?? "pending";
-  const statusMeta = STATUS_META[resolvedStatus] ?? STATUS_META.pending;
-  const statusLabel = t(statusMeta.labelKey);
-  const skills = match.keySkills ?? [];
-  const rateRange =
-    match.desiredRateMin !== null && match.desiredRateMin !== undefined
-      ? `¥${match.desiredRateMin.toLocaleString()}${match.desiredRateMax ? ` - ¥${match.desiredRateMax.toLocaleString()}` : ""}`
-      : null;
-
-  return (
-    <Card>
-      <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div className="space-y-2">
-          <CardTitle>{match.talentName ?? `Talent #${match.talentId}`}</CardTitle>
-          {match.headline ? <CardDescription>{match.headline}</CardDescription> : null}
-          <div className="flex flex-wrap gap-2">
-            <Badge variant={statusMeta.variant ?? "default"} className={statusMeta.className}>
-              {statusLabel}
-            </Badge>
-            <Badge variant="secondary">Score: {match.score.toFixed(1)}</Badge>
-            {skills.map((skill) => (
-              <Badge key={skill} variant="outline">
-                {skill}
-              </Badge>
-            ))}
-          </div>
-        </div>
-        <div className="text-sm text-muted-foreground space-y-1 text-left md:text-right">
-          {rateRange ? <div>Rate: {rateRange}</div> : null}
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onFeedback(match.interactionId, "thumbs_up")}
-            disabled={isDisabled}
-            aria-label={labels.propose}
-          >
-            {isBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ThumbsUp className="mr-2 h-4 w-4" />}
-            {labels.propose} 👍
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onFeedback(match.interactionId, "thumbs_down")}
-            disabled={isDisabled}
-            aria-label={labels.reject}
-          >
-            {isBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ThumbsDown className="mr-2 h-4 w-4" />}
-            {labels.reject} 👎
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => onFeedback(match.interactionId, "interview_scheduled")}
-            disabled={isDisabled}
-            aria-label={labels.interview}
-          >
-            {isBusy ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <CalendarClock className="mr-2 h-4 w-4" />
-            )}
-            {labels.interview}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onViewDetail(match.interactionId)}
-            disabled={isDisabled}
-            aria-label={labels.details}
-          >
-            <MessageCircle className="mr-2 h-4 w-4" />
-            {labels.details} 💬
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 export function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const { t } = useI18n();
@@ -163,8 +65,6 @@ export function ProjectDetailPage() {
   const { data, isLoading, error } = useProjectDetail(projectId);
   const { data: matches = [], isLoading: matchesLoading } = useProjectMatches(projectId);
   const feedbackMutation = useProjectFeedback(Number(projectId ?? 0));
-
-  const matches = useMemo(() => data?.matches ?? [], [data?.matches]);
 
   const hasMatches = matches.length > 0;
 
@@ -331,26 +231,7 @@ export function ProjectDetailPage() {
               )}
             </CardContent>
           </Card>
-        )}
-
-        <div className="space-y-4">
-          {matches.map((match) => (
-            <TalentCard
-              key={match.interactionId}
-              match={match}
-              onFeedback={handleFeedback}
-              onViewDetail={handleViewDetail}
-              isBusy={feedbackMutation.isPending && pendingInteractionId === match.interactionId}
-              isDisabled={feedbackMutation.isPending}
-              labels={{
-                propose: t("projectDetail.cta.propose"),
-                reject: t("projectDetail.cta.reject"),
-                interview: t("projectDetail.cta.interview"),
-                details: t("projectDetail.cta.details"),
-              }}
-            />
-          ))}
-        </div>
+        </section>
       </div>
     </div>
   );
