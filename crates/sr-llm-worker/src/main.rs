@@ -1078,6 +1078,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
     let shadow_runtime = ShadowCompareRuntime::new(shadow_config);
+
+    // Health check LLM endpoint before entering the work loop to fail fast.
+    if llm_config.enabled {
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(StdDuration::from_secs(llm_config.timeout_secs.min(10)))
+            .build()
+            .map_err(|err| format!("failed to build http client for health check: {err}"))?;
+        let probe = client
+            .get(&llm_config.endpoint)
+            .header("x-request-id", "startup-health-check")
+            .send()
+            .await;
+        if let Err(err) = probe {
+            return Err(format!("LLM endpoint unreachable at startup: {err}").into());
+        }
+    }
+
+    if shadow_runtime.config().mode == CompareMode::Shadow && shadow_runtime.config().max_in_flight > 0 {
+        if llm_config.shadow_api_key.is_empty() && llm_config.api_key.is_empty() {
+            warn!(
+                shadow_provider = %shadow_runtime.config().shadow_provider,
+                "shadow compare enabled but no shadow API key configured; shadow requests will be skipped"
+            );
+        }
+    }
+
     let pool = create_pool_from_url_checked(&args.db_url).await?;
     run_migrations(&pool).await?;
     let status = pool.status();

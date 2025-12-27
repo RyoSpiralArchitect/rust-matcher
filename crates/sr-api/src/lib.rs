@@ -542,6 +542,17 @@ pub async fn run() -> Result<(), ApiError> {
 
     let cli = Cli::parse();
     let config = AppConfig::from_cli(cli)?;
+    let match_config = MatchConfig::from_env();
+    if !(0.0..=1.0).contains(&match_config.auto_match_threshold) {
+        return Err(ApiError::BadRequest(
+            "AUTO_MATCH_THRESHOLD must be between 0.0 and 1.0".into(),
+        ));
+    }
+    if !(0.0..=1.0).contains(&match_config.manual_review_margin) {
+        return Err(ApiError::BadRequest(
+            "MANUAL_REVIEW_MARGIN must be between 0.0 and 1.0".into(),
+        ));
+    }
     let pool = create_pool_from_url_checked(&config.database_url)
         .await
         .map_err(|err| ApiError::Database(format!("failed to create pool: {err}")))?;
@@ -554,7 +565,7 @@ pub async fn run() -> Result<(), ApiError> {
     let state = Arc::new(AppState {
         pool,
         config: config.clone(),
-        match_config: MatchConfig::from_env(),
+        match_config,
         rate_limits,
         readiness: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
