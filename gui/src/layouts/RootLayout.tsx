@@ -1,14 +1,24 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
+import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
+import type { TranslationKey } from "@/lib/messages";
 
-const navItems = [
-  { href: "/queue", label: "Dashboard" },
-  { href: "/jobs", label: "Jobs" },
-  { href: "/projects", label: "Projects" },
+const navItems: { href: string; labelKey: TranslationKey }[] = [
+  { href: "/queue", labelKey: "navigation.dashboard" },
+  { href: "/jobs", labelKey: "navigation.jobs" },
+  { href: "/projects", labelKey: "navigation.projects" },
+  { href: "/talents", labelKey: "navigation.talents" },
 ];
 
 export function RootLayout() {
+  const { t } = useI18n();
   const location = useLocation();
+  const { t } = useI18n();
+
+  const isActive = (href: string) =>
+    location.pathname === href || location.pathname.startsWith(`${href}/`);
 
   return (
     <div className="min-h-screen bg-background">
@@ -19,19 +29,16 @@ export function RootLayout() {
             SR Matcher
           </Link>
           <nav className="flex gap-4">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <Link
                 key={item.href}
                 to={item.href}
                 className={cn(
                   "text-sm font-medium transition-colors hover:text-primary",
-                  location.pathname === item.href ||
-                    location.pathname.startsWith(item.href + "/")
-                    ? "text-primary"
-                    : "text-muted-foreground"
+                  isActive(item.href) ? "text-primary" : "text-muted-foreground",
                 )}
               >
-                {item.label}
+                {t(item.labelKey)}
               </Link>
             ))}
           </nav>

@@ -1,7 +1,8 @@
 import { Suspense, lazy, type ReactNode } from "react";
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 import { RootLayout } from "./layouts/RootLayout";
 import { LoadingState } from "./components/LoadingState";
+import { QueueRouteGuard } from "./components/QueueRouteGuard";
 
 const QueueDashboardPage = lazy(() =>
   import("./pages/QueueDashboardPage").then((module) => ({
@@ -18,6 +19,16 @@ const JobDetailPage = lazy(() =>
     default: module.JobDetailPage,
   })),
 );
+const TalentsPage = lazy(() =>
+  import("./pages/TalentsPage").then((module) => ({
+    default: module.TalentsPage,
+  })),
+);
+const TalentDetailPage = lazy(() =>
+  import("./pages/TalentDetailPage").then((module) => ({
+    default: module.TalentDetailPage,
+  })),
+);
 const CandidatesPage = lazy(() =>
   import("./pages/CandidatesPage").then((module) => ({
     default: module.CandidatesPage,
@@ -31,6 +42,16 @@ const ProjectsListPage = lazy(() =>
 const ProjectDetailPage = lazy(() =>
   import("./pages/projects/ProjectDetailPage").then((module) => ({
     default: module.ProjectDetailPage,
+  })),
+);
+const TalentsPage = lazy(() =>
+  import("./pages/TalentsPage").then((module) => ({
+    default: module.TalentsPage,
+  })),
+);
+const TalentDetailPage = lazy(() =>
+  import("./pages/TalentDetailPage").then((module) => ({
+    default: module.TalentDetailPage,
   })),
 );
 
@@ -51,22 +72,64 @@ export const router = createBrowserRouter([
       // Queue Dashboard
       {
         path: "queue",
-        element: withSuspense(<QueueDashboardPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<QueueDashboardPage />)}
+          </QueueRouteGuard>
+        ),
       },
       // Queue Jobs 一覧
       {
         path: "jobs",
-        element: withSuspense(<QueueJobsPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<QueueJobsPage />)}
+          </QueueRouteGuard>
+        ),
       },
       // Job 詳細
       {
         path: "jobs/:jobId",
-        element: withSuspense(<JobDetailPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<JobDetailPage />)}
+          </QueueRouteGuard>
+        ),
       },
-      // Project 一覧
+      // Projects セクション
       {
         path: "projects",
-        element: withSuspense(<ProjectsListPage />),
+        element: <Outlet />,
+        children: [
+          {
+            index: true,
+            element: withSuspense(<ProjectsListPage />),
+          },
+          {
+            path: ":projectId",
+            element: withSuspense(<ProjectDetailPage />),
+          },
+          // 候補一覧（プロジェクト単位）
+          {
+            path: ":projectId/candidates",
+            element: withSuspense(<CandidatesPage />),
+          },
+        ],
+      },
+      // Talents セクション
+      {
+        path: "talents",
+        element: <Outlet />,
+        children: [
+          {
+            index: true,
+            element: withSuspense(<TalentsPage />),
+          },
+          {
+            path: ":id",
+            element: withSuspense(<TalentDetailPage />),
+          },
+        ],
       },
       // 候補一覧（プロジェクト単位）
       {
