@@ -2,6 +2,7 @@ import { Suspense, lazy, type ReactNode } from "react";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { RootLayout } from "./layouts/RootLayout";
 import { LoadingState } from "./components/LoadingState";
+import { QueueRouteGuard } from "./components/QueueRouteGuard";
 
 const QueueDashboardPage = lazy(() =>
   import("./pages/QueueDashboardPage").then((module) => ({
@@ -51,17 +52,29 @@ export const router = createBrowserRouter([
       // Queue Dashboard
       {
         path: "queue",
-        element: withSuspense(<QueueDashboardPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<QueueDashboardPage />)}
+          </QueueRouteGuard>
+        ),
       },
       // Queue Jobs 一覧
       {
         path: "jobs",
-        element: withSuspense(<QueueJobsPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<QueueJobsPage />)}
+          </QueueRouteGuard>
+        ),
       },
       // Job 詳細
       {
         path: "jobs/:jobId",
-        element: withSuspense(<JobDetailPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<JobDetailPage />)}
+          </QueueRouteGuard>
+        ),
       },
       // Project 一覧
       {

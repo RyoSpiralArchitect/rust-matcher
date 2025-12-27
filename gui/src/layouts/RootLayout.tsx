@@ -1,14 +1,20 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { useFlags } from "@/lib/auth";
 
 const navItems = [
-  { href: "/queue", label: "Dashboard" },
-  { href: "/jobs", label: "Jobs" },
-  { href: "/projects", label: "Projects" },
+  { href: "/queue", label: "Dashboard", requiresQueueAdmin: true },
+  { href: "/jobs", label: "Jobs", requiresQueueAdmin: true },
+  { href: "/projects", label: "Projects", requiresQueueAdmin: false },
 ];
 
 export function RootLayout() {
   const location = useLocation();
+  const { isQueueAdmin } = useFlags();
+
+  const visibleNavItems = navItems.filter(
+    (item) => !item.requiresQueueAdmin || isQueueAdmin,
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -19,7 +25,7 @@ export function RootLayout() {
             SR Matcher
           </Link>
           <nav className="flex gap-4">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <Link
                 key={item.href}
                 to={item.href}
@@ -32,6 +38,11 @@ export function RootLayout() {
                 )}
               >
                 {item.label}
+                {item.requiresQueueAdmin && isQueueAdmin && (
+                  <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                    Ops
+                  </span>
+                )}
               </Link>
             ))}
           </nav>
