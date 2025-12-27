@@ -1,7 +1,4 @@
-import { Link, Outlet, useLocation } from "react-router-dom";
-import { Badge } from "@/components/ui/badge";
-import { useFlags } from "@/lib/auth";
-import { useI18n } from "@/lib/i18n";
+import { Outlet, Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import type { TranslationKey } from "@/lib/messages";
 

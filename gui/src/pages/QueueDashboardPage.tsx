@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { useQueueDashboard } from "@/api";
 import { LoadingState } from "@/components/LoadingState";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
@@ -8,7 +9,7 @@ import { useFlags } from "@/lib/auth";
 
 export function QueueDashboardPage() {
   const { data, isLoading, error } = useQueueDashboard();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { isQueueAdmin } = useFlags();
 
   if (isLoading) {
@@ -21,11 +22,23 @@ export function QueueDashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-bold">{t("queue.dashboard.title")}</h1>
-        <p className="text-sm text-muted-foreground">
-          {t("queue.access.note")}
-        </p>
+      <div className="flex flex-col gap-1 md:flex-row md:items-baseline md:justify-between">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold">{t("queue.dashboard.title")}</h1>
+          <p className="text-sm text-muted-foreground">
+            {t("queue.dashboard.managementSubheading")}
+          </p>
+        </div>
+        {data?.updatedAt && (
+          <p className="text-sm text-muted-foreground">
+            {t("queue.dashboard.lastUpdated", {
+              value: new Intl.DateTimeFormat(locale, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }).format(new Date(data.updatedAt)),
+            })}
+          </p>
+        )}
       </div>
 
       {!isQueueAdmin ? (
@@ -34,102 +47,88 @@ export function QueueDashboardPage() {
         </div>
       ) : (
         <>
-          {/* Status Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {t("status.pending")}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold">
-                  {data?.statusCounts.pending ?? "-"}
-                </div>
-              </CardContent>
-            </Card>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <h2 className="text-lg font-semibold">{t("queue.dashboard.managementHeading")}</h2>
+              <p className="text-sm text-muted-foreground">{t("queue.access.note")}</p>
+            </div>
 
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {t("status.processing")}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold">
-                  {data?.statusCounts.processing ?? "-"}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {t("status.completed")}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold">
-                  {data?.statusCounts.completed ?? "-"}
-                </div>
-              </CardContent>
-            </Card>
+            <div className="space-y-3">
+              {[
+                {
+                  key: "pending",
+                  title: t("queue.dashboard.rows.pending"),
+                  note: t("queue.dashboard.rows.pendingNote"),
+                  count: data?.statusCounts.pending ?? 0,
+                  href: "/jobs?status=pending",
+                  badge: t("status.pending"),
+                },
+                {
+                  key: "on-hold",
+                  title: t("queue.dashboard.rows.onHold"),
+                  note: t("queue.dashboard.rows.onHoldNote"),
+                  count: data?.statusCounts.processing ?? 0,
+                  href: "/jobs?status=processing",
+                  badge: t("status.processing"),
+                  extras: [
+                    {
+                      label: t("queue.dashboard.staleProcessing"),
+                      value: data?.staleProcessingCount ?? 0,
+                    },
+                    {
+                      label: t("queue.dashboard.errors"),
+                      value: data?.errorCount ?? 0,
+                    },
+                  ],
+                },
+                {
+                  key: "review",
+                  title: t("queue.dashboard.rows.review"),
+                  note: t("queue.dashboard.rows.reviewNote"),
+                  count: data?.manualReviewCount ?? 0,
+                  href: "/jobs?review=true",
+                  badge: t("queue.dashboard.manualReview"),
+                },
+              ].map((row) => (
+                <Card key={row.key}>
+                  <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <CardTitle className="text-lg">{row.title}</CardTitle>
+                        <Badge variant="outline">{row.badge}</Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground">{row.note}</p>
+                    </div>
+                    <div className="text-3xl font-bold">{row.count}</div>
+                  </CardHeader>
+                  <CardContent className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                      {row.extras?.map((extra) => (
+                        <Badge key={extra.label} variant="secondary">
+                          {extra.label}: {extra.value}
+                        </Badge>
+                      ))}
+                    </div>
+                    <Link to={row.href} className="text-sm text-primary hover:underline">
+                      {t("queue.dashboard.linkToList", { label: row.title })}
+                    </Link>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           </div>
 
-          {/* Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {t("queue.dashboard.manualReview")}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-yellow-600">
-                  {data?.manualReviewCount ?? "-"}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {t("queue.dashboard.errors")}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-destructive">
-                  {data?.errorCount ?? "-"}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {t("queue.dashboard.staleProcessing")}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-orange-600">
-                  {data?.staleProcessingCount ?? "-"}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Quick Links */}
-          <div className="flex gap-4">
-            <Link
-              to="/jobs"
-              className="text-sm text-primary hover:underline"
-            >
+          <div className="flex flex-wrap gap-4 pt-2">
+            <Link to="/projects" className="text-sm text-primary hover:underline">
+              {t("queue.dashboard.linkProjects")}
+            </Link>
+            <Link to="/talents" className="text-sm text-primary hover:underline">
+              {t("queue.dashboard.linkTalents")}
+            </Link>
+            <Link to="/jobs" className="text-sm text-primary hover:underline">
               {t("queue.dashboard.viewAllJobs")}
             </Link>
-            <Link
-              to="/jobs?status=pending"
-              className="text-sm text-primary hover:underline"
-            >
+            <Link to="/jobs?status=pending" className="text-sm text-primary hover:underline">
               {t("queue.dashboard.viewPendingJobs")}
             </Link>
           </div>

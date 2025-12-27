@@ -21,12 +21,13 @@ import { Inbox, Loader2 } from "lucide-react";
 import { useFlags } from "@/lib/auth";
 
 type StatusFilter = QueueJobStatus | "all";
-const STATUS_FILTERS: StatusFilter[] = ["all", ...QUEUE_JOB_STATUSES];
+type SortMode = "status" | "updated";
 const PAGE_SIZE = 50;
 const ROW_HEIGHT = 64;
 const FILTER_DEBOUNCE_MS = 300;
+const STATUS_ORDER: QueueJobStatus[] = ["pending", "processing", "completed"];
 const COLUMN_LAYOUT =
-  "grid grid-cols-[90px_210px_130px_100px_80px_90px_180px] items-center";
+  "grid grid-cols-[90px_160px_1fr_200px] items-center";
 
 export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean } = {}) {
   const { t, locale } = useI18n();
@@ -39,9 +40,9 @@ export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean 
     ? (statusParam as QueueJobStatus)
     : undefined;
   const requiresReview = searchParams.get("review") === "true";
-  const [pendingStatus, setPendingStatus] = useState<StatusFilter>(normalizedStatus ?? "all");
-  const [pendingRequiresReview, setPendingRequiresReview] =
-    useState(requiresReview);
+  const [pendingStatus, setPendingStatus] = useState<StatusFilter>(normalizedStatus ?? "pending");
+  const [pendingRequiresReview, setPendingRequiresReview] = useState(requiresReview);
+  const [sortMode, setSortMode] = useState<SortMode>("status");
   const {
     data,
     isLoading,
@@ -55,10 +56,29 @@ export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean 
     requiresManualReview: requiresReview ? true : undefined,
   });
 
-  const jobs = useMemo(
+  const rawJobs = useMemo(
     () => data?.pages.flatMap((page) => page.items) ?? [],
     [data],
   );
+
+  const jobs = useMemo(() => {
+    const copy = [...rawJobs];
+    if (sortMode === "status") {
+      copy.sort((a, b) => {
+        if (a.requiresManualReview !== b.requiresManualReview) {
+          return a.requiresManualReview ? -1 : 1;
+        }
+        const statusDiff =
+          STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
+        if (statusDiff !== 0) return statusDiff;
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      });
+      return copy;
+    }
+    return copy.sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+    );
+  }, [rawJobs, sortMode]);
 
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const debounceRef = useRef<number | null>(null);
@@ -134,7 +154,7 @@ export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean 
   ]);
 
   useEffect(() => {
-    setPendingStatus(normalizedStatus ?? "all");
+    setPendingStatus(normalizedStatus ?? "pending");
     setPendingRequiresReview(requiresReview);
   }, [requiresReview, normalizedStatus]);
 
@@ -229,110 +249,84 @@ export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean 
         )}
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">{t("queue.jobs.filter.statusLabel")}</span>
-          <Select
-            value={pendingStatus}
-            onValueChange={(value) => setPendingStatus(value as StatusFilter)}
-          >
-            <SelectTrigger
-              aria-label={t("queue.jobs.filter.statusAria")}
-              className="w-[140px]"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STATUS_FILTERS.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s === "all"
-                    ? t("queue.jobs.filter.all")
-                    : t(
-                        s === "pending"
-                          ? "status.pending"
-                          : s === "processing"
-                            ? "status.processing"
-                            : "status.completed"
-                      )}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          {t("queue.access.note")}
-        </p>
-      </div>
-
       {!isQueueAdmin ? (
         <div className="rounded-md border border-dashed bg-muted/40 p-6 text-center text-sm text-muted-foreground">
           {t("queue.access.noAccess")}
         </div>
       ) : (
         <>
-          {/* Filters */}
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">{t("queue.jobs.filter.statusLabel")}</span>
-              <Select
-                value={pendingStatus}
-                onValueChange={(value) => setPendingStatus(value as StatusFilter)}
-              >
-                <SelectTrigger
-                  aria-label={t("queue.jobs.filter.statusAria")}
-                  className="w-[140px]"
+          <div className="space-y-2 rounded-md border bg-muted/30 p-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-muted-foreground">
+                  {t("queue.jobs.filter.statusLabel")}
+                </span>
+                {[
+                  { value: "pending" as StatusFilter, label: t("queue.jobs.filter.unprocessed") },
+                  { value: "processing" as StatusFilter, label: t("queue.jobs.filter.onHold") },
+                  { value: "completed" as StatusFilter, label: t("status.completed") },
+                  { value: "all" as StatusFilter, label: t("queue.jobs.filter.all") },
+                ].map((option) => (
+                  <Button
+                    key={option.value}
+                    size="sm"
+                    variant={pendingStatus === option.value ? "default" : "outline"}
+                    onClick={() => setPendingStatus(option.value)}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="review-filter"
+                  aria-label={t("queue.jobs.filter.reviewOnly")}
+                  checked={pendingRequiresReview}
+                  onCheckedChange={setPendingRequiresReview}
+                />
+                <label
+                  htmlFor="review-filter"
+                  className="text-sm text-muted-foreground cursor-pointer"
                 >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUS_FILTERS.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s === "all"
-                        ? t("queue.jobs.filter.all")
-                        : t(
-                            s === "pending"
-                              ? "status.pending"
-                              : s === "processing"
-                                ? "status.processing"
-                                : "status.completed"
-                          )}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+                  {t("queue.jobs.filter.reviewOnly")}
+                </label>
+              </div>
 
-            <div className="flex items-center gap-2">
-              <Switch
-                id="review-filter"
-                aria-label={t("queue.jobs.filter.reviewOnly")}
-                checked={pendingRequiresReview}
-                onCheckedChange={setPendingRequiresReview}
-              />
-              <label
-                htmlFor="review-filter"
-                className="text-sm text-muted-foreground cursor-pointer"
-              >
-                {t("queue.jobs.filter.reviewOnly")}
-              </label>
-            </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">
+                  {t("queue.jobs.filter.sort.label")}
+                </span>
+                <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
+                  <SelectTrigger className="w-[170px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="status">{t("queue.jobs.filter.sort.status")}</SelectItem>
+                    <SelectItem value="updated">{t("queue.jobs.filter.sort.updated")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            {(normalizedStatus || requiresReview) && (
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label={t("queue.jobs.filter.clear")}
-                onClick={() => {
-                  setSearchParams({}, { replace: true });
-                  setPendingStatus("all");
-                  setPendingRequiresReview(false);
-                  rowVirtualizer.scrollToIndex(0);
-                }}
-              >
-                {t("queue.jobs.filter.clear")}
-              </Button>
-            )}
+              {(normalizedStatus || requiresReview) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t("queue.jobs.filter.clear")}
+                  onClick={() => {
+                    setSearchParams({}, { replace: true });
+                    setPendingStatus("pending");
+                    setPendingRequiresReview(false);
+                    rowVirtualizer.scrollToIndex(0);
+                  }}
+                >
+                  {t("queue.jobs.filter.clear")}
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("queue.jobs.filter.statusHint")}
+            </p>
           </div>
 
           {isLoading ? (
@@ -348,18 +342,15 @@ export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean 
           ) : (
             <div className="rounded-md border">
               <div className="overflow-x-auto">
-                <div className={cn(COLUMN_LAYOUT, "min-w-[880px] border-b bg-muted/60 px-3 py-2 text-sm font-semibold")}>
+                <div className={cn(COLUMN_LAYOUT, "min-w-[740px] border-b bg-muted/60 px-3 py-2 text-sm font-semibold")}>
                   <span>{t("queue.jobs.table.id")}</span>
-                  <span>{t("queue.jobs.table.messageId")}</span>
                   <span>{t("queue.jobs.table.status")}</span>
-                  <span>{t("queue.jobs.table.priority")}</span>
-                  <span>{t("queue.jobs.table.retry")}</span>
-                  <span>{t("queue.jobs.table.review")}</span>
+                  <span>{t("queue.jobs.table.meta")}</span>
                   <span>{t("queue.jobs.table.updated")}</span>
                 </div>
                 <div
                   ref={scrollParentRef}
-                  className="max-h-[70vh] min-w-[880px] overflow-auto"
+                  className="max-h-[70vh] min-w-[740px] overflow-auto"
                   role="listbox"
                   aria-label={t("queue.jobs.title")}
                   aria-activedescendant={
@@ -397,30 +388,50 @@ export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean 
                             width: "100%",
                             transform: `translateY(${virtualRow.start}px)`,
                           }}
-                        >
-                          <Link
-                            to={`/jobs/${job.id}`}
-                            aria-label={t("queue.jobs.row.link", { id: job.id })}
-                            className="text-primary hover:underline"
                           >
-                            {job.id}
-                          </Link>
-                          <span className="font-mono text-xs">
-                            {job.messageId.slice(0, 20)}...
-                          </span>
-                          <span>
-                            <StatusBadge status={job.status} />
-                          </span>
-                          <span>{job.priority}</span>
-                          <span>{job.retryCount}</span>
-                          <span>
-                            {job.requiresManualReview && (
-                              <Badge variant="secondary">{t("status.review")}</Badge>
+                            <Link
+                              to={`/jobs/${job.id}`}
+                              aria-label={t("queue.jobs.row.link", { id: job.id })}
+                              className="text-primary hover:underline font-semibold"
+                            >
+                              {job.id}
+                            </Link>
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <StatusBadge status={job.status} />
+                              {job.requiresManualReview && (
+                                <Badge variant="secondary">{t("status.review")}</Badge>
+                              )}
+                            </div>
+                            {job.manualReviewReason && (
+                              <p className="text-xs text-muted-foreground line-clamp-1">
+                                {job.manualReviewReason}
+                              </p>
                             )}
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            {formatDate(job.updatedAt)}
-                          </span>
+                          </div>
+                          <div className="flex flex-col gap-2 text-xs text-muted-foreground">
+                            <div className="flex flex-wrap gap-2">
+                              <Badge variant="outline">prio {job.priority}</Badge>
+                              <Badge variant="outline">retry {job.retryCount}</Badge>
+                              {job.finalMethod && (
+                                <Badge variant="secondary">{job.finalMethod}</Badge>
+                              )}
+                            </div>
+                            {job.decisionReason && (
+                              <p className="line-clamp-1">{job.decisionReason}</p>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            <span className="text-xs text-muted-foreground">
+                              {formatDate(job.updatedAt)}
+                            </span>
+                            <Link
+                              to={`/jobs/${job.id}`}
+                              className="text-sm text-primary hover:underline"
+                            >
+                              {t("queue.jobs.row.details")}
+                            </Link>
+                          </div>
                         </div>
                       );
                     })}
