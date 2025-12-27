@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ThumbsUp, ThumbsDown, Check, X } from "lucide-react";
+import { Loader2, ThumbsUp, ThumbsDown, Check, X } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -454,7 +454,11 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                           disabled={isSubmitting}
                           title="Review OK"
                         >
-                          <Check className="h-3 w-3" />
+                          {isSubmitting ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Check className="h-3 w-3" />
+                          )}
                         </Button>
                         <Button
                           variant={hasNegativeFb ? "destructive" : "outline"}
@@ -463,7 +467,11 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                           disabled={isSubmitting}
                           title="Review NG"
                         >
-                          <X className="h-3 w-3" />
+                          {isSubmitting ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <X className="h-3 w-3" />
+                          )}
                         </Button>
                       </>
                     ) : (
@@ -475,7 +483,11 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                           disabled={isSubmitting}
                           title="Thumbs Up"
                         >
-                          <ThumbsUp className="h-3 w-3" />
+                          {isSubmitting ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <ThumbsUp className="h-3 w-3" />
+                          )}
                         </Button>
                         <Button
                           variant={hasNegativeFb ? "destructive" : "outline"}
@@ -484,7 +496,11 @@ function PairsTable({ pairs, onFeedback, onConversion, isSubmitting }: PairsTabl
                           disabled={isSubmitting}
                           title="Thumbs Down"
                         >
-                          <ThumbsDown className="h-3 w-3" />
+                          {isSubmitting ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <ThumbsDown className="h-3 w-3" />
+                          )}
                         </Button>
                       </>
                     )}
