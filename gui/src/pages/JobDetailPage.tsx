@@ -32,6 +32,7 @@ import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
+import { useFlags } from "@/lib/auth";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { useFlags } from "@/lib/auth";
 

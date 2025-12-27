@@ -62,6 +62,7 @@ vi.mock("@/api", () => ({
   useSendConversion: () => ({ mutate: vi.fn(), isPending: false }),
   useProjectDetail: () => ({ data: mockProjectDetail, isLoading: false, error: null }),
   useProjectFeedback: () => ({ mutate: vi.fn(), isPending: false }),
+  useProjectMatches: () => ({ data: mockProjectDetail.matches, isLoading: false, error: null }),
   trackViewedDetail: vi.fn(),
   useTalentDetail: () => ({ data: mockTalentDetail, isLoading: false, error: null }),
   useMatchDecision: () => ({ mutate: vi.fn(), isPending: false }),

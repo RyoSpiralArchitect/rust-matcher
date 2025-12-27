@@ -50,9 +50,9 @@ const STATUS_META: Record<
 
 function SummaryField({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
-    <div>
+    <div className="space-y-1">
       <div className="text-sm text-muted-foreground">{label}</div>
-      <div className="text-base font-medium">{value}</div>
+      <div className="text-base font-medium text-foreground">{value ?? "-"}</div>
     </div>
   );
 }
@@ -161,6 +161,7 @@ export function ProjectDetailPage() {
   const { t } = useI18n();
   const [pendingInteractionId, setPendingInteractionId] = useState<number | null>(null);
   const { data, isLoading, error } = useProjectDetail(projectId);
+  const { data: matches = [], isLoading: matchesLoading } = useProjectMatches(projectId);
   const feedbackMutation = useProjectFeedback(Number(projectId ?? 0));
 
   const matches = useMemo(() => data?.matches ?? [], [data?.matches]);
@@ -217,18 +218,23 @@ export function ProjectDetailPage() {
     );
   };
 
+  const handlePropose = (interactionId: number) => handleFeedback(interactionId, "thumbs_up");
+  const handleReject = (interactionId: number) => handleFeedback(interactionId, "thumbs_down");
+
   const handleViewDetail = (interactionId: number) => {
     trackViewedDetail(interactionId);
     toast(t("projectDetail.cta.detailsToast"));
   };
 
-  if (isLoading) {
+  if (isLoading || matchesLoading) {
     return <LoadingState />;
   }
 
   if (error) {
     return <ErrorDisplay error={error} />;
   }
+
+  const projectTitle = data?.name ?? t("projectDetail.title.fallback", { id: projectId ?? "" });
 
   return (
     <div className="space-y-6">
@@ -238,7 +244,7 @@ export function ProjectDetailPage() {
             items={[
               { label: t("navigation.projects"), href: "/projects" },
               {
-                label: data?.name ?? t("projectDetail.title.fallback", { id: projectId ?? "" }),
+                label: projectTitle,
                 isCurrent: true,
               },
             ]}
@@ -251,35 +257,78 @@ export function ProjectDetailPage() {
           </Button>
         </div>
         <div className="space-y-1">
-          <h1 className="text-2xl font-bold">{data?.name ?? t("projectDetail.title.fallback", { id: projectId ?? "" })}</h1>
+          <h1 className="text-2xl font-bold">{projectTitle}</h1>
           {data?.summary ? <p className="text-muted-foreground">{data.summary}</p> : null}
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("projectDetail.summary.title")}</CardTitle>
-          <CardDescription>{t("projectDetail.summary.description")}</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-3">
-          <SummaryField label={t("projectDetail.summary.rate")} value={rateLabel} />
-          <SummaryField label={t("projectDetail.summary.workStyle")} value={data?.workStyle ?? t("projectDetail.summary.workStyleEmpty")} />
-          <SummaryField label={t("projectDetail.summary.skills")} value={data?.skills?.join(", ") ?? t("projectDetail.summary.skillsEmpty")} />
-        </CardContent>
-      </Card>
-
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-semibold">{t("projectDetail.matches.title")}</h2>
-            <p className="text-sm text-muted-foreground">{t("projectDetail.matches.count", { count: matches.length })}</p>
-          </div>
-        </div>
-
-        {!hasMatches && (
+      <div className="grid gap-6 xl:grid-cols-[1.05fr,1.45fr]">
+        <section className="space-y-4">
           <Card>
-            <CardContent className="py-10 text-center text-muted-foreground">
-              {t("projectDetail.matches.empty")}
+            <CardHeader>
+              <CardTitle>{t("projectDetail.summary.title")}</CardTitle>
+              <CardDescription>{t("projectDetail.summary.description")}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <SummaryField label={t("projectDetail.summary.rate")} value={rateLabel} />
+                <SummaryField
+                  label={t("projectDetail.summary.workStyle")}
+                  value={data?.workStyle ?? t("projectDetail.summary.workStyleEmpty")}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">{t("projectDetail.summary.skills")}</div>
+                {data?.skills && data.skills.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {data.skills.map((skill) => (
+                      <Badge key={skill} variant="secondary">
+                        {skill}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    {t("projectDetail.summary.skillsEmpty")}
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>{t("projectDetail.matches.title")}</CardTitle>
+              <CardDescription>{t("projectDetail.matches.count", { count: matches.length })}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!hasMatches ? (
+                <div className="py-10 text-center text-muted-foreground">
+                  {t("projectDetail.matches.empty")}
+                </div>
+              ) : (
+                matches.map((match) => (
+                  <TalentMatchCard
+                    key={match.interactionId}
+                    match={match}
+                    onPropose={handlePropose}
+                    onReject={handleReject}
+                    onViewDetail={handleViewDetail}
+                    isBusy={feedbackMutation.isPending && pendingInteractionId === match.interactionId}
+                    isDisabled={feedbackMutation.isPending}
+                    labels={{
+                      propose: t("projectDetail.cta.propose"),
+                      reject: t("projectDetail.cta.reject"),
+                      details: t("projectDetail.cta.details"),
+                      scoreLabel: "Score",
+                      rateLabel: t("projectDetail.summary.rate"),
+                    }}
+                  />
+                ))
+              )}
             </CardContent>
           </Card>
         )}
