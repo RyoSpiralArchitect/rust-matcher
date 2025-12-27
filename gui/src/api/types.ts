@@ -159,6 +159,7 @@ export interface QueueJobListResponse {
   items: QueueJobListItem[];
   limit: number;
   offset: number;
+  total: number;
   hasMore: boolean;
 }
 
