@@ -219,16 +219,16 @@ pub async fn retry_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sr_common::queue::QueueStatus;
 
     #[test]
-    fn validate_filter_rejects_invalid_status() {
+    fn validate_filter_accepts_known_status() {
         let filter = QueueJobFilter {
-            status: Some("unknown".into()),
+            status: Some(QueueStatus::Pending),
             ..Default::default()
         };
 
-        let err = validate_filter(&filter).unwrap_err();
-        assert!(matches!(err, ApiError::BadRequest(_)));
+        assert!(validate_filter(&filter).is_ok());
     }
 
     #[test]
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn validate_filter_allows_supported_values() {
         let filter = QueueJobFilter {
-            status: Some("pending".into()),
+            status: Some(QueueStatus::Pending),
             final_method: Some("rust_completed".into()),
             ..Default::default()
         };
