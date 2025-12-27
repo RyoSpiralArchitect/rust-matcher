@@ -317,20 +317,72 @@ CREATE TABLE ses.feedback_events (
     actor TEXT NOT NULL,   -- user_id / "sales" / "ops" / "system"
     source TEXT NOT NULL,  -- "gui" / "crm" / "api" / "import"
 
-    UNIQUE(interaction_id, feedback_type, actor),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
-);
+    -- パーティションキー（JST日単位）
+    event_date DATE GENERATED ALWAYS AS (
+        (created_at AT TIME ZONE 'Asia/Tokyo')::date
+    ) STORED,
+
+    CONSTRAINT uniq_feedback_events_actor_type UNIQUE (interaction_id, feedback_type, actor, event_date)
+)
+PARTITION BY RANGE (event_date);
+
+-- パーティション
+CREATE TABLE IF NOT EXISTS ses.feedback_events_default PARTITION OF ses.feedback_events DEFAULT;
+
+DO $$
+DECLARE
+    month_start DATE := date_trunc('month', now())::date;
+    next_month DATE := (month_start + INTERVAL '1 month')::date;
+    prev_month DATE := (month_start - INTERVAL '1 month')::date;
+BEGIN
+    EXECUTE format(
+        'CREATE TABLE IF NOT EXISTS ses.feedback_events_p%s PARTITION OF ses.feedback_events FOR VALUES FROM (%L) TO (%L)',
+        to_char(prev_month, 'YYYYMM'), prev_month, month_start
+    );
+    EXECUTE format(
+        'CREATE TABLE IF NOT EXISTS ses.feedback_events_p%s PARTITION OF ses.feedback_events FOR VALUES FROM (%L) TO (%L)',
+        to_char(month_start, 'YYYYMM'), month_start, next_month
+    );
+END $$;
 
 -- インデックス
-CREATE INDEX idx_feedback_interaction ON ses.feedback_events(interaction_id);
-CREATE INDEX idx_feedback_match ON ses.feedback_events(match_result_id);
-CREATE INDEX idx_feedback_match_run ON ses.feedback_events(match_run_id);
-CREATE INDEX idx_feedback_project_talent ON ses.feedback_events(project_id, talent_id);
-CREATE INDEX idx_feedback_type ON ses.feedback_events(feedback_type, created_at DESC);
-CREATE INDEX idx_feedback_actor ON ses.feedback_events(actor, created_at DESC);
-CREATE INDEX idx_feedback_not_revoked ON ses.feedback_events(interaction_id, created_at DESC)
+CREATE INDEX idx_feedback_events_interaction ON ses.feedback_events(interaction_id);
+CREATE INDEX idx_feedback_events_match_result ON ses.feedback_events(match_result_id);
+CREATE INDEX idx_feedback_events_match_run ON ses.feedback_events(match_run_id);
+CREATE INDEX idx_feedback_events_project_talent ON ses.feedback_events(project_id, talent_id);
+CREATE INDEX idx_feedback_events_type_created_at ON ses.feedback_events(feedback_type, created_at DESC);
+CREATE INDEX idx_feedback_events_actor_created_at ON ses.feedback_events(actor, created_at DESC);
+CREATE INDEX idx_feedback_events_not_revoked ON ses.feedback_events(interaction_id, created_at DESC)
     WHERE is_revoked = false;
+
+-- 既存の created_at を再利用して日付パーティションの一意性を維持
+CREATE OR REPLACE FUNCTION ses.feedback_events_align_created_at()
+RETURNS TRIGGER AS $$
+DECLARE
+    existing_created_at TIMESTAMPTZ;
+BEGIN
+    SELECT created_at INTO existing_created_at
+    FROM ses.feedback_events
+    WHERE interaction_id = NEW.interaction_id
+      AND feedback_type = NEW.feedback_type
+      AND actor = NEW.actor
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+    IF existing_created_at IS NOT NULL THEN
+        NEW.created_at := existing_created_at;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_feedback_events_align_created_at ON ses.feedback_events;
+CREATE TRIGGER trg_feedback_events_align_created_at
+BEFORE INSERT ON ses.feedback_events
+FOR EACH ROW EXECUTE FUNCTION ses.feedback_events_align_created_at();
 
 COMMENT ON TABLE ses.feedback_events IS '営業/GUIフィードバックの統一イベントログ（Two-Tower学習の正解ラベル源）';
 "#;
@@ -721,15 +773,16 @@ mod tests {
             "config_version",
             "is_revoked",
             "revoked_by", // 監査用
-            "idx_feedback_project_talent",
-            "idx_feedback_match_run",
-            "idx_feedback_not_revoked",
+            "idx_feedback_events_project_talent",
+            "idx_feedback_events_match_run",
+            "idx_feedback_events_not_revoked",
             "chk_feedback_type",
             "chk_ng_reason_category",
-            "UNIQUE(interaction_id, feedback_type, actor)",
+            "UNIQUE (interaction_id, feedback_type, actor, event_date)",
+            "PARTITION BY RANGE (event_date)",
             "COMMENT ON TABLE ses.feedback_events",
         ] {
-            assert!(FEEDBACK_EVENTS_DDL.contains(required));
+            assert!(FEEDBACK_EVENTS_DDL.contains(required), "missing: {required}");
         }
     }
 
