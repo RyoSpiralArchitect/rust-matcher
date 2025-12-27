@@ -1086,23 +1086,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .timeout(StdDuration::from_secs(llm_config.timeout_secs.min(10)))
             .build()
             .map_err(|err| format!("failed to build http client for health check: {err}"))?;
-        let probe = client
+        let response = client
             .get(&llm_config.endpoint)
             .header("x-request-id", "startup-health-check")
             .send()
-            .await;
-        if let Err(err) = probe {
-            return Err(format!("LLM endpoint unreachable at startup: {err}").into());
+            .await
+            .map_err(|err| format!("LLM endpoint unreachable at startup: {err}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(
+                format!("LLM endpoint health check failed with status {status}: {body}").into(),
+            );
         }
     }
 
-    if shadow_runtime.config().mode == CompareMode::Shadow
-        && shadow_runtime.config().max_in_flight > 0
-    {
+    if shadow_runtime.config().mode == CompareMode::Shadow {
         if llm_config.shadow_api_key.is_empty() && llm_config.api_key.is_empty() {
             warn!(
                 shadow_provider = %shadow_runtime.config().shadow_provider,
-                "shadow compare enabled but no shadow API key configured; shadow requests will be skipped"
+                "LLM_COMPARE_MODE=shadow set but no LLM_SHADOW_API_KEY or LLM_API_KEY configured; shadow requests will be skipped"
             );
         }
     }

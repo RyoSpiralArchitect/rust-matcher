@@ -66,6 +66,8 @@ lazy_static! {
 
     // 開始日: ASAP / 即日系
     static ref ASAP_RE: Regex = Regex::new(r"(?i)(即日|即時|ASAP)").unwrap();
+    // 来月上旬/中旬/下旬
+    static ref NEXT_MONTH_PART_RE: Regex = Regex::new(r"来月(?:上旬|中旬|下旬)").unwrap();
     // 来月
     static ref NEXT_MONTH_RE: Regex = Regex::new(r"来月").unwrap();
     // 〇月上旬/中旬/下旬
@@ -158,6 +160,10 @@ pub fn extract_start_date_raw(body_text: &str) -> Option<String> {
     }
 
     if let Some(mat) = ASAP_RE.find(body_text) {
+        return Some(mat.as_str().trim().to_string());
+    }
+
+    if let Some(mat) = NEXT_MONTH_PART_RE.find(body_text) {
         return Some(mat.as_str().trim().to_string());
     }
 

@@ -4,9 +4,10 @@ use axum::extract::FromRequestParts;
 use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::request::Parts;
 use clap::ValueEnum;
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
+use tracing::warn;
 
 use crate::error::ApiError;
 
@@ -149,6 +150,20 @@ fn authorize_jwt(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, ApiErro
     let token = extract_jwt_token(parts, config)?;
 
     let algorithm = config.jwt_algorithm.algorithm();
+    let header = decode_header(token.as_str()).map_err(|err| {
+        ApiError::Unauthorized(format!(
+            "invalid token header: {err}; expected alg={:?}",
+            config.jwt_algorithm
+        ))
+    })?;
+    if header.alg != algorithm {
+        warn!(
+            expected_algorithm = ?algorithm,
+            token_algorithm = ?header.alg,
+            "jwt algorithm mismatch"
+        );
+    }
+
     let validation = Validation::new(algorithm);
 
     let decoding_key = match config.jwt_algorithm.key_kind() {
