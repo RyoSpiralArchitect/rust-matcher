@@ -512,7 +512,7 @@ pub async fn list_jobs(
         .map(|v| v.as_ref() as &(dyn ToSql + Sync))
         .collect();
     let rows = client
-        .timed_query(query.as_str(), &params, "list_jobs")
+        .timed_query_cached(query.as_str(), &params, "list_jobs")
         .await?;
 
     let mut items: Vec<QueueJobListItem> = rows.iter().map(row_to_list_item).collect();
@@ -668,7 +668,8 @@ async fn fetch_match_results(
             "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, \
                     score_total, score_breakdown, engine_version, rule_version, created_at \
              FROM ses.match_results \
-             WHERE run_date >= (NOW() AT TIME ZONE 'Asia/Tokyo')::date - $3::int \
+             WHERE run_date >= (clock_timestamp() AT TIME ZONE 'Asia/Tokyo')::date - $3::int \
+               AND deleted_at IS NULL \
                AND ( ($1::bigint IS NOT NULL AND talent_id = $1) \
                   OR ($2::bigint IS NOT NULL AND project_id = $2) ) \
              ORDER BY run_date DESC, created_at DESC \
@@ -967,7 +968,7 @@ async fn get_job_detail_with_client<C: GenericClient + TimedClientExt>(
     safe_days: i32,
 ) -> Result<Option<QueueJobDetailResponse>, QueueStorageError> {
     let row = client
-        .timed_query_opt(
+        .timed_query_opt_cached(
             "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at, partial_fields, last_error, llm_latency_ms, processing_started_at, completed_at FROM ses.extraction_queue WHERE id = $1",
             &[&id],
             "get_job_detail_with_client",
@@ -1132,7 +1133,7 @@ pub async fn retry_job(pool: &PgPool, id: i64) -> Result<(), QueueStorageError> 
     let tx = client.transaction().await?;
 
     let status_row = tx
-        .timed_query_opt(
+        .timed_query_opt_cached(
             "SELECT status FROM ses.extraction_queue WHERE id = $1 FOR UPDATE",
             &[&id],
             "retry_job_status",
@@ -1150,8 +1151,8 @@ pub async fn retry_job(pool: &PgPool, id: i64) -> Result<(), QueueStorageError> 
         )));
     }
 
-    tx.timed_execute(
-        "UPDATE ses.extraction_queue SET status = 'pending', locked_by = NULL, processing_started_at = NULL, completed_at = NULL, next_retry_at = NULL, retry_count = 0, requires_manual_review = false, manual_review_reason = NULL, updated_at = NOW() WHERE id = $1",
+    tx.timed_execute_cached(
+        "UPDATE ses.extraction_queue SET status = 'pending', locked_by = NULL, processing_started_at = NULL, completed_at = NULL, next_retry_at = NULL, retry_count = 0, requires_manual_review = false, manual_review_reason = NULL, updated_at = clock_timestamp() WHERE id = $1",
         &[&id],
         "retry_job_update",
     )

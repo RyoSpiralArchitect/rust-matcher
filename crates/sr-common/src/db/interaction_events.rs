@@ -32,7 +32,7 @@ pub async fn insert_interaction_event(
         let update_stmt = client
             .prepare_cached(
                 "UPDATE ses.interaction_events\
-                 SET meta = $1, idempotency_key = $2, source = $3, created_at = NOW()\
+                 SET meta = $1, idempotency_key = $2, source = $3, created_at = clock_timestamp()\
                  WHERE interaction_id = $4 AND actor = $5 AND event_type = 'shortlisted'\
                  RETURNING id",
             )
@@ -74,7 +74,7 @@ pub async fn insert_interaction_event(
             ON CONFLICT (idempotency_key) DO UPDATE\
             SET meta = EXCLUDED.meta,\
                 source = EXCLUDED.source,\
-                created_at = NOW()\
+                created_at = clock_timestamp()\
             RETURNING id, xmax = 0 AS inserted",
         )
         .await?;

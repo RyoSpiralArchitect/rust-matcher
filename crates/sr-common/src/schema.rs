@@ -27,10 +27,10 @@ CREATE TABLE ses.extraction_queue (
     manual_review_reason TEXT,
     reprocess_after TIMESTAMPTZ,
 
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT clock_timestamp(),
     processing_started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT clock_timestamp(),
 
     llm_latency_ms INTEGER,
 
@@ -52,6 +52,7 @@ CREATE INDEX idx_extraction_queue_subject_hash ON ses.extraction_queue(subject_h
 CREATE INDEX idx_extraction_queue_canary ON ses.extraction_queue(canary_target, created_at);
 CREATE INDEX idx_extraction_queue_reprocess ON ses.extraction_queue(reprocess_after) WHERE reprocess_after IS NOT NULL;
 CREATE INDEX idx_extraction_queue_review_reason ON ses.extraction_queue(manual_review_reason) WHERE manual_review_reason IS NOT NULL;
+CREATE INDEX idx_extraction_queue_partial_fields_json ON ses.extraction_queue USING GIN(partial_fields jsonb_path_ops);
 "#;
 
 /// Gmail案件メールの生データ（唯一の真実）
@@ -65,7 +66,7 @@ CREATE TABLE IF NOT EXISTS ses.anken_emails (
     body_text TEXT NOT NULL,
     received_at TIMESTAMPTZ NOT NULL,
     thread_id TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
 CREATE INDEX IF NOT EXISTS idx_anken_emails_received_at ON ses.anken_emails (received_at DESC);
@@ -84,7 +85,7 @@ CREATE TABLE IF NOT EXISTS ses.jinzai_emails (
     received_at TIMESTAMPTZ NOT NULL,
     thread_id TEXT,
     skillsheet_url TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
 CREATE INDEX IF NOT EXISTS idx_jinzai_emails_received_at ON ses.jinzai_emails (received_at DESC);
@@ -164,8 +165,8 @@ CREATE TABLE ses.talents (
     -- Lark同期用
     lark_record_id TEXT UNIQUE,      -- Lark上のレコードID（将来の同期用）
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
 CREATE INDEX idx_talents_name ON ses.talents(name);
@@ -217,23 +218,37 @@ CREATE TABLE ses.match_results (
     -- 最後にこのスナップショットを更新した実行ID（ULID/UUID）
     last_match_run_id VARCHAR(64),
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- ソフトデリート対応（監査用）
+    is_deleted BOOLEAN NOT NULL DEFAULT false,
+    deleted_at TIMESTAMPTZ,
+    deleted_by TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
 
     -- JST基準の日付（自動算出 - アプリは触れない）
     run_date DATE GENERATED ALWAYS AS (
         (created_at AT TIME ZONE 'Asia/Tokyo')::date
     ) STORED,
 
-    UNIQUE(talent_id, project_id, run_date)
+    CONSTRAINT uniq_match_results_active UNIQUE (talent_id, project_id, run_date, last_match_run_id)
+        WHERE deleted_at IS NULL
 );
 
-CREATE INDEX idx_match_results_talent_run_date ON ses.match_results(talent_id, run_date DESC);
-CREATE INDEX idx_match_results_project_run_date ON ses.match_results(project_id, run_date DESC);
+CREATE INDEX idx_match_results_talent_run_date ON ses.match_results(talent_id, run_date DESC)
+  WHERE deleted_at IS NULL;
+CREATE INDEX idx_match_results_project_run_date ON ses.match_results(project_id, run_date DESC)
+  WHERE deleted_at IS NULL;
 CREATE INDEX idx_match_results_project_score_created
-  ON ses.match_results(project_id, score_total DESC, created_at DESC);
-CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC) WHERE NOT is_knockout;
-CREATE INDEX idx_match_results_match_run ON ses.match_results(last_match_run_id) WHERE last_match_run_id IS NOT NULL;
+  ON ses.match_results(project_id, score_total DESC, created_at DESC)
+  WHERE deleted_at IS NULL;
+CREATE INDEX idx_match_results_score ON ses.match_results(score_total DESC)
+  WHERE NOT is_knockout AND deleted_at IS NULL;
+CREATE INDEX idx_match_results_match_run ON ses.match_results(last_match_run_id)
+  WHERE last_match_run_id IS NOT NULL AND deleted_at IS NULL;
+CREATE INDEX idx_match_results_score_breakdown_json
+  ON ses.match_results USING GIN(score_breakdown jsonb_path_ops)
+  WHERE score_breakdown IS NOT NULL AND deleted_at IS NULL;
 "#;
 
 /// 保存場所: `ses.llm_comparison_results` (LLM shadow/AB比較ログ)
@@ -248,7 +263,7 @@ CREATE TABLE IF NOT EXISTS ses.llm_comparison_results (
     primary_latency_ms INTEGER,
     shadow_latency_ms INTEGER,
     diff_summary JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT clock_timestamp()
 );
 
 CREATE INDEX idx_llm_comparison_message ON ses.llm_comparison_results(message_id);
@@ -304,7 +319,7 @@ CREATE TABLE ses.feedback_events (
 
     UNIQUE(interaction_id, feedback_type, actor),
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
 -- インデックス
@@ -352,7 +367,7 @@ CREATE TABLE ses.interaction_events (
     -- 追加情報
     meta JSONB,  -- { "template": "default" }, { "active": true } など
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
 -- shortlisted は 1回だけ（トグルなら meta.active で状態管理、latest が正）
@@ -398,7 +413,7 @@ CREATE TABLE ses.conversion_events (
     -- 追加情報
     meta JSONB,  -- { "lost_reason": "tanka" } など
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
 CREATE INDEX idx_conversion_events_interaction ON ses.conversion_events(interaction_id, created_at DESC);
@@ -442,7 +457,7 @@ CREATE TABLE ses.interaction_logs (
     variant VARCHAR(50),  -- 'control', 'two_tower_10pct', ...
 
     -- メタデータ
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
 
     -- JST基準の日付（自動算出 - アプリは触れない、検索/集計用）
     run_date DATE GENERATED ALWAYS AS (
@@ -639,6 +654,7 @@ mod tests {
             "reprocess_after",
             "idx_extraction_queue_status_priority",
             "idx_extraction_queue_status_created",
+            "idx_extraction_queue_partial_fields_json",
         ] {
             assert!(EXTRACTION_QUEUE_DDL.contains(required));
         }
@@ -680,12 +696,16 @@ mod tests {
             "updated_at",
             "run_date DATE GENERATED ALWAYS",
             "Asia/Tokyo",
-            "UNIQUE(talent_id, project_id, run_date)",
+            "is_deleted",
+            "deleted_at",
+            "deleted_by",
+            "uniq_match_results_active UNIQUE (talent_id, project_id, run_date, last_match_run_id)",
             "idx_match_results_talent_run_date",
             "idx_match_results_project_run_date",
             "idx_match_results_project_score_created",
             "idx_match_results_score",
             "idx_match_results_match_run",
+            "idx_match_results_score_breakdown_json",
         ] {
             assert!(MATCH_RESULTS_DDL.contains(required), "missing: {required}");
         }

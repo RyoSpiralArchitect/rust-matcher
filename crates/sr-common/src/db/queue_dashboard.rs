@@ -11,7 +11,7 @@ pub async fn fetch_dashboard(pool: &PgPool) -> Result<QueueDashboard, QueueDashb
     let client = pool.get().await?;
 
     let row = client
-        .timed_query_one(
+        .timed_query_one_cached(
             "SELECT \
                 COUNT(*) FILTER (WHERE status = 'pending') AS pending, \
                 COUNT(*) FILTER (WHERE status = 'processing') AS processing, \
@@ -20,9 +20,9 @@ pub async fn fetch_dashboard(pool: &PgPool) -> Result<QueueDashboard, QueueDashb
                 COUNT(*) FILTER (WHERE last_error IS NOT NULL) AS error_count, \
                 COUNT(*) FILTER ( \
                     WHERE status = 'processing' \
-                      AND processing_started_at <= timezone('utc', NOW()) - INTERVAL '10 minutes' \
+                      AND processing_started_at <= timezone('utc', clock_timestamp()) - INTERVAL '10 minutes' \
                 ) AS stale_processing_count, \
-                COALESCE(MAX(updated_at), timezone('utc', NOW())) AS updated_at \
+                COALESCE(MAX(updated_at), timezone('utc', clock_timestamp())) AS updated_at \
             FROM ses.extraction_queue",
             &[],
             "fetch_queue_dashboard",

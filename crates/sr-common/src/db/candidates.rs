@@ -122,7 +122,7 @@ pub async fn fetch_candidates_for_project(
 ) -> Result<Vec<MatchResponse>, MatchFetchError> {
     let client = pool.get().await?;
 
-    let mut conditions = vec!["il.project_id = $1".to_string()];
+    let mut conditions = vec!["il.project_id = $1".to_string(), "mr.deleted_at IS NULL".to_string()];
     if !include_softko {
         conditions.push("mr.is_knockout = false".to_string());
         conditions.push("mr.needs_manual_review = false".to_string());
@@ -159,7 +159,7 @@ pub async fn fetch_candidates_for_project(
     let bounded_limit = limit.min(200) as i64;
     let offset = offset as i64;
     let rows = client
-        .timed_query(
+        .timed_query_cached(
             query.as_str(),
             &[&project_id, &talent_ids, &bounded_limit, &offset],
             "fetch_candidates_for_project",
@@ -183,7 +183,7 @@ pub async fn fetch_match_by_id(
     let client = pool.get().await?;
 
     let row = client
-        .timed_query_opt(
+        .timed_query_opt_cached(
             "SELECT\
                 il.id AS interaction_id,\
                 mr.id AS match_result_id,\
@@ -193,15 +193,15 @@ pub async fn fetch_match_by_id(
                 mr.is_knockout,\
                 mr.score_total,\
                 mr.score_breakdown,\
-                mr.ko_reasons,\
-                mr.engine_version,\
-                mr.rule_version,\
-                mr.created_at,\
-                il.two_tower_score,\
-                il.created_at AS interaction_created_at\
-            FROM ses.match_results mr\
-            JOIN ses.interaction_logs il ON il.match_result_id = mr.id\
-            WHERE mr.id = $1\
+            mr.ko_reasons,\
+            mr.engine_version,\
+            mr.rule_version,\
+            mr.created_at,\
+            il.two_tower_score,\
+            il.created_at AS interaction_created_at\
+        FROM ses.match_results mr\
+        JOIN ses.interaction_logs il ON il.match_result_id = mr.id\
+            WHERE mr.id = $1 AND mr.deleted_at IS NULL\
             ORDER BY il.created_at DESC\
             LIMIT 1",
             &[&match_id],

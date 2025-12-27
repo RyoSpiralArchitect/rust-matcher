@@ -37,7 +37,7 @@ async fn recompute_interaction_outcome(
     interaction_id: i64,
 ) -> Result<(), PgError> {
     let row = client
-        .timed_query_opt(
+        .timed_query_opt_cached(
             "SELECT feedback_type, created_at
              FROM ses.feedback_events
              WHERE interaction_id = $1 AND is_revoked = false
@@ -66,7 +66,7 @@ async fn recompute_interaction_outcome(
     };
 
     client
-        .timed_execute(
+        .timed_execute_cached(
             "UPDATE ses.interaction_logs
              SET outcome = $1, feedback_at = $2
              WHERE id = $3",
@@ -84,7 +84,7 @@ async fn fetch_interaction_context(
     interaction_id: i64,
 ) -> Result<InteractionContext, FeedbackStorageError> {
     let row = client
-        .timed_query_opt(
+        .timed_query_opt_cached(
             "SELECT\
                 id,\
                 match_result_id,\
