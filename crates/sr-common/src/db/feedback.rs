@@ -114,13 +114,23 @@ pub async fn insert_feedback_event(
     actor: &str,
     request: &FeedbackRequest,
 ) -> Result<FeedbackResponse, FeedbackStorageError> {
-    let actor = validated_actor(actor).ok_or(FeedbackStorageError::MissingActor)?;
-
     let mut client = pool.get().await?;
     let tx = client.transaction().await?;
-    let interaction = fetch_interaction_context(&tx, request.interaction_id).await?;
+    let response = insert_feedback_event_tx(&tx, actor, request).await?;
+    tx.commit().await?;
+    Ok(response)
+}
 
-    let stmt = tx
+pub async fn insert_feedback_event_tx(
+    client: &impl GenericClient,
+    actor: &str,
+    request: &FeedbackRequest,
+) -> Result<FeedbackResponse, FeedbackStorageError> {
+    let actor = validated_actor(actor).ok_or(FeedbackStorageError::MissingActor)?;
+
+    let interaction = fetch_interaction_context(client, request.interaction_id).await?;
+
+    let stmt = client
         .prepare_cached(
             "INSERT INTO ses.feedback_events (\
                 interaction_id,\
@@ -143,7 +153,7 @@ pub async fn insert_feedback_event(
         )
         .await?;
 
-    let row = tx
+    let row = client
         .query_opt(
             &stmt,
             &[
@@ -175,9 +185,7 @@ pub async fn insert_feedback_event(
     };
 
     // Keep interaction_logs outcome in sync with the highest-priority, latest feedback.
-    recompute_interaction_outcome(&tx, interaction.interaction_id).await?;
-
-    tx.commit().await?;
+    recompute_interaction_outcome(client, interaction.interaction_id).await?;
 
     Ok(response)
 }

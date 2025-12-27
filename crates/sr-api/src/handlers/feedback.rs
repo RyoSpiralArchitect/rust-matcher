@@ -5,7 +5,7 @@ use axum::{
 use sr_common::api::feedback_request::FeedbackRequest;
 use sr_common::api::feedback_response::FeedbackResponse;
 use sr_common::api::models::queue::FeedbackEventRow;
-use sr_common::db::{fetch_feedback_history, insert_feedback_event};
+use sr_common::db::{fetch_feedback_history, insert_feedback_event_tx};
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
@@ -30,7 +30,19 @@ pub async fn submit_feedback(
         )));
     }
 
-    let response = insert_feedback_event(&state.pool, &auth.subject, &payload).await?;
+    let mut client = state
+        .pool
+        .get()
+        .await
+        .map_err(|err| ApiError::Database(err.to_string()))?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|err| ApiError::Database(err.to_string()))?;
+    let response = insert_feedback_event_tx(&tx, &auth.subject, &payload).await?;
+    tx.commit()
+        .await
+        .map_err(|err| ApiError::Database(err.to_string()))?;
     Ok(Json(response))
 }
 
