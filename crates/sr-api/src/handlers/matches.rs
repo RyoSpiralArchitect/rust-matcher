@@ -10,7 +10,7 @@ use sr_common::db::{fetch_candidates_for_project, fetch_match_by_id};
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
-use crate::SharedState;
+use crate::{CacheableJson, SharedState, SHORT_CACHE_CONTROL};
 
 const DEFAULT_MATCH_LIMIT: usize = 50;
 
@@ -35,6 +35,7 @@ pub async fn run_match(
         talent_filter_len = talent_filter.as_ref().map(Vec::len).unwrap_or(0),
         "running match request"
     );
+    let match_config = state.match_config.read().await.clone();
     let responses = fetch_candidates_for_project(
         &state.pool,
         project_id,
@@ -42,7 +43,7 @@ pub async fn run_match(
         limit,
         0,
         talent_filter.as_deref(),
-        &state.match_config,
+        &match_config,
     )
     .await?;
 
@@ -53,11 +54,12 @@ pub async fn get_match(
     State(state): State<SharedState>,
     Path(match_id): Path<i64>,
     auth: AuthUser,
-) -> Result<Json<MatchResponse>, ApiError> {
+) -> Result<CacheableJson<MatchResponse>, ApiError> {
     info!(user = %auth.subject, match_id, "fetching match result");
-    let response = fetch_match_by_id(&state.pool, match_id, &state.match_config)
+    let match_config = state.match_config.read().await.clone();
+    let response = fetch_match_by_id(&state.pool, match_id, &match_config)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("match {match_id} not found")))?;
 
-    Ok(Json(response))
+    Ok(CacheableJson::new(response, SHORT_CACHE_CONTROL))
 }
