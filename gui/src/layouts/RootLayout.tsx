@@ -16,7 +16,6 @@ export function RootLayout() {
   const { t } = useI18n();
   const { isQueueAdmin } = useFlags();
   const location = useLocation();
-  const visibleNavItems = navItems;
 
   const isActive = (href: string) =>
     location.pathname === href || location.pathname.startsWith(`${href}/`);
@@ -34,7 +33,7 @@ export function RootLayout() {
             SR Matcher
           </Link>
           <nav className="flex gap-4">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <Link
                 key={item.href}
                 to={item.href}

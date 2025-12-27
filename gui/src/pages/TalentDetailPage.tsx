@@ -9,13 +9,24 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Loader2, ExternalLink, Check, X } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
 import { useMatchDecision, useTalentDetail, type TalentMatchProject, type TalentMatchStatus, type TalentProfile } from "@/api";
 import type { TranslationKey } from "@/lib/messages";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
+import { InteractionBadge } from "@/components/common/InteractionBadge";
+import { InteractionActionButton } from "@/components/common/InteractionActionButton";
+import { componentTheme, type InteractionAction, type InteractionState } from "@/theme/component-theme";
+
+const TALENT_STATUS_META: Record<TalentMatchStatus, { labelKey: TranslationKey; state: InteractionState }> = {
+  pending: { labelKey: "talentDetail.status.pending", state: "pending" },
+  proposed: { labelKey: "talentDetail.status.proposed", state: "proposed" },
+  accepted: { labelKey: "talentDetail.status.accepted", state: "accepted" },
+  in_project: { labelKey: "talentDetail.status.in_project", state: "in_project" },
+  rejected: { labelKey: "talentDetail.status.rejected", state: "rejected" },
+};
 
 export function TalentDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -187,31 +198,21 @@ function ProjectMatchCard({
   const isActionable =
     match.canPropose || match.canReject || match.status === "pending";
 
-  const statusVariant: Record<TalentMatchStatus, "default" | "secondary" | "outline" | "destructive"> = {
-    pending: "outline",
-    proposed: "default",
-    accepted: "default",
-    in_project: "secondary",
-    rejected: "destructive",
-  };
+  const statusMeta = TALENT_STATUS_META[match.status] ?? TALENT_STATUS_META.pending;
+  const statusLabel = t(statusMeta.labelKey);
+  const actions: { action: InteractionAction; label: string; handler: () => void }[] = [];
 
-  const STATUS_LABEL_KEYS: Record<TalentMatchStatus, TranslationKey> = {
-    pending: "talentDetail.status.pending",
-    proposed: "talentDetail.status.proposed",
-    accepted: "talentDetail.status.accepted",
-    in_project: "talentDetail.status.in_project",
-    rejected: "talentDetail.status.rejected",
-  };
+  if (isActionable && match.canPropose !== false) {
+    actions.push({ action: "propose", label: t("talentDetail.actions.propose"), handler: () => onDecision(match.projectId, "propose") });
+  }
 
-  const statusLabel = t(STATUS_LABEL_KEYS[match.status]);
-
-  const handleDecision = (decision: "propose" | "reject") => {
-    onDecision(match.projectId, decision);
-  };
+  if (isActionable && match.canReject !== false) {
+    actions.push({ action: "reject", label: t("talentDetail.actions.reject"), handler: () => onDecision(match.projectId, "reject") });
+  }
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-3">
+      <CardHeader className={componentTheme.layout.cardHeader}>
         <div className="space-y-1">
           <CardTitle className="text-lg">
             <Link to={`/projects/${match.projectId}`} className="hover:underline">
@@ -225,11 +226,9 @@ function ProjectMatchCard({
               : "-"}
           </CardDescription>
         </div>
-        <Badge variant={statusVariant[match.status] ?? "outline"}>
-          {statusLabel}
-        </Badge>
+        <InteractionBadge state={statusMeta.state} label={statusLabel} />
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className={componentTheme.spacing.cardStack}>
         {(match.businessScore !== undefined && match.businessScore !== null) ||
         match.lastStatusChange ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -246,38 +245,19 @@ function ProjectMatchCard({
           </div>
         ) : null}
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className={componentTheme.layout.actionRow}>
           {isActionable ? (
             <>
-              {match.canPropose !== false && (
-                <Button
-                  size="sm"
-                  onClick={() => handleDecision("propose")}
+              {actions.map(({ action, handler, label }) => (
+                <InteractionActionButton
+                  key={action}
+                  action={action}
+                  label={label}
+                  onClick={handler}
                   disabled={isSubmitting}
-                >
-                  {isSubmitting ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4 mr-2" />
-                  )}
-                  {t("talentDetail.actions.propose")}
-                </Button>
-              )}
-              {match.canReject !== false && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleDecision("reject")}
-                  disabled={isSubmitting}
-                >
-                  {isSubmitting ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <X className="h-4 w-4 mr-2" />
-                  )}
-                  {t("talentDetail.actions.reject")}
-                </Button>
-              )}
+                  isBusy={isSubmitting}
+                />
+              ))}
               <Button variant="link" size="sm" asChild>
                 <Link to={`/projects/${match.projectId}`}>
                   <ExternalLink className="h-4 w-4 mr-1" />

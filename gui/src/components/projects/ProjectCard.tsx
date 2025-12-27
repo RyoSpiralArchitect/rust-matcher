@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import type { ProjectListItem } from "@/api";
 import type { TranslationKey } from "@/lib/messages";
+import { componentTheme } from "@/theme/component-theme";
 
 type Translator = (key: TranslationKey, values?: Record<string, string | number>) => string;
 
@@ -90,7 +91,7 @@ export function ProjectCard({ project, locale, onOpen, formatMessage }: ProjectC
         <CardDescription>{budgetLabel}</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="flex flex-wrap gap-2">
+        <div className={componentTheme.layout.badgeRow}>
           <Badge variant="secondary">
             {formatMessage("projects.counts.matched", {
               count: project.matchedCount ?? 0,
