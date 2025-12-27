@@ -29,6 +29,13 @@ enum CompareMode {
 
 const MAX_RETRY_COUNT: u32 = 100;
 
+fn build_http_client(timeout_secs: u64) -> Result<Client, reqwest::Error> {
+    Client::builder()
+        .no_proxy()
+        .timeout(StdDuration::from_secs(timeout_secs))
+        .build()
+}
+
 fn current_trace_id() -> Option<String> {
     Span::current().id().map(|id| format!("{id:?}"))
 }
@@ -334,6 +341,8 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
     let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
     let shadow_runtime = ShadowCompareRuntime::new(shadow_config);
+    let client = build_http_client(llm_config.timeout_secs)
+        .expect("failed to build http client for sample flow");
     let rt = tokio::runtime::Runtime::new().expect("failed to build runtime for sample flow");
 
     let mut job = ExtractionJob::new(
@@ -348,7 +357,13 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
 
     let sample_body = "sample body";
     queue.process_next_with_worker(worker_id, |job| {
-        rt.block_on(handle_llm_job(job, sample_body, &llm_config, worker_id))
+        rt.block_on(handle_llm_job(
+            job,
+            sample_body,
+            &llm_config,
+            &client,
+            worker_id,
+        ))
     });
 
     if let Some(processed) = queue.jobs.first() {
@@ -358,6 +373,7 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
                 sample_body.to_string(),
                 &llm_config,
                 &shadow_runtime,
+                &client,
                 worker_id,
             ));
             rt.block_on(shadow_runtime.wait_for_all());
@@ -463,6 +479,7 @@ fn is_retryable_status(status: StatusCode) -> bool {
 }
 
 async fn perform_llm_request(
+    client: &Client,
     config: &LlmRuntimeConfig,
     endpoint: &str,
     api_key: &str,
@@ -481,16 +498,6 @@ async fn perform_llm_request(
     );
     let _entered = span.enter();
     let start = Instant::now();
-    // Disable environment proxies so local mock servers (used in tests) are hit directly
-    // instead of being tunneled through corporate MITM proxies that would block the request.
-    let client = Client::builder()
-        .no_proxy()
-        .timeout(StdDuration::from_secs(config.timeout_secs))
-        .build()
-        .map_err(|err| JobError::Retryable {
-            message: format!("failed to build http client: {err}"),
-            retry_after: None,
-        })?;
 
     for attempt in 0..=config.max_retries {
         let mut request_builder = client
@@ -636,6 +643,7 @@ async fn spawn_shadow_compare(
     body_text: String,
     config: &LlmRuntimeConfig,
     shadow: &ShadowCompareRuntime,
+    client: &Client,
     worker_id: &str,
 ) -> bool {
     let shadow_config = shadow.config();
@@ -680,6 +688,7 @@ async fn spawn_shadow_compare(
     let worker_label = worker_id.to_string();
     let job_id = job.id;
     let message_id = job.message_id.clone();
+    let client = client.clone();
     let shadow_span = info_span!(
         "shadow_compare",
         worker_id = %worker_label,
@@ -693,6 +702,7 @@ async fn spawn_shadow_compare(
                 let _permit = permit;
                 let request = build_llm_request(&job, &body_text, &shadow_config);
                 match perform_llm_request(
+                    &client,
                     &shadow_config,
                     &shadow_endpoint,
                     &shadow_api_key,
@@ -750,6 +760,7 @@ async fn handle_llm_job(
     job: &ExtractionJob,
     body_text: &str,
     config: &LlmRuntimeConfig,
+    client: &Client,
     worker_id: &str,
 ) -> Result<JobOutcome, JobError> {
     let _span_guard = info_span!(
@@ -783,6 +794,7 @@ async fn handle_llm_job(
     let request = build_llm_request(job, body_text, config);
     let started = Utc::now();
     let response = perform_llm_request(
+        client,
         config,
         &config.endpoint,
         &config.api_key,
@@ -937,6 +949,7 @@ async fn process_locked_job(
     worker_id: &str,
     mut locked: ExtractionJob,
     llm_config: &LlmRuntimeConfig,
+    client: &Client,
     shadow_config: &ShadowCompareRuntime,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
@@ -1001,7 +1014,7 @@ async fn process_locked_job(
         return Ok(());
     }
 
-    let outcome = handle_llm_job(&locked, &body_text, llm_config, worker_id).await;
+    let outcome = handle_llm_job(&locked, &body_text, llm_config, client, worker_id).await;
     if let Err(err) = &outcome {
         let err_message = match err {
             JobError::Retryable { message, .. } => message.as_str(),
@@ -1052,6 +1065,7 @@ async fn process_locked_job(
             body_text,
             llm_config,
             shadow_config,
+            client,
             worker_id,
         )
         .await;
@@ -1068,6 +1082,28 @@ async fn process_locked_job(
     Ok(())
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+            let _ = sigterm.recv().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
@@ -1078,27 +1114,37 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let llm_config = LlmRuntimeConfig::from_env();
     let shadow_config = shadow_config_from_env(&llm_config);
     let shadow_runtime = ShadowCompareRuntime::new(shadow_config);
+    let llm_client = build_http_client(llm_config.timeout_secs)
+        .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     // Health check LLM endpoint before entering the work loop to fail fast.
     if llm_config.enabled {
-        let client = Client::builder()
-            .no_proxy()
-            .timeout(StdDuration::from_secs(llm_config.timeout_secs.min(10)))
-            .build()
-            .map_err(|err| format!("failed to build http client for health check: {err}"))?;
+        let client = build_http_client(llm_config.timeout_secs.min(10)).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to build http client for health check: {err}"),
+            )
+        })?;
         let response = client
             .get(&llm_config.endpoint)
             .header("x-request-id", "startup-health-check")
             .send()
             .await
-            .map_err(|err| format!("LLM endpoint unreachable at startup: {err}"))?;
+            .map_err(|err| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("LLM endpoint unreachable at startup: {err}"),
+                )
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(
-                format!("LLM endpoint health check failed with status {status}: {body}").into(),
-            );
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("LLM endpoint health check failed with status {status}: {body}"),
+            )
+            .into());
         }
     }
 
@@ -1131,9 +1177,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut processed_jobs = 0usize;
     let max_jobs = args.max_jobs.unwrap_or(usize::MAX);
     let worker_label = args.worker_id.clone();
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
 
-    while processed_jobs < max_jobs {
-        let maybe_job = lock_next_pending_job(&pool, &args.worker_id, Utc::now()).await?;
+    'work: while processed_jobs < max_jobs {
+        let maybe_job = tokio::select! {
+            res = lock_next_pending_job(&pool, &args.worker_id, Utc::now()) => res?,
+            _ = &mut shutdown => {
+                info!("shutdown signal received; draining in-flight work");
+                break;
+            }
+        };
 
         let Some(job) = maybe_job else {
             if args.exit_on_empty {
@@ -1143,7 +1197,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
 
-            sleep(Duration::from_millis(args.idle_poll_interval_ms)).await;
+            let sleep_duration = Duration::from_millis(args.idle_poll_interval_ms);
+            tokio::select! {
+                _ = &mut shutdown => {
+                    info!("shutdown signal received during idle wait; stopping work loop");
+                    break 'work;
+                }
+                _ = sleep(sleep_duration) => {}
+            }
             continue;
         };
 
@@ -1162,10 +1223,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .increment(1);
         metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone()).set(1.0);
 
-        process_locked_job(&pool, &args.worker_id, job, &llm_config, &shadow_runtime).await?;
+        process_locked_job(
+            &pool,
+            &args.worker_id,
+            job,
+            &llm_config,
+            &llm_client,
+            &shadow_runtime,
+        )
+        .await?;
         processed_jobs += 1;
         metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone()).set(0.0);
     }
+
+    shadow_runtime.wait_for_all().await;
 
     Ok(())
 }
@@ -1188,6 +1259,11 @@ mod tests {
     fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
         static ENV_GUARD: Mutex<()> = Mutex::new(());
         let _guard = ENV_GUARD.lock().unwrap();
+
+        let mut vars = vars.to_vec();
+        if !vars.iter().any(|(key, _)| *key == "LLM_ENABLED") {
+            vars.push(("LLM_ENABLED", Some("1")));
+        }
 
         let prev: Vec<(String, Option<String>)> = vars
             .iter()
@@ -1347,13 +1423,20 @@ mod tests {
         let mut job = ExtractionJob::new("m2", "subject", Utc::now(), "hash");
         job.recommended_method = Some(RecommendedMethod::RustRecommended);
         let llm_config = LlmRuntimeConfig::default();
+        let client = build_http_client(llm_config.timeout_secs).unwrap();
 
         queue.enqueue(job);
 
         queue.process_next_with_worker("sr-llm-worker", |j| {
             tokio::runtime::Runtime::new()
                 .unwrap()
-                .block_on(handle_llm_job(j, "body", &llm_config, "sr-llm-worker"))
+                .block_on(handle_llm_job(
+                    j,
+                    "body",
+                    &llm_config,
+                    &client,
+                    "sr-llm-worker",
+                ))
         });
 
         let job = &queue.jobs[0];
@@ -1587,6 +1670,7 @@ mod tests {
     fn llm_disabled_routes_to_manual_review() {
         with_env(&[("LLM_ENABLED", Some("0"))], || {
             let llm_config = LlmRuntimeConfig::from_env();
+            let client = build_http_client(llm_config.timeout_secs).unwrap();
             let mut queue = ExtractionQueue::default();
             let mut job = ExtractionJob::new("disabled", "subject", Utc::now(), "hash");
             job.recommended_method = Some(RecommendedMethod::LlmRecommended);
@@ -1595,7 +1679,13 @@ mod tests {
             queue.process_next_with_worker("sr-llm-worker", |j| {
                 tokio::runtime::Runtime::new()
                     .unwrap()
-                    .block_on(handle_llm_job(j, "body", &llm_config, "sr-llm-worker"))
+                    .block_on(handle_llm_job(
+                        j,
+                        "body",
+                        &llm_config,
+                        &client,
+                        "sr-llm-worker",
+                    ))
             });
 
             let job = &queue.jobs[0];
@@ -1615,6 +1705,7 @@ mod tests {
     fn missing_api_key_is_manual_review() {
         with_env(&[("LLM_API_KEY", None), ("OPENAI_API_KEY", None)], || {
             let llm_config = LlmRuntimeConfig::from_env();
+            let client = build_http_client(llm_config.timeout_secs).unwrap();
             let mut queue = ExtractionQueue::default();
             let mut job = ExtractionJob::new("no-key", "subject", Utc::now(), "hash");
             job.recommended_method = Some(RecommendedMethod::LlmRecommended);
@@ -1623,7 +1714,13 @@ mod tests {
             queue.process_next_with_worker("sr-llm-worker", |j| {
                 tokio::runtime::Runtime::new()
                     .unwrap()
-                    .block_on(handle_llm_job(j, "body", &llm_config, "sr-llm-worker"))
+                    .block_on(handle_llm_job(
+                        j,
+                        "body",
+                        &llm_config,
+                        &client,
+                        "sr-llm-worker",
+                    ))
             });
 
             let job = &queue.jobs[0];
@@ -1661,6 +1758,7 @@ mod tests {
         config.shadow_endpoint = Some(format!("{}/shadow", server.url()));
         config.shadow_model = Some("shadow-model".into());
         config.shadow_api_key = "shadow-key".into();
+        let client = build_http_client(config.timeout_secs).unwrap();
 
         let shadow_cfg = ShadowCompareConfig {
             mode: CompareMode::Shadow,
@@ -1672,8 +1770,15 @@ mod tests {
 
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
-        let spawned =
-            spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime, "test-worker").await;
+        let spawned = spawn_shadow_compare(
+            job,
+            "body".into(),
+            &config,
+            &shadow_runtime,
+            &client,
+            "test-worker",
+        )
+        .await;
         assert!(spawned, "shadow compare should spawn");
         shadow_runtime.wait_for_all().await;
 
@@ -1690,6 +1795,7 @@ mod tests {
         let mut config = LlmRuntimeConfig::from_env();
         config.api_key.clear();
         config.shadow_api_key.clear();
+        let client = build_http_client(config.timeout_secs).unwrap();
 
         let shadow_cfg = ShadowCompareConfig {
             mode: CompareMode::Shadow,
@@ -1701,8 +1807,15 @@ mod tests {
 
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
-        let spawned =
-            spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime, "test-worker").await;
+        let spawned = spawn_shadow_compare(
+            job,
+            "body".into(),
+            &config,
+            &shadow_runtime,
+            &client,
+            "test-worker",
+        )
+        .await;
         assert!(!spawned);
     }
 
@@ -1736,6 +1849,7 @@ mod tests {
         config.shadow_endpoint = Some(format!("{}/shadow", server.url()));
         config.shadow_model = Some("shadow-model".into());
         config.shadow_api_key = "shadow-key".into();
+        let client = build_http_client(config.timeout_secs).unwrap();
 
         let shadow_cfg = ShadowCompareConfig {
             mode: CompareMode::Shadow,
@@ -1747,13 +1861,25 @@ mod tests {
 
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
-        let spawned_first =
-            spawn_shadow_compare(job1, "body".into(), &config, &shadow_runtime, "test-worker")
-                .await;
+        let spawned_first = spawn_shadow_compare(
+            job1,
+            "body".into(),
+            &config,
+            &shadow_runtime,
+            &client,
+            "test-worker",
+        )
+        .await;
         assert!(spawned_first, "first shadow compare should spawn");
-        let spawned_second =
-            spawn_shadow_compare(job2, "body".into(), &config, &shadow_runtime, "test-worker")
-                .await;
+        let spawned_second = spawn_shadow_compare(
+            job2,
+            "body".into(),
+            &config,
+            &shadow_runtime,
+            &client,
+            "test-worker",
+        )
+        .await;
         assert!(
             !spawned_second,
             "second shadow compare should be limited by in-flight semaphore"

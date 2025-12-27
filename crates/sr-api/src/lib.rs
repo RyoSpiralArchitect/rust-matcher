@@ -114,6 +114,8 @@ type IpRateLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock
 #[derive(Clone)]
 pub struct RateLimits {
     global: Arc<IpRateLimiter>,
+    health: Arc<IpRateLimiter>,
+    match_requests: Arc<IpRateLimiter>,
     retry: Arc<IpRateLimiter>,
 }
 
@@ -123,6 +125,10 @@ pub struct RateLimitConfig {
     pub global_burst: u32,
     pub retry_per_sec: u64,
     pub retry_burst: u32,
+    pub health_per_sec: u64,
+    pub health_burst: u32,
+    pub match_per_sec: u64,
+    pub match_burst: u32,
 }
 
 impl RateLimitConfig {
@@ -141,11 +147,25 @@ impl RateLimitConfig {
     }
 
     fn from_env() -> Self {
+        let global_per_sec = Self::parse_env_u64(&["SR_RATE_LIMIT_GLOBAL_PER_SEC"]).unwrap_or(20);
+        let global_burst = Self::parse_env_u32(&["SR_RATE_LIMIT_GLOBAL_BURST"]).unwrap_or(40);
+        let match_per_sec =
+            Self::parse_env_u64(&["SR_RATE_LIMIT_MATCH_PER_SEC"]).unwrap_or(global_per_sec);
+        let match_burst =
+            Self::parse_env_u32(&["SR_RATE_LIMIT_MATCH_BURST"]).unwrap_or(global_burst);
+        let health_per_sec = Self::parse_env_u64(&["SR_RATE_LIMIT_HEALTH_PER_SEC"])
+            .unwrap_or(global_per_sec.saturating_mul(5));
+        let health_burst = Self::parse_env_u32(&["SR_RATE_LIMIT_HEALTH_BURST"])
+            .unwrap_or(global_burst.saturating_mul(5));
         Self {
-            global_per_sec: Self::parse_env_u64(&["SR_RATE_LIMIT_GLOBAL_PER_SEC"]).unwrap_or(20),
-            global_burst: Self::parse_env_u32(&["SR_RATE_LIMIT_GLOBAL_BURST"]).unwrap_or(40),
+            global_per_sec,
+            global_burst,
             retry_per_sec: Self::parse_env_u64(&["SR_RATE_LIMIT_RETRY_PER_SEC"]).unwrap_or(1),
             retry_burst: Self::parse_env_u32(&["SR_RATE_LIMIT_RETRY_BURST"]).unwrap_or(3),
+            health_per_sec,
+            health_burst,
+            match_per_sec,
+            match_burst,
         }
     }
 }
@@ -274,6 +294,8 @@ pub fn default_rate_limits() -> RateLimits {
     let cfg = RateLimitConfig::from_env();
     RateLimits {
         global: build_ip_limiter(cfg.global_per_sec, cfg.global_burst),
+        health: build_ip_limiter(cfg.health_per_sec, cfg.health_burst),
+        match_requests: build_ip_limiter(cfg.match_per_sec, cfg.match_burst),
         retry: build_ip_limiter(cfg.retry_per_sec, cfg.retry_burst),
     }
 }
@@ -294,12 +316,25 @@ fn enforce_rate_limit(limiter: &IpRateLimiter, ip: Option<IpAddr>) -> Result<(),
     Ok(())
 }
 
-async fn global_rate_limit(
+fn rate_limiter_for_path<'a>(rate_limits: &'a RateLimits, path: &str) -> &'a IpRateLimiter {
+    if matches!(path, "/health" | "/readyz" | "/livez") {
+        return rate_limits.health.as_ref();
+    }
+
+    if path.ends_with("/match") {
+        return rate_limits.match_requests.as_ref();
+    }
+
+    rate_limits.global.as_ref()
+}
+
+async fn per_endpoint_rate_limit(
     State(state): State<SharedState>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    enforce_rate_limit(&state.rate_limits.global, request_ip(&req))?;
+    let limiter = rate_limiter_for_path(&state.rate_limits, req.uri().path());
+    enforce_rate_limit(limiter, request_ip(&req))?;
     Ok(next.run(req).await)
 }
 
@@ -408,7 +443,7 @@ pub fn create_router(state: SharedState) -> Router {
         .nest("/api", api_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            global_rate_limit,
+            per_endpoint_rate_limit,
         ))
         .layer(middleware::from_fn(attach_request_id_context))
         .layer(middleware::from_fn(record_http_metrics))
@@ -518,6 +553,10 @@ mod tests {
                 ("SR_RATE_LIMIT_GLOBAL_BURST", Some("25")),
                 ("SR_RATE_LIMIT_RETRY_PER_SEC", Some("2")),
                 ("SR_RATE_LIMIT_RETRY_BURST", Some("5")),
+                ("SR_RATE_LIMIT_HEALTH_PER_SEC", Some("50")),
+                ("SR_RATE_LIMIT_HEALTH_BURST", Some("75")),
+                ("SR_RATE_LIMIT_MATCH_PER_SEC", Some("7")),
+                ("SR_RATE_LIMIT_MATCH_BURST", Some("11")),
             ],
             || {
                 let cfg = RateLimitConfig::from_env();
@@ -528,10 +567,32 @@ mod tests {
                         global_burst: 25,
                         retry_per_sec: 2,
                         retry_burst: 5,
+                        health_per_sec: 50,
+                        health_burst: 75,
+                        match_per_sec: 7,
+                        match_burst: 11,
                     }
                 );
             },
         );
+    }
+
+    #[test]
+    fn chooses_rate_limiter_by_path() {
+        let limits = default_rate_limits();
+
+        assert!(std::ptr::eq(
+            rate_limiter_for_path(&limits, "/health"),
+            limits.health.as_ref()
+        ));
+        assert!(std::ptr::eq(
+            rate_limiter_for_path(&limits, "/api/v1/match"),
+            limits.match_requests.as_ref()
+        ));
+        assert!(std::ptr::eq(
+            rate_limiter_for_path(&limits, "/api/v1/queue/jobs"),
+            limits.global.as_ref()
+        ));
     }
 }
 
