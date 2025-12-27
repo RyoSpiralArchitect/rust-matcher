@@ -1,9 +1,32 @@
+import { Suspense, lazy, type ReactNode } from "react";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { RootLayout } from "./layouts/RootLayout";
-import { QueueDashboardPage } from "./pages/QueueDashboardPage";
-import { QueueJobsPage } from "./pages/QueueJobsPage";
-import { JobDetailPage } from "./pages/JobDetailPage";
-import { CandidatesPage } from "./pages/CandidatesPage";
+import { LoadingState } from "./components/LoadingState";
+
+const QueueDashboardPage = lazy(() =>
+  import("./pages/QueueDashboardPage").then((module) => ({
+    default: module.QueueDashboardPage,
+  })),
+);
+const QueueJobsPage = lazy(() =>
+  import("./pages/QueueJobsPage").then((module) => ({
+    default: module.QueueJobsPage,
+  })),
+);
+const JobDetailPage = lazy(() =>
+  import("./pages/JobDetailPage").then((module) => ({
+    default: module.JobDetailPage,
+  })),
+);
+const CandidatesPage = lazy(() =>
+  import("./pages/CandidatesPage").then((module) => ({
+    default: module.CandidatesPage,
+  })),
+);
+
+function withSuspense(element: ReactNode) {
+  return <Suspense fallback={<LoadingState />}>{element}</Suspense>;
+}
 
 export const router = createBrowserRouter([
   {
@@ -18,22 +41,22 @@ export const router = createBrowserRouter([
       // Queue Dashboard
       {
         path: "queue",
-        element: <QueueDashboardPage />,
+        element: withSuspense(<QueueDashboardPage />),
       },
       // Queue Jobs 一覧
       {
         path: "jobs",
-        element: <QueueJobsPage />,
+        element: withSuspense(<QueueJobsPage />),
       },
       // Job 詳細
       {
         path: "jobs/:jobId",
-        element: <JobDetailPage />,
+        element: withSuspense(<JobDetailPage />),
       },
       // 候補一覧（プロジェクト単位）
       {
         path: "projects/:projectId/candidates",
-        element: <CandidatesPage />,
+        element: withSuspense(<CandidatesPage />),
       },
     ],
   },

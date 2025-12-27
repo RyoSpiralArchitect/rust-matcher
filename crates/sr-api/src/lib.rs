@@ -816,13 +816,15 @@ mod tests {
                         let remaining = response.headers().get("ratelimit-remaining");
                         let reset = response.headers().get("ratelimit-reset");
 
-                        let limit =
-                            limit.and_then(|h| h.to_str().ok()).and_then(|v| v.parse::<u32>().ok());
+                        let limit = limit
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|v| v.parse::<u32>().ok());
                         let remaining = remaining
                             .and_then(|h| h.to_str().ok())
                             .and_then(|v| v.parse::<u32>().ok());
-                        let reset =
-                            reset.and_then(|h| h.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+                        let reset = reset
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|v| v.parse::<u64>().ok());
 
                         assert!(limit.is_some());
                         assert!(remaining.is_some());

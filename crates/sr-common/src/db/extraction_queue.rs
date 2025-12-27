@@ -15,6 +15,8 @@ use crate::api::models::queue::{
 use crate::db::util::TimedClientExt;
 use crate::db::{db_error, normalize_json, PgPool};
 use crate::queue::{ExtractionJob, QueueStatus};
+use crate::timezone::RUN_DATE_TIMEZONE;
+use once_cell::sync::Lazy;
 
 db_error!(QueueStorageError {
     #[error("failed to map queue row: {0}")]
@@ -26,6 +28,20 @@ db_error!(QueueStorageError {
 });
 
 const DEFAULT_DETAIL_STATEMENT_TIMEOUT_MS: i32 = 5000;
+static RECENT_MATCH_RESULTS_SQL: Lazy<String> = Lazy::new(|| {
+    format!(
+        "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, \
+            score_total, score_breakdown, engine_version, rule_version, created_at \
+     FROM ses.match_results \
+     WHERE run_date >= (clock_timestamp() AT TIME ZONE '{timezone}')::date - $3::int \
+       AND deleted_at IS NULL \
+       AND ( ($1::bigint IS NOT NULL AND talent_id = $1) \
+          OR ($2::bigint IS NOT NULL AND project_id = $2) ) \
+     ORDER BY run_date DESC, created_at DESC \
+     LIMIT $4",
+        timezone = RUN_DATE_TIMEZONE,
+    )
+});
 
 struct QueryBuilder {
     sql: String,
@@ -103,7 +119,7 @@ impl QueryBuilder {
 
 fn apply_job_filters(query: &mut QueryBuilder, filter: &QueueJobFilter) {
     if let Some(status) = &filter.status {
-        query.push_eq("status", status.clone());
+        query.push_eq("status", status.as_str());
     }
 
     if let Some(requires_manual_review) = filter.requires_manual_review {
@@ -375,37 +391,37 @@ fn row_to_job(row: &Row) -> Result<ExtractionJob, QueueStorageError> {
     })
 }
 
-fn row_to_list_item(row: &Row) -> QueueJobListItem {
-    QueueJobListItem {
-        id: row.get::<_, i64>("id"),
-        message_id: row.get("message_id"),
-        status: row.get("status"),
-        priority: row.get("priority"),
-        retry_count: row.get("retry_count"),
-        next_retry_at: row.get("next_retry_at"),
-        final_method: row.get("final_method"),
-        requires_manual_review: row.get("requires_manual_review"),
-        manual_review_reason: row.get("manual_review_reason"),
-        decision_reason: row.get("decision_reason"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }
+fn row_to_list_item(row: &Row) -> Result<QueueJobListItem, QueueStorageError> {
+    Ok(QueueJobListItem {
+        id: row.try_get("id")?,
+        message_id: row.try_get("message_id")?,
+        status: parse_status(row.try_get::<_, String>("status")?.as_str())?,
+        priority: row.try_get("priority")?,
+        retry_count: row.try_get("retry_count")?,
+        next_retry_at: row.try_get("next_retry_at")?,
+        final_method: row.try_get("final_method")?,
+        requires_manual_review: row.try_get("requires_manual_review")?,
+        manual_review_reason: row.try_get("manual_review_reason")?,
+        decision_reason: row.try_get("decision_reason")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
 }
 
-fn row_to_job_detail(row: &Row) -> QueueJobDetail {
-    QueueJobDetail {
-        job: row_to_list_item(row),
-        partial_fields: row.get("partial_fields"),
-        last_error: row.get("last_error"),
-        llm_latency_ms: row.get("llm_latency_ms"),
-        processing_started_at: row.get("processing_started_at"),
-        completed_at: row.get("completed_at"),
-    }
+fn row_to_job_detail(row: &Row) -> Result<QueueJobDetail, QueueStorageError> {
+    Ok(QueueJobDetail {
+        job: row_to_list_item(row)?,
+        partial_fields: row.try_get("partial_fields")?,
+        last_error: row.try_get("last_error")?,
+        llm_latency_ms: row.try_get("llm_latency_ms")?,
+        processing_started_at: row.try_get("processing_started_at")?,
+        completed_at: row.try_get("completed_at")?,
+    })
 }
 
-fn row_to_job_detail_response(row: &Row) -> QueueJobDetailResponse {
-    let base = row_to_job_detail(row);
-    QueueJobDetailResponse {
+fn row_to_job_detail_response(row: &Row) -> Result<QueueJobDetailResponse, QueueStorageError> {
+    let base = row_to_job_detail(row)?;
+    Ok(QueueJobDetailResponse {
         job: base.job,
         partial_fields: base.partial_fields,
         last_error: base.last_error,
@@ -415,7 +431,7 @@ fn row_to_job_detail_response(row: &Row) -> QueueJobDetailResponse {
         entity: None,
         pairs: None,
         source_preview: None,
-    }
+    })
 }
 
 const SOURCE_PREVIEW_LIMIT: usize = 1000;
@@ -521,7 +537,10 @@ pub async fn list_jobs(
         .timed_query_cached(query.as_str(), &params, "list_jobs")
         .await?;
 
-    let items: Vec<QueueJobListItem> = rows.iter().map(row_to_list_item).collect();
+    let items: Vec<QueueJobListItem> = rows
+        .iter()
+        .map(row_to_list_item)
+        .collect::<Result<_, _>>()?;
     let total = rows
         .first()
         .map(|row| row.get::<_, i64>("total_count"))
@@ -670,19 +689,9 @@ async fn fetch_match_results(
 
     // Use run_date for filtering to leverage idx_match_results_talent_run_date
     // and idx_match_results_project_run_date composite indexes.
-    // run_date is a Generated Column computed as (created_at AT TIME ZONE 'Asia/Tokyo')::date.
+    // run_date is a Generated Column computed using RUN_DATE_TIMEZONE.
     let stmt = client
-        .prepare_cached(
-            "SELECT id, talent_id, project_id, is_knockout, ko_reasons, needs_manual_review, \
-                    score_total, score_breakdown, engine_version, rule_version, created_at \
-             FROM ses.match_results \
-             WHERE run_date >= (clock_timestamp() AT TIME ZONE 'Asia/Tokyo')::date - $3::int \
-               AND deleted_at IS NULL \
-               AND ( ($1::bigint IS NOT NULL AND talent_id = $1) \
-                  OR ($2::bigint IS NOT NULL AND project_id = $2) ) \
-             ORDER BY run_date DESC, created_at DESC \
-             LIMIT $4",
-        )
+        .prepare_cached(RECENT_MATCH_RESULTS_SQL.as_str())
         .await?;
 
     let rows = client
@@ -987,7 +996,7 @@ async fn get_job_detail_with_client<C: GenericClient + TimedClientExt>(
         return Ok(None);
     };
 
-    let mut detail = row_to_job_detail_response(&row);
+    let mut detail = row_to_job_detail_response(&row)?;
     let message_id = detail.job.message_id.clone();
 
     let include_source = includes.include_source_text && allow_source_text;
