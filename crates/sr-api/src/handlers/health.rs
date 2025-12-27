@@ -77,6 +77,8 @@ mod tests {
                 "mailto:security@example.com".into(),
                 vec!["en".into()],
             ),
+            log_bodies: false,
+            log_sample_rate: 1.0,
         };
 
         Arc::new(AppState {
