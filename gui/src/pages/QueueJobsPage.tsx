@@ -1,12 +1,6 @@
+import { useEffect, useMemo, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,25 +14,57 @@ import { Switch } from "@/components/ui/switch";
 import { LoadingState } from "@/components/LoadingState";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { StatusBadge } from "@/components/StatusBadge";
-import { useQueueJobs } from "@/api";
+import { useInfiniteQueueJobs } from "@/api";
+import { cn } from "@/lib/utils";
+import { Inbox, Loader2 } from "lucide-react";
 
 const STATUSES = ["all", "pending", "processing", "completed"] as const;
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 50;
+const ROW_HEIGHT = 64;
+const COLUMN_LAYOUT =
+  "grid grid-cols-[90px_210px_130px_100px_80px_90px_180px] items-center";
 
 export function QueueJobsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const status = searchParams.get("status") ?? undefined;
   const requiresReview = searchParams.get("review") === "true";
-  const rawOffset = Number.parseInt(searchParams.get("offset") ?? "0", 10);
-  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
-
-  const { data, isLoading, error } = useQueueJobs({
+  const {
+    data,
+    isLoading,
+    isFetchingNextPage,
+    error,
+    hasNextPage,
+    fetchNextPage,
+  } = useInfiniteQueueJobs({
     status: status === "all" ? undefined : status,
     limit: PAGE_SIZE,
-    offset,
     requiresManualReview: requiresReview ? true : undefined,
   });
+
+  const jobs = useMemo(
+    () => data?.pages.flatMap((page) => page.items) ?? [],
+    [data],
+  );
+
+  const scrollParentRef = useRef<HTMLDivElement | null>(null);
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const rowVirtualizer = useVirtualizer({
+    count: jobs.length,
+    getScrollElement: () => scrollParentRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 8,
+  });
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+
+  useEffect(() => {
+    if (!hasNextPage || isFetchingNextPage) return;
+    const lastItem = virtualItems.at(-1);
+    if (lastItem && lastItem.index >= jobs.length - 5) {
+      fetchNextPage();
+    }
+  }, [virtualItems, hasNextPage, isFetchingNextPage, jobs.length, fetchNextPage]);
 
   const updateFilter = (key: string, value: string | null) => {
     const next = new URLSearchParams(searchParams);
@@ -47,19 +73,19 @@ export function QueueJobsPage() {
     } else {
       next.set(key, value);
     }
-    next.delete("offset"); // Reset pagination on filter change
     setSearchParams(next);
+    rowVirtualizer.scrollToIndex(0);
   };
 
-  const goToPage = (newOffset: number) => {
-    const next = new URLSearchParams(searchParams);
-    if (newOffset === 0) {
-      next.delete("offset");
-    } else {
-      next.set("offset", String(newOffset));
-    }
-    setSearchParams(next);
-  };
+  const locale =
+    typeof navigator !== "undefined" && navigator.language
+      ? navigator.language
+      : undefined;
+  const formatDate = (value: string) =>
+    new Intl.DateTimeFormat(locale, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(value));
 
   if (error) {
     return <ErrorDisplay error={error} />;
@@ -112,7 +138,10 @@ export function QueueJobsPage() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setSearchParams({})}
+            onClick={() => {
+              setSearchParams({});
+              rowVirtualizer.scrollToIndex(0);
+            }}
           >
             Clear Filters
           </Button>
@@ -121,77 +150,93 @@ export function QueueJobsPage() {
 
       {isLoading ? (
         <LoadingState />
+      ) : jobs.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-md border border-dashed p-10 text-center">
+          <Inbox className="h-10 w-10 text-muted-foreground" />
+          <p className="mt-2 text-lg font-semibold">No queue jobs found</p>
+          <p className="text-sm text-muted-foreground">
+            Try adjusting the filters to see jobs that match your criteria.
+          </p>
+        </div>
       ) : (
-        <>
-          <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>ID</TableHead>
-            <TableHead>Message ID</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Priority</TableHead>
-            <TableHead>Retry</TableHead>
-            <TableHead>Review</TableHead>
-            <TableHead>Updated</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {data?.items.map((job) => (
-            <TableRow key={job.id}>
-              <TableCell>
-                <Link
-                  to={`/jobs/${job.id}`}
-                  className="text-primary hover:underline"
-                >
-                  {job.id}
-                </Link>
-              </TableCell>
-              <TableCell className="font-mono text-xs">
-                {job.messageId.slice(0, 20)}...
-              </TableCell>
-              <TableCell>
-                <StatusBadge status={job.status} />
-              </TableCell>
-              <TableCell>{job.priority}</TableCell>
-              <TableCell>{job.retryCount}</TableCell>
-              <TableCell>
-                {job.requiresManualReview && (
-                  <Badge variant="secondary">Review</Badge>
+        <div className="rounded-md border">
+          <div className="overflow-x-auto">
+            <div className={cn(COLUMN_LAYOUT, "min-w-[880px] border-b bg-muted/60 px-3 py-2 text-sm font-semibold")}>
+              <span>ID</span>
+              <span>Message ID</span>
+              <span>Status</span>
+              <span>Priority</span>
+              <span>Retry</span>
+              <span>Review</span>
+              <span>Updated</span>
+            </div>
+            <div
+              ref={scrollParentRef}
+              className="max-h-[70vh] min-w-[880px] overflow-auto"
+            >
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize() + (isFetchingNextPage ? ROW_HEIGHT : 0)}px`,
+                  position: "relative",
+                }}
+              >
+                {virtualItems.map((virtualRow) => {
+                  const job = jobs[virtualRow.index];
+                  return (
+                    <div
+                      key={job.id}
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
+                      className={cn(
+                        COLUMN_LAYOUT,
+                        "border-b px-3 py-3 text-sm"
+                      )}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <Link
+                        to={`/jobs/${job.id}`}
+                        className="text-primary hover:underline"
+                      >
+                        {job.id}
+                      </Link>
+                      <span className="font-mono text-xs">
+                        {job.messageId.slice(0, 20)}...
+                      </span>
+                      <span>
+                        <StatusBadge status={job.status} />
+                      </span>
+                      <span>{job.priority}</span>
+                      <span>{job.retryCount}</span>
+                      <span>
+                        {job.requiresManualReview && (
+                          <Badge variant="secondary">Review</Badge>
+                        )}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {formatDate(job.updatedAt)}
+                      </span>
+                    </div>
+                  );
+                })}
+                {isFetchingNextPage && (
+                  <div
+                    className="absolute left-0 right-0 flex items-center justify-center gap-2 text-sm text-muted-foreground"
+                    style={{ top: rowVirtualizer.getTotalSize() }}
+                  >
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading more jobs...
+                  </div>
                 )}
-              </TableCell>
-              <TableCell className="text-xs text-muted-foreground">
-                {new Date(job.updatedAt).toLocaleString("ja-JP")}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-          </Table>
-
-          {/* Pagination */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-muted-foreground">
-              Showing {offset + 1} - {offset + (data?.items.length ?? 0)}
-            </span>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={offset === 0}
-                onClick={() => goToPage(Math.max(0, offset - PAGE_SIZE))}
-              >
-                ← Prev
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!data?.hasMore}
-                onClick={() => goToPage(offset + PAGE_SIZE)}
-              >
-                Next →
-              </Button>
+              </div>
             </div>
           </div>
-        </>
+        </div>
       )}
     </div>
   );
