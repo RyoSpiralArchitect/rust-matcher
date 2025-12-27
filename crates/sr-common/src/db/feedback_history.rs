@@ -3,7 +3,7 @@ use tracing::instrument;
 
 use crate::api::models::queue::FeedbackEventRow;
 use crate::db::util::TimedClientExt;
-use crate::db::{db_error, PgPool};
+use crate::db::PgPool;
 
 db_error!(FeedbackHistoryError {});
 

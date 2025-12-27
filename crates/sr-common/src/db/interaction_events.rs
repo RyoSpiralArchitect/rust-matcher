@@ -5,7 +5,7 @@ use crate::api::interaction_event::{
     InteractionEventStatus, InteractionEventType,
 };
 use crate::db::util::TimedClientExt;
-use crate::db::{db_error, validated_actor, PgPool};
+use crate::db::{validated_actor, PgPool};
 
 db_error!(InteractionEventStorageError {
     #[error("interaction event actor is missing")]

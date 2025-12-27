@@ -1733,7 +1733,7 @@ mod tests {
         job.locked_by = Some("worker-1".into());
 
         let retry_after = chrono::Duration::minutes(10);
-        let (updated, status) = apply_outcome(
+        let (updated, status, _) = apply_outcome(
             job,
             Err(JobError::Retryable {
                 message: "temporary".into(),
@@ -1755,7 +1755,7 @@ mod tests {
         assert!(updated
             .last_error
             .as_ref()
-            .map(|e| e.contains("temporary"))
+            .map(|e: &String| e.contains("temporary"))
             .unwrap_or(false));
     }
 

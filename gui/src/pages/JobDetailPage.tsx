@@ -41,7 +41,7 @@ export function JobDetailPage() {
   const conversionMutation = useSendConversion();
   const { t, locale } = useI18n();
 
-  const feedbackLabels = useMemo(
+  const feedbackLabels: Record<string, string> = useMemo(
     () => ({
       thumbs_up: t("feedback.thumbs_up"),
       thumbs_down: t("feedback.thumbs_down"),
@@ -114,8 +114,9 @@ export function JobDetailPage() {
         onSuccess: () => {
           toast.success(t("jobDetail.feedback.submitted", { label }));
         },
-        onError: (err) => {
-          toast.error(t("jobDetail.feedback.failed", { message: err.message }));
+        onError: (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          toast.error(t("jobDetail.feedback.failed", { message }));
         },
       }
     );
@@ -411,7 +412,7 @@ interface PairsTableProps {
     stage: ConversionStage
   ) => void;
   conversionStages: { value: ConversionStage; label: string }[];
-  feedbackLabels: Record<FeedbackType, string>;
+  feedbackLabels: Record<string, string>;
   isSubmitting: boolean;
 }
 
@@ -607,11 +608,11 @@ function TimelineCard({
   formatDateTime,
 }: {
   pairs: PairDetail[];
-  feedbackLabels: Record<FeedbackType, string>;
+  feedbackLabels: Record<string, string>;
   formatDateTime: (value: string) => string;
 }) {
   const { t } = useI18n();
-  const eventLabels = useMemo(
+  const eventLabels: Record<string, string> = useMemo(
     () => ({
       viewed_candidate_detail: t("event.viewed_candidate_detail"),
       copied_template: t("event.copied_template"),

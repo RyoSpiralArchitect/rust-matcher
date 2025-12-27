@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use tracing::instrument;
 
 use crate::db::util::TimedClientExt;
-use crate::db::{db_error, PgPool};
+use crate::db::PgPool;
 
 db_error!(InteractionLogStorageError {});
 

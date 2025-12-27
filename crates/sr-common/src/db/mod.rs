@@ -11,6 +11,7 @@ macro_rules! db_error {
     };
 }
 
+#[allow(unused_imports)]
 pub(crate) use db_error;
 
 pub fn validated_actor(actor: &str) -> Option<&str> {

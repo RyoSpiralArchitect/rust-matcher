@@ -9,7 +9,7 @@ use crate::api::match_response::{
     KoDecisionDto, MatchConfig, MatchDetails, MatchResponse, ScoreBreakdown,
 };
 use crate::db::util::TimedClientExt;
-use crate::db::{db_error, PgPool};
+use crate::db::PgPool;
 
 db_error!(MatchFetchError {
     #[error("failed to map candidate row: {0}")]

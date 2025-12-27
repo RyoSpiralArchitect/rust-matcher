@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::db::util::TimedClientExt;
-use crate::db::{db_error, PgPool};
+use crate::db::PgPool;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingEmail {

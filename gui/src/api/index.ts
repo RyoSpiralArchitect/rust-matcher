@@ -17,4 +17,4 @@ export { queryClient } from "./queryClient";
 export * from "./hooks";
 
 // Types
-export type * from "./types";
+export * from "./types";

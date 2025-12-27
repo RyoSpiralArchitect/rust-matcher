@@ -1,6 +1,6 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -322,7 +322,7 @@ export function QueueJobsPage() {
                   position: "relative",
                 }}
               >
-                {virtualItems.map((virtualRow) => {
+                {virtualItems.map((virtualRow: VirtualItem) => {
                   const job = jobs[virtualRow.index];
                   return (
                     <div

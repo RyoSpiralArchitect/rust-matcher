@@ -2,7 +2,7 @@ use tracing::instrument;
 
 use crate::api::conversion::{ConversionRequest, ConversionResponse, ConversionSource};
 use crate::db::util::TimedClientExt;
-use crate::db::{db_error, validated_actor, PgPool};
+use crate::db::{validated_actor, PgPool};
 
 db_error!(ConversionStorageError {
     #[error("conversion actor is missing")]

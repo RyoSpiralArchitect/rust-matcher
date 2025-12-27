@@ -6,7 +6,7 @@ use tracing::instrument;
 use crate::api::feedback_request::{FeedbackRequest, NgReasonCategory};
 use crate::api::feedback_response::{FeedbackResponse, FeedbackStatus};
 use crate::db::util::TimedClientExt;
-use crate::db::{db_error, validated_actor, PgPool};
+use crate::db::{validated_actor, PgPool};
 
 db_error!(FeedbackStorageError {
     #[error("interaction not found: {0}")]

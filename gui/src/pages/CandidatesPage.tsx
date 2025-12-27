@@ -40,8 +40,9 @@ export function CandidatesPage() {
         onSuccess: () => {
           toast.success(t("candidates.feedback.success"));
         },
-        onError: (err) => {
-          toast.error(t("candidates.feedback.error", { message: err.message }));
+        onError: (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          toast.error(t("candidates.feedback.error", { message }));
         },
       }
     );

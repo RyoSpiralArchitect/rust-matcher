@@ -13,7 +13,7 @@ use crate::api::models::queue::{
     QueueJobDetailResponse, QueueJobFilter, QueueJobListItem, QueueJobListResponse, TalentSnapshot,
 };
 use crate::db::util::TimedClientExt;
-use crate::db::{db_error, normalize_json, PgPool};
+use crate::db::{normalize_json, PgPool};
 use crate::queue::{ExtractionJob, QueueStatus};
 use crate::timezone::RUN_DATE_TIMEZONE;
 use once_cell::sync::Lazy;
