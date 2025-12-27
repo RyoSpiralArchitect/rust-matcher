@@ -226,8 +226,8 @@ def import_csv(csv_path: str, db_url: str, dry_run: bool = False):
             inflow_date DATE,
             registration_date DATE,
             lark_record_id TEXT UNIQUE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
     """)
 
