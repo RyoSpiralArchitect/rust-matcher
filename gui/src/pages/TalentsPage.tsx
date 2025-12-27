@@ -32,6 +32,8 @@ export function TalentsPage() {
   }));
 
   useEffect(() => {
+    // Synchronize with URL changes while keeping the form controlled.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFormState({
       search: activeFilters.search ?? "",
       skill: activeFilters.skill ?? "",
