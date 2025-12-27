@@ -185,8 +185,12 @@ fn authorize_jwt(parts: &Parts, config: &AuthConfig) -> Result<AuthUser, ApiErro
         .map_err(|err| ApiError::Unauthorized(format!("invalid EdDSA public key: {err}")))?,
     };
 
-    let data = decode::<Claims>(token.as_str(), &decoding_key, &validation)
-        .map_err(|err| ApiError::Unauthorized(format!("invalid token: {err}")))?;
+    let data = decode::<Claims>(token.as_str(), &decoding_key, &validation).map_err(|err| {
+        ApiError::Unauthorized(format!(
+            "invalid token: {err}; expected alg={:?}",
+            config.jwt_algorithm
+        ))
+    })?;
 
     Ok(AuthUser {
         subject: data.claims.sub,

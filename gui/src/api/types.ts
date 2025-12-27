@@ -65,9 +65,11 @@ export interface FeedbackRequest {
   source: FeedbackSource;
 }
 
+export type FeedbackStatus = "created" | "already_exists";
+
 export interface FeedbackResponse {
-  id: number;
-  createdAt: string;
+  id?: number;
+  status: FeedbackStatus;
 }
 
 // ============================================================

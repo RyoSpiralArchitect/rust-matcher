@@ -1,4 +1,9 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { get, post, postFireAndForget } from "../client";
 import type {
   MatchCandidatesResponse,
@@ -9,6 +14,10 @@ import type {
   KoResult,
   QueueJobDetailResponse,
 } from "../types";
+
+type FeedbackMutationContext = {
+  previousJobDetails: Array<[QueryKey, QueueJobDetailResponse | undefined]>;
+};
 
 type RawMatchResponse = {
   talent_id: number;
@@ -84,7 +93,7 @@ export function useCandidates(projectId: number) {
 export function useSendFeedback() {
   const queryClient = useQueryClient();
 
-  return useMutation({
+  return useMutation<FeedbackResponse, unknown, FeedbackRequest, FeedbackMutationContext>({
     mutationFn: (request: FeedbackRequest) =>
       post<FeedbackResponse>("/api/feedback", request),
     onMutate: async (request) => {
@@ -137,11 +146,15 @@ export function useSendFeedback() {
       return { previousJobDetails };
     },
     onError: (_error, _request, context) => {
-      context?.previousJobDetails?.forEach(([queryKey, previous]) => {
-        if (previous) {
-          queryClient.setQueryData(queryKey, previous);
-        }
-      });
+      if (context?.previousJobDetails?.length) {
+        context.previousJobDetails.forEach(([queryKey, previous]) => {
+          if (previous) {
+            queryClient.setQueryData(queryKey, previous);
+          }
+        });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["queue", "job"] });
+      }
     },
     onSuccess: () => {
       // 候補一覧をリフレッシュ

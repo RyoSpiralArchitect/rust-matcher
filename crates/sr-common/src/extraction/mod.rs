@@ -1,6 +1,8 @@
+use chrono::NaiveDate;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::corrections::{
     flow_depth::correct_flow_dept,
@@ -168,7 +170,14 @@ pub fn extract_start_date_raw(body_text: &str) -> Option<String> {
     }
 
     if let Some(mat) = EXACT_DATE_RE.find(body_text) {
-        return Some(mat.as_str().trim().to_string());
+        let raw = mat.as_str().trim();
+        let normalized = raw.replace('/', "-");
+        match NaiveDate::parse_from_str(&normalized, "%Y-%m-%d") {
+            Ok(_) => return Some(raw.to_string()),
+            Err(err) => {
+                warn!(raw_start_date = raw, error = %err, "failed to parse exact start date");
+            }
+        }
     }
 
     if let Some(mat) = MONTH_ONLY_RE.find(body_text) {
@@ -394,6 +403,32 @@ mod tests {
         assert_eq!(
             extract_start_date_raw(&format!("Start date is {year}/03/10 for the project")),
             Some(format!("{year}/03/10"))
+        );
+    }
+
+    #[test]
+    fn start_date_handles_invalid_and_edge_cases() {
+        let year = chrono::Utc::now().year();
+        // Invalid calendar dates should be rejected with logging
+        assert_eq!(
+            extract_start_date_raw(&format!("{year}/02/30")),
+            None,
+            "invalid day should not be accepted"
+        );
+        assert_eq!(
+            extract_start_date_raw(&format!("{year}-13-01")),
+            None,
+            "invalid month should not be accepted"
+        );
+
+        // Edge expressions should still be surfaced verbatim
+        assert_eq!(
+            extract_start_date_raw("来月上旬に開始希望"),
+            Some("来月上旬".to_string())
+        );
+        assert_eq!(
+            extract_start_date_raw("12月下旬スタートを想定しています"),
+            Some("12月下旬".to_string())
         );
     }
 
