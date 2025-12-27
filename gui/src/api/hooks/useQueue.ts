@@ -56,9 +56,17 @@ export function useInfiniteQueueJobs(params?: {
   }
 
   const limit = params?.limit ?? 50;
+  const queryKey = [
+    "queue",
+    "jobs",
+    "infinite",
+    limit,
+    params?.status ?? null,
+    params?.requiresManualReview ?? null,
+  ] as const;
 
   return useInfiniteQuery({
-    queryKey: ["queue", "jobs", "infinite", params],
+    queryKey,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => {
       const searchParams = new URLSearchParams(baseSearchParams);

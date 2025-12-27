@@ -20,18 +20,13 @@ fn validate_feedback_payload(payload: &FeedbackRequest) -> Result<(), ApiError> 
         ));
     }
 
-    if payload
-        .comment
-        .as_ref()
-        .map(|c| c.trim().is_empty())
-        .unwrap_or(false)
-    {
+    let trimmed_comment = payload.comment.as_ref().map(|c| c.trim());
+
+    if trimmed_comment.map(|c| c.is_empty()).unwrap_or(false) {
         return Err(ApiError::BadRequest("comment cannot be empty".into()));
     }
 
-    if payload
-        .comment
-        .as_ref()
+    if trimmed_comment
         .map(|c| c.len() > MAX_COMMENT_LEN)
         .unwrap_or(false)
     {
@@ -39,6 +34,16 @@ fn validate_feedback_payload(payload: &FeedbackRequest) -> Result<(), ApiError> 
             "comment must be <= {} characters",
             MAX_COMMENT_LEN
         )));
+    }
+
+    if matches!(
+        payload.feedback_type,
+        FeedbackType::ThumbsDown | FeedbackType::ReviewNg | FeedbackType::Rejected
+    ) && payload.ng_reason_category.is_none()
+    {
+        return Err(ApiError::BadRequest(
+            "ng_reason_category is required for negative feedback".into(),
+        ));
     }
 
     // Explicit validation makes sure payloads are not bypassing the client.
