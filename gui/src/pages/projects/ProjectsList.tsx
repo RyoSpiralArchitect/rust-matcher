@@ -13,11 +13,13 @@ import { LoadingState } from "@/components/LoadingState";
 import { useProjects, type ProjectListItem } from "@/api";
 import { useI18n } from "@/lib/i18n";
 
+import type { TranslationKey } from "@/lib/messages";
+
 function formatBudgetRange(
   min: number | null,
   max: number | null,
   locale: string,
-  format: (key: string, values?: Record<string, string | number>) => string,
+  format: (key: TranslationKey, values?: Record<string, string | number>) => string,
 ) {
   if (min == null && max == null) {
     return format("projects.budget.unknown");

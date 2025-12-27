@@ -23,9 +23,9 @@ const CandidatesPage = lazy(() =>
     default: module.CandidatesPage,
   })),
 );
-const ProjectsIndexPage = lazy(() =>
-  import("./pages/projects/ProjectsIndexPage").then((module) => ({
-    default: module.ProjectsIndexPage,
+const ProjectsListPage = lazy(() =>
+  import("./pages/projects/ProjectsListPage").then((module) => ({
+    default: module.ProjectsListPage,
   })),
 );
 const ProjectDetailPage = lazy(() =>
@@ -43,10 +43,10 @@ export const router = createBrowserRouter([
     path: "/",
     element: <RootLayout />,
     children: [
-      // / → /queue にリダイレクト
+      // / → /projects にリダイレクト
       {
         index: true,
-        element: <Navigate to="/queue" replace />,
+        element: <Navigate to="/projects" replace />,
       },
       // Queue Dashboard
       {
@@ -72,10 +72,6 @@ export const router = createBrowserRouter([
       {
         path: "projects/:projectId/candidates",
         element: withSuspense(<CandidatesPage />),
-      },
-      {
-        path: "projects",
-        element: withSuspense(<ProjectsIndexPage />),
       },
       {
         path: "projects/:projectId",
