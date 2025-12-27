@@ -101,6 +101,43 @@ impl QueryBuilder {
     }
 }
 
+fn apply_job_filters(query: &mut QueryBuilder, filter: &QueueJobFilter) {
+    if let Some(status) = &filter.status {
+        query.push_eq("status", status.clone());
+    }
+
+    if let Some(requires_manual_review) = filter.requires_manual_review {
+        query.push_eq("requires_manual_review", requires_manual_review);
+    }
+
+    if let Some(canary_target) = filter.canary_target {
+        query.push_eq("canary_target", canary_target);
+    }
+
+    if let Some(final_method) = &filter.final_method {
+        query.push_eq("final_method", final_method.clone());
+    }
+
+    if let Some(manual_review_reason) = &filter.manual_review_reason {
+        query.push_eq("manual_review_reason", manual_review_reason.clone());
+    }
+
+    if let Some(created_after) = filter.created_after {
+        query.push_ge("created_at", created_after);
+    }
+
+    if let Some(created_before) = filter.created_before {
+        query.push_le("created_at", created_before);
+    }
+}
+
+fn params_from_values(values: &[Box<dyn ToSql + Sync + Send>]) -> Vec<&(dyn ToSql + Sync)> {
+    values
+        .iter()
+        .map(|value| value.as_ref() as &(dyn ToSql + Sync))
+        .collect()
+}
+
 /// Insert or update a queue row based on `message_id`.
 #[instrument(skip(pool, job))]
 pub async fn upsert_extraction_job(
@@ -464,7 +501,18 @@ pub async fn list_jobs(
 ) -> Result<QueueJobListResponse, QueueStorageError> {
     let client = pool.get().await?;
 
-    let fetch_limit = pagination.limit.saturating_add(1);
+    let mut count_query = QueryBuilder::new("SELECT COUNT(*) FROM ses.extraction_queue WHERE 1=1");
+    apply_job_filters(&mut count_query, filter);
+    let (count_sql, count_values) = count_query.finish();
+    let count_params = params_from_values(&count_values);
+
+    let total_rows = client
+        .timed_query_cached(count_sql.as_str(), &count_params, "count_jobs")
+        .await?;
+    let total: i64 = total_rows
+        .get(0)
+        .map(|row| row.get::<_, i64>(0))
+        .unwrap_or(0);
 
     // Guardrail: dynamic fragments must only append "AND column OP $n" clauses so that
     // the placeholder numbering stays correct and no raw user data is interpolated.
@@ -472,59 +520,28 @@ pub async fn list_jobs(
         "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at FROM ses.extraction_queue WHERE 1=1",
     );
 
-    if let Some(status) = &filter.status {
-        query.push_eq("status", status.clone());
-    }
-
-    if let Some(requires_manual_review) = filter.requires_manual_review {
-        query.push_eq("requires_manual_review", requires_manual_review);
-    }
-
-    if let Some(canary_target) = filter.canary_target {
-        query.push_eq("canary_target", canary_target);
-    }
-
-    if let Some(final_method) = &filter.final_method {
-        query.push_eq("final_method", final_method.clone());
-    }
-
-    if let Some(manual_review_reason) = &filter.manual_review_reason {
-        query.push_eq("manual_review_reason", manual_review_reason.clone());
-    }
-
-    if let Some(created_after) = filter.created_after {
-        query.push_ge("created_at", created_after);
-    }
-
-    if let Some(created_before) = filter.created_before {
-        query.push_le("created_at", created_before);
-    }
+    apply_job_filters(&mut query, filter);
 
     query.push_order_limit_offset(
         &[OrderField::CreatedAtDesc, OrderField::IdDesc],
-        fetch_limit,
+        pagination.limit,
         pagination.offset,
     );
 
     let (query, values) = query.finish();
-    let params: Vec<&(dyn ToSql + Sync)> = values
-        .iter()
-        .map(|v| v.as_ref() as &(dyn ToSql + Sync))
-        .collect();
+    let params = params_from_values(&values);
     let rows = client
         .timed_query_cached(query.as_str(), &params, "list_jobs")
         .await?;
 
-    let mut items: Vec<QueueJobListItem> = rows.iter().map(row_to_list_item).collect();
-    let has_more = (items.len() as i64) > pagination.limit;
-    if has_more {
-        items.pop();
-    }
+    let items: Vec<QueueJobListItem> = rows.iter().map(row_to_list_item).collect();
+    let has_more = pagination.offset + (items.len() as i64) < total;
 
     Ok(QueueJobListResponse {
         items,
         limit: pagination.limit,
         offset: pagination.offset,
+        total,
         has_more,
     })
 }

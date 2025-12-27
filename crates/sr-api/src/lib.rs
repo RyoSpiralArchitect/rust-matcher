@@ -25,11 +25,12 @@ use governor::{
     clock::DefaultClock, middleware::NoOpMiddleware, state::keyed::DashMapStateStore, Quota,
     RateLimiter,
 };
-use metrics::{counter, histogram};
+use metrics::{counter, gauge, histogram};
 use sr_common::api::match_response::MatchConfig;
 use sr_common::db::create_pool_from_url_checked;
 use sr_common::db::{run_migrations, PgPool};
 use sr_metrics::init_metrics;
+use tokio::time::Duration as TokioDuration;
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -407,6 +408,19 @@ async fn log_body_limit_rejections(req: Request<Body>, next: Next) -> Result<Res
     Ok(response)
 }
 
+fn spawn_pool_metrics(pool: PgPool) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(TokioDuration::from_secs(10));
+        loop {
+            ticker.tick().await;
+            let status = pool.status();
+            gauge!("db_pool_size", "pool" => "primary").set(status.size as f64);
+            gauge!("db_pool_available", "pool" => "primary").set(status.available as f64);
+            gauge!("db_pool_waiting", "pool" => "primary").set(status.waiting as f64);
+        }
+    });
+}
+
 pub fn create_router(state: SharedState) -> Router {
     let cors = cors_layer(&state.config.cors_origins);
 
@@ -647,6 +661,7 @@ pub async fn run() -> Result<(), ApiError> {
 
     let addr: SocketAddr = ([0, 0, 0, 0], config.port).into();
     let app = create_router(state.clone());
+    spawn_pool_metrics(state.pool.clone());
 
     info!(%addr, auth_mode = ?config.auth.mode, "sr-api listening");
 

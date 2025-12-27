@@ -21,10 +21,11 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    id: 1,
-    description: "safety checks for queue status + score ranges",
-    sql: r#"
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        id: 1,
+        description: "safety checks for queue status + score ranges",
+        sql: r#"
 CREATE SCHEMA IF NOT EXISTS ses;
 
 CREATE TABLE IF NOT EXISTS ses.schema_migrations (
@@ -71,10 +72,11 @@ BEGIN
     END IF;
 END $$;
 "#,
-}, Migration {
-    id: 2,
-    description: "soft delete + indexes for match_results, timestamp defaults, JSONB indexes",
-    sql: r#"
+    },
+    Migration {
+        id: 2,
+        description: "soft delete + indexes for match_results, timestamp defaults, JSONB indexes",
+        sql: r#"
 DO $$
 BEGIN
     IF EXISTS (
@@ -217,7 +219,8 @@ BEGIN
     ALTER TABLE IF EXISTS ses.schema_migrations ALTER COLUMN applied_at SET DEFAULT clock_timestamp();
 END $$;
 "#,
-}];
+    },
+];
 
 #[instrument(skip(pool))]
 pub async fn run_migrations(pool: &PgPool) -> Result<(), MigrationError> {

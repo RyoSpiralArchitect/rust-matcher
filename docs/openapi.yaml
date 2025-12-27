@@ -1,0 +1,876 @@
+openapi: 3.1.0
+info:
+  title: rust-matcher API
+  version: "1.0.0"
+  description: |
+    HTTP API for the rust-matcher GUI and automation workflows.
+
+    All timestamps use RFC 3339 / ISO 8601 `date-time` strings in UTC.
+servers:
+  - url: http://localhost:3001
+    description: Local development
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        database:
+          type: string
+          example: ok
+        application:
+          type: string
+        version:
+          type: string
+      required: [status, application, version]
+    QueueDashboard:
+      type: object
+      properties:
+        status_counts:
+          $ref: "#/components/schemas/StatusCounts"
+        manual_review_count:
+          type: integer
+        error_count:
+          type: integer
+        stale_processing_count:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - status_counts
+        - manual_review_count
+        - error_count
+        - stale_processing_count
+        - updated_at
+    StatusCounts:
+      type: object
+      properties:
+        pending:
+          type: integer
+        processing:
+          type: integer
+        completed:
+          type: integer
+      required: [pending, processing, completed]
+    QueueJobListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/QueueJobListItem"
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+        has_more:
+          type: boolean
+      required: [items, limit, offset, total, has_more]
+    QueueJobListItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        message_id:
+          type: string
+        status:
+          type: string
+          description: pending | processing | completed
+        priority:
+          type: integer
+        retry_count:
+          type: integer
+        next_retry_at:
+          type: string
+          format: date-time
+          nullable: true
+        final_method:
+          type: string
+          nullable: true
+        requires_manual_review:
+          type: boolean
+        manual_review_reason:
+          type: string
+          nullable: true
+        decision_reason:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - message_id
+        - status
+        - priority
+        - retry_count
+        - requires_manual_review
+        - created_at
+        - updated_at
+    QueueJobDetailResponse:
+      type: object
+      properties:
+        job:
+          $ref: "#/components/schemas/QueueJobListItem"
+        partial_fields:
+          type: object
+          additionalProperties: true
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+        llm_latency_ms:
+          type: integer
+          nullable: true
+        processing_started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        entity:
+          nullable: true
+          oneOf:
+            - $ref: "#/components/schemas/TalentSnapshot"
+            - $ref: "#/components/schemas/ProjectSnapshot"
+            - $ref: "#/components/schemas/BothSnapshot"
+        pairs:
+          type: array
+          items:
+            $ref: "#/components/schemas/PairDetail"
+          nullable: true
+        source_preview:
+          type: string
+          nullable: true
+      required: [job]
+    TalentSnapshot:
+      type: object
+      properties:
+        type:
+          type: string
+          example: talent
+        id:
+          type: integer
+        message_id:
+          type: string
+        talent_name:
+          type: string
+          nullable: true
+        summary_text:
+          type: string
+          nullable: true
+        desired_price_min:
+          type: integer
+          nullable: true
+        available_date:
+          type: string
+          format: date
+          nullable: true
+        received_at:
+          type: string
+          format: date-time
+      required: [id, message_id, received_at]
+    ProjectSnapshot:
+      type: object
+      properties:
+        type:
+          type: string
+          example: project
+        project_code:
+          type: integer
+        message_id:
+          type: string
+          nullable: true
+        project_name:
+          type: string
+        monthly_tanka_min:
+          type: integer
+          nullable: true
+        monthly_tanka_max:
+          type: integer
+          nullable: true
+        start_date:
+          type: string
+          nullable: true
+        requires_manual_review:
+          type: boolean
+        manual_review_reason:
+          type: string
+          nullable: true
+      required: [project_code, project_name, requires_manual_review]
+    BothSnapshot:
+      type: object
+      properties:
+        type:
+          type: string
+          example: both
+        talent:
+          $ref: "#/components/schemas/TalentSnapshot"
+        project:
+          $ref: "#/components/schemas/ProjectSnapshot"
+      required: [talent, project]
+    PairDetail:
+      type: object
+      properties:
+        match_result:
+          $ref: "#/components/schemas/MatchResultRow"
+        latest_interaction:
+          $ref: "#/components/schemas/InteractionLogRow"
+          nullable: true
+        feedback_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/FeedbackEventRow"
+        interaction_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/InteractionEventRow"
+      required: [match_result, feedback_events, interaction_events]
+    MatchResultRow:
+      type: object
+      properties:
+        id:
+          type: integer
+        talent_id:
+          type: integer
+        project_id:
+          type: integer
+        is_knockout:
+          type: boolean
+        ko_reasons:
+          type: array
+          items:
+            type: string
+        needs_manual_review:
+          type: boolean
+        score_total:
+          type: number
+          format: double
+          nullable: true
+        score_breakdown:
+          type: object
+          additionalProperties: true
+          nullable: true
+        engine_version:
+          type: string
+          nullable: true
+        rule_version:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - talent_id
+        - project_id
+        - is_knockout
+        - ko_reasons
+        - needs_manual_review
+        - created_at
+    InteractionLogRow:
+      type: object
+      properties:
+        id:
+          type: integer
+        match_result_id:
+          type: integer
+          nullable: true
+        talent_id:
+          type: integer
+        project_id:
+          type: integer
+        match_run_id:
+          type: string
+          nullable: true
+        two_tower_score:
+          type: number
+          format: double
+          nullable: true
+        business_score:
+          type: number
+          format: double
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - talent_id
+        - project_id
+        - created_at
+    FeedbackEventRow:
+      type: object
+      properties:
+        id:
+          type: integer
+        interaction_id:
+          type: integer
+          nullable: true
+        match_result_id:
+          type: integer
+          nullable: true
+        match_run_id:
+          type: string
+          nullable: true
+        engine_version:
+          type: string
+          nullable: true
+        config_version:
+          type: string
+          nullable: true
+        project_id:
+          type: integer
+        talent_id:
+          type: integer
+        feedback_type:
+          type: string
+        ng_reason_category:
+          type: string
+          nullable: true
+        comment:
+          type: string
+          nullable: true
+        actor:
+          type: string
+        source:
+          type: string
+        is_revoked:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - project_id
+        - talent_id
+        - feedback_type
+        - actor
+        - source
+        - is_revoked
+        - created_at
+    InteractionEventRow:
+      type: object
+      properties:
+        id:
+          type: integer
+        interaction_id:
+          type: integer
+        event_type:
+          type: string
+        actor:
+          type: string
+        source:
+          type: string
+        meta:
+          type: object
+          additionalProperties: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - interaction_id
+        - event_type
+        - actor
+        - source
+        - created_at
+    CandidateListResponse:
+      type: object
+      properties:
+        project_id:
+          type: integer
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/MatchResponse"
+      required: [project_id, candidates]
+    MatchResponse:
+      type: object
+      properties:
+        talent_id:
+          type: integer
+        project_id:
+          type: integer
+        interaction_id:
+          type: integer
+        auto_match_eligible:
+          type: boolean
+        manual_review_required:
+          type: boolean
+        score:
+          type: number
+          format: double
+        score_breakdown:
+          $ref: "#/components/schemas/ScoreBreakdown"
+        two_tower_score:
+          type: number
+          format: double
+          nullable: true
+        ko_decisions:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/KoDecision"
+        ko_reasons:
+          type: array
+          items:
+            type: string
+        details:
+          $ref: "#/components/schemas/MatchDetails"
+        engine_version:
+          type: string
+        rule_version:
+          type: string
+        matched_at:
+          type: string
+          format: date-time
+      required:
+        - talent_id
+        - project_id
+        - interaction_id
+        - auto_match_eligible
+        - manual_review_required
+        - score
+        - score_breakdown
+        - ko_decisions
+        - ko_reasons
+        - details
+        - engine_version
+        - rule_version
+        - matched_at
+    ScoreBreakdown:
+      type: object
+      properties:
+        tanka:
+          type: number
+          format: double
+        location:
+          type: number
+          format: double
+        skills:
+          type: number
+          format: double
+        experience:
+          type: number
+          format: double
+        contract:
+          type: number
+          format: double
+        business_total:
+          type: number
+          format: double
+      required:
+        - tanka
+        - location
+        - skills
+        - experience
+        - contract
+        - business_total
+    KoDecision:
+      type: object
+      properties:
+        ko_type:
+          type: string
+          enum: [hard_ko, soft_ko, pass]
+        reason:
+          type: string
+          nullable: true
+        details:
+          type: string
+          nullable: true
+      required: [ko_type]
+    MatchDetails:
+      type: object
+      properties:
+        location:
+          type: string
+          nullable: true
+        skills:
+          type: string
+          nullable: true
+        tanka:
+          type: string
+          nullable: true
+        experience:
+          type: string
+          nullable: true
+        contract:
+          type: string
+          nullable: true
+        flow:
+          type: string
+          nullable: true
+        japanese:
+          type: string
+          nullable: true
+        english:
+          type: string
+          nullable: true
+        age:
+          type: string
+          nullable: true
+        nationality:
+          type: string
+          nullable: true
+        availability:
+          type: string
+          nullable: true
+    FeedbackRequest:
+      type: object
+      properties:
+        interaction_id:
+          type: integer
+        feedback_type:
+          type: string
+          enum:
+            - thumbs_up
+            - thumbs_down
+            - review_ok
+            - review_ng
+            - review_pending
+            - accepted
+            - rejected
+            - interview_scheduled
+            - no_response
+        ng_reason_category:
+          type: string
+          enum: [tanka, skill, availability, location, flow, other]
+          nullable: true
+        comment:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum: [gui, crm, api, import]
+      required: [interaction_id, feedback_type, source]
+    FeedbackResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [created, already_exists]
+        feedback_type:
+          type: string
+        interaction_id:
+          type: integer
+        match_result_id:
+          type: integer
+          nullable: true
+        match_run_id:
+          type: string
+          nullable: true
+        project_id:
+          type: integer
+        talent_id:
+          type: integer
+      required:
+        - status
+        - feedback_type
+        - interaction_id
+        - project_id
+        - talent_id
+paths:
+  /livez:
+    get:
+      summary: Liveness probe
+      responses:
+        "200":
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /readyz:
+    get:
+      summary: Readiness probe (includes DB check)
+      responses:
+        "200":
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: Not ready
+  /health:
+    get:
+      summary: Backwards-compatible readiness probe
+      responses:
+        "200":
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: Not ready
+  /api/v1/queue/dashboard:
+    get:
+      summary: Fetch queue dashboard aggregates
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Dashboard stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueDashboard"
+        "401":
+          description: Authentication required
+        "403":
+          description: Admin role required
+  /api/v1/queue/jobs:
+    get:
+      summary: List extraction queue jobs
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, processing, completed]
+        - in: query
+          name: final_method
+          schema:
+            type: string
+            enum: [rust_completed, llm_completed, manual_review]
+        - in: query
+          name: requires_manual_review
+          schema:
+            type: boolean
+        - in: query
+          name: created_after
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: created_before
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: canary_target
+          schema:
+            type: string
+        - in: query
+          name: manual_review_reason
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Queue jobs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueJobListResponse"
+        "401":
+          description: Authentication required
+        "403":
+          description: Admin role required
+  /api/v1/queue/jobs/{id}:
+    get:
+      summary: Get queue job detail
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - in: query
+          name: include
+          description: Comma-separated flags (entity,matches,interactions,feedback,events,source_text)
+          schema:
+            type: string
+        - in: query
+          name: limit
+          description: Limit for matches/feedback/events
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 200
+        - in: query
+          name: days
+          description: Lookback window for history
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+            maximum: 365
+      responses:
+        "200":
+          description: Queue job detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueJobDetailResponse"
+        "401":
+          description: Authentication required
+        "403":
+          description: Admin role required
+        "404":
+          description: Not found
+  /api/v1/queue/retry/{id}:
+    post:
+      summary: Retry a queue job (admin-only)
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Retry scheduled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  status:
+                    type: string
+                required: [success, status]
+        "401":
+          description: Authentication required
+        "403":
+          description: Admin role required
+        "404":
+          description: Not found
+  /api/v1/projects/{project_id}/candidates:
+    get:
+      summary: List candidates for a project
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - in: query
+          name: include_softko
+          schema:
+            type: boolean
+            default: false
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: Candidates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateListResponse"
+        "401":
+          description: Authentication required
+  /api/v1/feedback:
+    post:
+      summary: Submit feedback for an interaction
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackRequest"
+      responses:
+        "200":
+          description: Feedback status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedbackResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Authentication required
+  /api/v1/feedback/history/{interaction_id}:
+    get:
+      summary: Fetch feedback history for an interaction
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: interaction_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Feedback events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FeedbackEventRow"
+        "401":
+          description: Authentication required
+        "404":
+          description: Not found
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
