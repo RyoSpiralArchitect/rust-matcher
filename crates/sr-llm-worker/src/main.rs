@@ -15,15 +15,42 @@ use sr_common::queue::{
     RecommendedMethod,
 };
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
+use std::sync::OnceLock;
+use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info, info_span, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompareMode {
     None,
     Shadow,
+}
+
+static PROMETHEUS_HANDLE: OnceLock<metrics_exporter_prometheus::PrometheusHandle> = OnceLock::new();
+
+fn init_metrics() {
+    let port = std::env::var("METRICS_PORT")
+        .ok()
+        .and_then(|raw| raw.parse::<u16>().ok())
+        .unwrap_or(9898);
+
+    if PROMETHEUS_HANDLE.get().is_some() {
+        return;
+    }
+
+    match metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], port))
+        .install_recorder()
+    {
+        Ok(handle) => {
+            let _ = PROMETHEUS_HANDLE.set(handle);
+            info!(metrics_port = port, "started prometheus exporter");
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to start prometheus exporter");
+        }
+    }
 }
 
 fn provider_defaults(provider: &str) -> (String, String) {
@@ -460,6 +487,18 @@ async fn perform_llm_request(
     api_key: &str,
     request: &LlmRequest,
 ) -> Result<LlmResponse, JobError> {
+    let request_id = request.message_id.clone();
+    let provider = config.provider.clone();
+    let model = request.model.clone();
+    let span = info_span!(
+        "perform_llm_request",
+        %request_id,
+        %endpoint,
+        %provider,
+        %model
+    );
+    let _entered = span.enter();
+    let start = Instant::now();
     // Disable environment proxies so local mock servers (used in tests) are hit directly
     // instead of being tunneled through corporate MITM proxies that would block the request.
     let client = Client::builder()
@@ -472,17 +511,37 @@ async fn perform_llm_request(
         })?;
 
     for attempt in 0..=config.max_retries {
-        let response = client
+        let mut request_builder = client
             .post(endpoint)
             .bearer_auth(api_key)
-            .json(request)
-            .send()
-            .await;
+            .header("x-request-id", &request_id)
+            .json(request);
+
+        if let Some(span_id) = tracing::Span::current().id() {
+            request_builder = request_builder.header("x-trace-id", format!("{:?}", span_id));
+        }
+
+        let response = request_builder.send().await;
 
         match response {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    metrics::histogram!(
+                        "llm_request_latency_ms",
+                        "provider" => provider.clone(),
+                        "model" => model.clone(),
+                        "outcome" => "success"
+                    )
+                    .record(latency_ms);
+                    metrics::counter!(
+                        "llm_request_total",
+                        "provider" => provider.clone(),
+                        "model" => model.clone(),
+                        "outcome" => "success"
+                    )
+                    .increment(1);
                     return resp
                         .json::<LlmResponse>()
                         .await
@@ -492,12 +551,26 @@ async fn perform_llm_request(
                 }
 
                 if is_retryable_status(status) && attempt < config.max_retries {
+                    metrics::counter!(
+                        "llm_request_total",
+                        "provider" => provider.clone(),
+                        "model" => model.clone(),
+                        "outcome" => "retry"
+                    )
+                    .increment(1);
                     sleep(Duration::from_secs(config.retry_backoff_secs)).await;
                     continue;
                 }
 
                 let body = resp.text().await.unwrap_or_default();
                 let message = format!("llm call failed with status {status}: {body}");
+                metrics::counter!(
+                    "llm_request_total",
+                    "provider" => provider.clone(),
+                    "model" => model.clone(),
+                    "outcome" => if is_retryable_status(status) { "retryable_failure" } else { "failure" }
+                )
+                .increment(1);
                 if is_retryable_status(status) {
                     return Err(JobError::Retryable {
                         message,
@@ -511,9 +584,24 @@ async fn perform_llm_request(
             }
             Err(err) => {
                 if attempt < config.max_retries {
+                    metrics::counter!(
+                        "llm_request_total",
+                        "provider" => provider.clone(),
+                        "model" => model.clone(),
+                        "outcome" => "retry"
+                    )
+                    .increment(1);
                     sleep(Duration::from_secs(config.retry_backoff_secs)).await;
                     continue;
                 }
+
+                metrics::counter!(
+                    "llm_request_total",
+                    "provider" => provider.clone(),
+                    "model" => model.clone(),
+                    "outcome" => "failure"
+                )
+                .increment(1);
 
                 return Err(JobError::Retryable {
                     message: format!("llm request error: {err}"),
@@ -522,6 +610,14 @@ async fn perform_llm_request(
             }
         }
     }
+
+    metrics::counter!(
+        "llm_request_total",
+        "provider" => provider,
+        "model" => model,
+        "outcome" => "exhausted"
+    )
+    .increment(1);
 
     Err(JobError::Retryable {
         message: "llm retries exhausted".into(),
@@ -859,6 +955,13 @@ async fn process_locked_job(
 
     let (processed, status) = apply_outcome(locked.clone(), outcome);
     let rows = upsert_extraction_job(pool, &processed).await?;
+    let worker_label = worker_id.to_string();
+    metrics::counter!(
+        "llm_jobs_completed_total",
+        "worker_id" => worker_label.clone(),
+        "status" => status.as_str().to_string()
+    )
+    .increment(1);
     info!(
         rows,
         worker_id = %worker_id,
@@ -868,6 +971,11 @@ async fn process_locked_job(
     );
 
     if shadow_selected {
+        metrics::counter!(
+            "shadow_comparisons_spawned_total",
+            "worker_id" => worker_label
+        )
+        .increment(1);
         spawn_shadow_compare(processed.clone(), body_text, llm_config, shadow_config).await;
     }
 
@@ -885,6 +993,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
     install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
+    init_metrics();
 
     let args = Cli::parse();
     let llm_config = LlmRuntimeConfig::from_env();
@@ -909,6 +1018,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut processed_jobs = 0usize;
     let max_jobs = args.max_jobs.unwrap_or(usize::MAX);
+    let worker_label = args.worker_id.clone();
 
     while processed_jobs < max_jobs {
         let maybe_job = lock_next_pending_job(&pool, &args.worker_id, Utc::now()).await?;
@@ -925,8 +1035,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
 
+        let job_span = info_span!(
+            "process_job",
+            job_id = job.id,
+            message_id = %job.message_id,
+            worker_id = %args.worker_id
+        );
+        let _entered = job_span.enter();
+        metrics::counter!(
+            "llm_jobs_started_total",
+            "worker_id" => worker_label.clone()
+        )
+        .increment(1);
+        metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone())
+            .set(1.0);
+
         process_locked_job(&pool, &args.worker_id, job, &llm_config, &shadow_runtime).await?;
         processed_jobs += 1;
+        metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone())
+            .set(0.0);
     }
 
     Ok(())

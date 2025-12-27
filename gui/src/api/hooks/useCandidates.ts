@@ -7,6 +7,7 @@ import type {
   InteractionEventRequest,
   MatchCandidate,
   KoResult,
+  QueueJobDetailResponse,
 } from "../types";
 
 type RawMatchResponse = {
@@ -86,11 +87,71 @@ export function useSendFeedback() {
   return useMutation({
     mutationFn: (request: FeedbackRequest) =>
       post<FeedbackResponse>("/api/feedback", request),
+    onMutate: async (request) => {
+      await queryClient.cancelQueries({ queryKey: ["queue", "job"] });
+      const previousJobDetails = queryClient.getQueriesData<QueueJobDetailResponse>(
+        { queryKey: ["queue", "job"] }
+      );
+
+      previousJobDetails.forEach(([queryKey, previous]) => {
+        if (!previous?.pairs) return;
+
+        const updatedPairs =
+          previous.pairs?.map((pair) => {
+            const interactionId = pair.latestInteraction?.id;
+            if (interactionId !== request.interactionId) {
+              return pair;
+            }
+
+            const optimisticEvent = {
+              id: -1,
+              interactionId,
+              matchResultId: pair.matchResult.id,
+              matchRunId: pair.latestInteraction?.matchRunId ?? null,
+              engineVersion: pair.latestInteraction?.engineVersion ?? null,
+              configVersion: pair.latestInteraction?.configVersion ?? null,
+              projectId: pair.matchResult.projectId,
+              talentId: pair.matchResult.talentId,
+              feedbackType: request.feedbackType,
+              ngReasonCategory: request.ngReasonCategory ?? null,
+              comment: request.comment ?? null,
+              actor: "gui-user",
+              source: request.source,
+              isRevoked: false,
+              createdAt: new Date().toISOString(),
+              pending: true,
+            };
+
+            return {
+              ...pair,
+              feedbackEvents: [optimisticEvent, ...pair.feedbackEvents],
+            };
+          }) ?? previous.pairs;
+
+        queryClient.setQueryData(queryKey, {
+          ...previous,
+          pairs: updatedPairs,
+        });
+      });
+
+      return { previousJobDetails };
+    },
+    onError: (_error, _request, context) => {
+      context?.previousJobDetails?.forEach(([queryKey, previous]) => {
+        if (previous) {
+          queryClient.setQueryData(queryKey, previous);
+        }
+      });
+    },
     onSuccess: () => {
       // 候補一覧をリフレッシュ
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       // Job詳細もリフレッシュ（JobDetailPageから使われる場合）
       queryClient.invalidateQueries({ queryKey: ["queue", "job"] });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["queue", "job"] });
+      queryClient.invalidateQueries({ queryKey: ["candidates"] });
     },
   });
 }

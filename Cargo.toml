@@ -41,6 +41,8 @@ governor = "0.10"
 siphasher = "0.3"
 subtle = "2"
 serial_test = "3"
+metrics = "0.23"
+metrics-exporter-prometheus = "0.14"
 
 [patch.crates-io]
 yup-oauth2 = { path = "patches/yup-oauth2" }
