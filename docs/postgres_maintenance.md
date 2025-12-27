@@ -1,6 +1,6 @@
 # PostgreSQL メンテナンス指針
 
-`ses.extraction_queue`・`ses.match_results`・`ses.interaction_logs`・`ses.feedback_events` のような大規模テーブルは、統計の鮮度と膨張抑制のために定期メンテが必要です。プライマリで次の cron を回してください。
+`ses.extraction_queue`・`ses.match_results`・`ses.interaction_logs`・`ses.feedback_events` のような大規模テーブルは、統計の鮮度と膨張抑制のために定期メンテが必要です。プライマリで次の cron を自動実行してください（日本時間の閑散時間帯 2:00–5:00 頃に配置すると安全です）。`deploy/sr-pg-maintenance.service` + `deploy/sr-pg-maintenance.timer` を導入すると 02:00 JST 相当で自動化できます。
 
 ```
 # 毎晩: プランナ統計を更新し、書き込みの多いテーブルの領域を回収
