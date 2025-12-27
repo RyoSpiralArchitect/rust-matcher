@@ -1,5 +1,5 @@
 import { useMemo, type KeyboardEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
 import { useProjects, type ProjectListItem } from "@/api";
@@ -120,7 +121,7 @@ function ProjectCard({ project, locale, onOpen }: ProjectCardProps) {
   );
 }
 
-export function ProjectsList() {
+export function ProjectsList({ canCreateProject = true }: { canCreateProject?: boolean } = {}) {
   const navigate = useNavigate();
   const { t, locale } = useI18n();
   const { data, isLoading, error } = useProjects();
@@ -148,11 +149,21 @@ export function ProjectsList() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">{t("projects.title")}</h1>
-        <p className="text-sm text-muted-foreground">
-          {t("projects.subtitle", { count: projects.length })}
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold">{t("projects.title")}</h1>
+          <p className="text-sm text-muted-foreground">
+            {t("projects.subtitle", { count: projects.length })}
+          </p>
+        </div>
+        {canCreateProject && (
+          <Button asChild>
+            {/* TODO: Replace with the real project creation route/modal when available. */}
+            <Link to="/projects/new">
+              {t("projects.list.ctaCreate")}
+            </Link>
+          </Button>
+        )}
       </div>
 
       {projects.length === 0 ? (

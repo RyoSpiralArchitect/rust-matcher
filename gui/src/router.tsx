@@ -2,6 +2,7 @@ import { Suspense, lazy, type ReactNode } from "react";
 import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 import { RootLayout } from "./layouts/RootLayout";
 import { LoadingState } from "./components/LoadingState";
+import { QueueRouteGuard } from "./components/QueueRouteGuard";
 
 const QueueDashboardPage = lazy(() =>
   import("./pages/QueueDashboardPage").then((module) => ({
@@ -16,6 +17,16 @@ const QueueJobsPage = lazy(() =>
 const JobDetailPage = lazy(() =>
   import("./pages/JobDetailPage").then((module) => ({
     default: module.JobDetailPage,
+  })),
+);
+const TalentsPage = lazy(() =>
+  import("./pages/TalentsPage").then((module) => ({
+    default: module.TalentsPage,
+  })),
+);
+const TalentDetailPage = lazy(() =>
+  import("./pages/TalentDetailPage").then((module) => ({
+    default: module.TalentDetailPage,
   })),
 );
 const CandidatesPage = lazy(() =>
@@ -53,25 +64,37 @@ export const router = createBrowserRouter([
     path: "/",
     element: <RootLayout />,
     children: [
-      // / → /queue にリダイレクト
+      // / → /projects にリダイレクト
       {
         index: true,
-        element: <Navigate to="/queue" replace />,
+        element: <Navigate to="/projects" replace />,
       },
       // Queue Dashboard
       {
         path: "queue",
-        element: withSuspense(<QueueDashboardPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<QueueDashboardPage />)}
+          </QueueRouteGuard>
+        ),
       },
       // Queue Jobs 一覧
       {
         path: "jobs",
-        element: withSuspense(<QueueJobsPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<QueueJobsPage />)}
+          </QueueRouteGuard>
+        ),
       },
       // Job 詳細
       {
         path: "jobs/:jobId",
-        element: withSuspense(<JobDetailPage />),
+        element: (
+          <QueueRouteGuard>
+            {withSuspense(<JobDetailPage />)}
+          </QueueRouteGuard>
+        ),
       },
       // Projects セクション
       {
@@ -107,6 +130,11 @@ export const router = createBrowserRouter([
             element: withSuspense(<TalentDetailPage />),
           },
         ],
+      },
+      // 候補一覧（プロジェクト単位）
+      {
+        path: "projects/:projectId/candidates",
+        element: withSuspense(<CandidatesPage />),
       },
     ],
   },

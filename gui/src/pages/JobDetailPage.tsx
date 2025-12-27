@@ -41,6 +41,7 @@ export function JobDetailPage() {
   const feedbackMutation = useSendFeedback();
   const conversionMutation = useSendConversion();
   const { t, locale } = useI18n();
+  const { isQueueAdmin } = useFlags();
 
   const feedbackLabels: Record<string, string> = useMemo(
     () => ({
@@ -153,7 +154,8 @@ export function JobDetailPage() {
         ]}
       />
 
-      {/* Header */}
+  const header = (
+    <div className="space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold">{t("jobDetail.title", { id: jobId ?? "" })}</h1>
@@ -170,6 +172,28 @@ export function JobDetailPage() {
           {retryMutation.isPending ? t("jobDetail.retrying") : t("jobDetail.retry")}
         </Button>
       </div>
+      <p className="text-sm text-muted-foreground">
+        {t("queue.access.note")}
+      </p>
+    </div>
+  );
+
+  if (!isQueueAdmin) {
+    return (
+      <div className="space-y-6">
+        {breadcrumb}
+        {header}
+        <div className="rounded-md border border-dashed bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+          {t("queue.access.noAccess")}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {breadcrumb}
+      {header}
 
       {/* Summary */}
       <Card>

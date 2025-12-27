@@ -1,4 +1,6 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
+import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import type { TranslationKey } from "@/lib/messages";
@@ -11,6 +13,7 @@ const navItems: { href: string; labelKey: TranslationKey }[] = [
 ];
 
 export function RootLayout() {
+  const { t } = useI18n();
   const location = useLocation();
   const { t } = useI18n();
 
@@ -26,7 +29,7 @@ export function RootLayout() {
             SR Matcher
           </Link>
           <nav className="flex gap-4">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <Link
                 key={item.href}
                 to={item.href}
