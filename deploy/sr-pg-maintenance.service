@@ -1,0 +1,12 @@
+[Unit]
+Description=sr-pg-maintenance - VACUUM/ANALYZE ses tables
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/sr-matcher.env
+WorkingDirectory=/opt/rust-matcher
+ExecStart=/usr/bin/env bash /opt/rust-matcher/scripts/pg_maintenance.sh
+
+[Install]
+WantedBy=multi-user.target
