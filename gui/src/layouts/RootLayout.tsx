@@ -1,14 +1,20 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 
 const navItems = [
-  { href: "/queue", label: "Dashboard" },
-  { href: "/jobs", label: "Jobs" },
-  { href: "/projects", label: "Projects" },
-];
+  { href: "/queue", labelKey: "nav.queue" },
+  { href: "/jobs", labelKey: "nav.jobs" },
+  { href: "/projects", labelKey: "nav.projects" },
+  { href: "/talents", labelKey: "nav.talents" },
+] as const;
 
 export function RootLayout() {
+  const { t } = useI18n();
   const location = useLocation();
+
+  const isActive = (href: string) =>
+    location.pathname === href || location.pathname.startsWith(`${href}/`);
 
   return (
     <div className="min-h-screen bg-background">
@@ -25,13 +31,10 @@ export function RootLayout() {
                 to={item.href}
                 className={cn(
                   "text-sm font-medium transition-colors hover:text-primary",
-                  location.pathname === item.href ||
-                    location.pathname.startsWith(item.href + "/")
-                    ? "text-primary"
-                    : "text-muted-foreground"
+                  isActive(item.href) ? "text-primary" : "text-muted-foreground",
                 )}
               >
-                {item.label}
+                {t(item.labelKey)}
               </Link>
             ))}
           </nav>

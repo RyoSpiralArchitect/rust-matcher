@@ -12,6 +12,11 @@ export const MESSAGES = {
     "status.ok": "OK",
     "status.ko": "KO",
 
+    "nav.queue": "Queue",
+    "nav.jobs": "Jobs",
+    "nav.projects": "Projects",
+    "nav.talents": "Talents",
+
     "queue.dashboard.title": "Queue Dashboard",
     "queue.dashboard.manualReview": "Manual Review",
     "queue.dashboard.errors": "Errors",
@@ -181,6 +186,11 @@ export const MESSAGES = {
     "status.reviewRequired": "要レビュー",
     "status.ok": "OK",
     "status.ko": "KO",
+
+    "nav.queue": "キュー",
+    "nav.jobs": "ジョブ",
+    "nav.projects": "プロジェクト",
+    "nav.talents": "タレント",
 
     "queue.dashboard.title": "キューダッシュボード",
     "queue.dashboard.manualReview": "要レビュー",
