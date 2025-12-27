@@ -27,6 +27,8 @@ export const MESSAGES = {
     "queue.dashboard.quickLinks.talents": "Browse talents",
     "queue.dashboard.viewAllJobs": "View All Jobs →",
     "queue.dashboard.viewPendingJobs": "View Pending Jobs →",
+    "queue.access.note": "Queue tools are restricted to admin/ops users.",
+    "queue.access.noAccess": "You don't have access to queue tools. Please contact an administrator.",
 
     "queue.jobs.title": "Queue Jobs (Admin/Ops)",
     "queue.jobs.filter.statusLabel": "Status:",
@@ -206,6 +208,8 @@ export const MESSAGES = {
     "queue.dashboard.quickLinks.talents": "タレントを確認",
     "queue.dashboard.viewAllJobs": "すべてのジョブを見る →",
     "queue.dashboard.viewPendingJobs": "待機中のジョブを見る →",
+    "queue.access.note": "キューページは管理者 / オペレーションのみ利用できます。",
+    "queue.access.noAccess": "キュー機能へのアクセス権がありません。管理者に問い合わせてください。",
 
     "queue.jobs.title": "キュージョブ（管理者向け）",
     "queue.jobs.filter.statusLabel": "ステータス:",

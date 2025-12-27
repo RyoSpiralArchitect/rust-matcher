@@ -24,6 +24,15 @@ export function TalentsPage() {
     [searchParams],
   );
 
+  const [formState, setFormState] = useState(() => ({
+    search: activeFilters.search ?? "",
+    skill: activeFilters.skill ?? "",
+    location: activeFilters.location ?? "",
+    availability: activeFilters.availability ?? "",
+  }));
+
+  const filtersKey = searchParams.toString();
+
   const talentsQuery = useTalents({ ...activeFilters, limit: DEFAULT_LIMIT });
   const { data, error, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = talentsQuery;
 
@@ -39,7 +48,7 @@ export function TalentsPage() {
   const total = data?.total ?? 0;
 
   return (
-    <div className="space-y-6">
+    <div key={filtersKey} className="space-y-6">
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <h1 className="text-2xl font-bold">{t("talents.title")}</h1>

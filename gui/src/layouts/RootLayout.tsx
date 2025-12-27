@@ -2,18 +2,22 @@ import { Outlet, Link, useLocation } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { useI18n } from "@/lib/i18n";
+import { useFlags } from "@/lib/auth";
 
 const navItems = [
-  { href: "/projects", labelKey: "nav.projects", isAdmin: false },
-  { href: "/queue", labelKey: "nav.queueAdmin", isAdmin: true },
-  { href: "/jobs", labelKey: "nav.jobsAdmin", isAdmin: true },
-] as const;
+  { href: "/queue", label: "Dashboard", requiresQueueAdmin: true },
+  { href: "/jobs", label: "Jobs", requiresQueueAdmin: true },
+  { href: "/projects", label: "Projects", requiresQueueAdmin: false },
+];
 
 export function RootLayout() {
   const { t } = useI18n();
   const location = useLocation();
-  const { t } = useI18n();
+  const { isQueueAdmin } = useFlags();
+
+  const visibleNavItems = navItems.filter(
+    (item) => !item.requiresQueueAdmin || isQueueAdmin,
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -24,7 +28,7 @@ export function RootLayout() {
             SR Matcher
           </Link>
           <nav className="flex gap-4">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <Link
                 key={item.href}
                 to={item.href}
@@ -36,15 +40,12 @@ export function RootLayout() {
                     : "text-muted-foreground"
                 )}
               >
-                <span>{t(item.labelKey)}</span>
-                {item.isAdmin ? (
-                  <Badge
-                    variant="secondary"
-                    className="px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wide"
-                  >
-                    {t("nav.adminBadge")}
-                  </Badge>
-                ) : null}
+                {item.label}
+                {item.requiresQueueAdmin && isQueueAdmin && (
+                  <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                    Ops
+                  </span>
+                )}
               </Link>
             ))}
           </nav>
