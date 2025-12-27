@@ -2540,6 +2540,7 @@ dependencies = [
  "http-body-util",
  "jsonwebtoken",
  "metrics 0.23.1",
+ "regex",
  "serde",
  "serde_json",
  "serial_test",
