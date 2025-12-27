@@ -2,7 +2,7 @@ use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     body::Body,
@@ -24,9 +24,11 @@ use governor::{
     clock::DefaultClock, middleware::NoOpMiddleware, state::keyed::DashMapStateStore, Quota,
     RateLimiter,
 };
+use metrics::{counter, histogram};
 use sr_common::api::match_response::MatchConfig;
 use sr_common::db::create_pool_from_url_checked;
 use sr_common::db::{run_migrations, PgPool};
+use sr_metrics::init_metrics;
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -320,6 +322,34 @@ async fn attach_request_id_context(req: Request<Body>, next: Next) -> Result<Res
     Ok(error::with_request_id(request_id, next.run(req)).await)
 }
 
+async fn record_http_metrics(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
+    let method = req.method().to_string();
+    let path = req.uri().path().to_string();
+    let start = Instant::now();
+    let response = next.run(req).await;
+
+    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let status = response.status().as_u16().to_string();
+
+    histogram!(
+        "http_request_latency_ms",
+        "method" => method.clone(),
+        "path" => path.clone(),
+        "status" => status.clone(),
+    )
+    .record(latency_ms);
+
+    counter!(
+        "http_requests_total",
+        "method" => method,
+        "path" => path,
+        "status" => status,
+    )
+    .increment(1);
+
+    Ok(response)
+}
+
 pub fn create_router(state: SharedState) -> Router {
     let cors = cors_layer(&state.config.cors_origins);
 
@@ -380,6 +410,7 @@ pub fn create_router(state: SharedState) -> Router {
             global_rate_limit,
         ))
         .layer(middleware::from_fn(attach_request_id_context))
+        .layer(middleware::from_fn(record_http_metrics))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(trace)
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
@@ -507,6 +538,7 @@ pub async fn run() -> Result<(), ApiError> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
     install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
+    init_metrics("SR_API_METRICS_PORT", 9899);
 
     let cli = Cli::parse();
     let config = AppConfig::from_cli(cli)?;

@@ -14,12 +14,12 @@ use sr_common::queue::{
     ExtractionJob, ExtractionQueue, FinalMethod, JobError, JobOutcome, QueueStatus,
     RecommendedMethod,
 };
+use sr_metrics::init_metrics;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, info_span, warn};
+use tracing::{error, info, info_span, warn, Instrument, Span};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompareMode {
@@ -27,30 +27,8 @@ enum CompareMode {
     Shadow,
 }
 
-static PROMETHEUS_HANDLE: OnceLock<metrics_exporter_prometheus::PrometheusHandle> = OnceLock::new();
-
-fn init_metrics() {
-    let port = std::env::var("METRICS_PORT")
-        .ok()
-        .and_then(|raw| raw.parse::<u16>().ok())
-        .unwrap_or(9898);
-
-    if PROMETHEUS_HANDLE.get().is_some() {
-        return;
-    }
-
-    match metrics_exporter_prometheus::PrometheusBuilder::new()
-        .with_http_listener(([0, 0, 0, 0], port))
-        .install_recorder()
-    {
-        Ok(handle) => {
-            let _ = PROMETHEUS_HANDLE.set(handle);
-            info!(metrics_port = port, "started prometheus exporter");
-        }
-        Err(err) => {
-            warn!(error = %err, "failed to start prometheus exporter");
-        }
-    }
+fn current_trace_id() -> Option<String> {
+    Span::current().id().map(|id| format!("{id:?}"))
 }
 
 fn provider_defaults(provider: &str) -> (String, String) {
@@ -368,7 +346,7 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
 
     let sample_body = "sample body";
     queue.process_next_with_worker(worker_id, |job| {
-        rt.block_on(handle_llm_job(job, sample_body, &llm_config))
+        rt.block_on(handle_llm_job(job, sample_body, &llm_config, worker_id))
     });
 
     if let Some(processed) = queue.jobs.first() {
@@ -378,6 +356,7 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
                 sample_body.to_string(),
                 &llm_config,
                 &shadow_runtime,
+                worker_id,
             ));
             rt.block_on(shadow_runtime.wait_for_all());
         }
@@ -486,8 +465,9 @@ async fn perform_llm_request(
     endpoint: &str,
     api_key: &str,
     request: &LlmRequest,
+    request_id: &str,
+    trace_id: Option<String>,
 ) -> Result<LlmResponse, JobError> {
-    let request_id = request.message_id.clone();
     let provider = config.provider.clone();
     let model = request.model.clone();
     let span = info_span!(
@@ -514,11 +494,13 @@ async fn perform_llm_request(
         let mut request_builder = client
             .post(endpoint)
             .bearer_auth(api_key)
-            .header("x-request-id", &request_id)
+            .header("x-request-id", request_id)
             .json(request);
 
-        if let Some(span_id) = tracing::Span::current().id() {
-            request_builder = request_builder.header("x-trace-id", format!("{:?}", span_id));
+        if let Some(trace_id) = trace_id.clone().or_else(current_trace_id) {
+            request_builder = request_builder
+                .header("x-trace-id", &trace_id)
+                .header("traceparent", trace_id);
         }
 
         let response = request_builder.send().await;
@@ -652,6 +634,7 @@ async fn spawn_shadow_compare(
     body_text: String,
     config: &LlmRuntimeConfig,
     shadow: &ShadowCompareRuntime,
+    worker_id: &str,
 ) -> bool {
     let shadow_config = shadow.config();
 
@@ -691,47 +674,71 @@ async fn spawn_shadow_compare(
     let primary_provider = shadow_config.primary_provider.clone();
     let mut shadow_config = config.clone();
     shadow_config.model = shadow_model;
+    let trace_id = current_trace_id();
+    let worker_label = worker_id.to_string();
+    let job_id = job.id;
+    let message_id = job.message_id.clone();
+    let shadow_span = info_span!(
+        "shadow_compare",
+        worker_id = %worker_label,
+        message_id = %message_id,
+        job_id = job_id
+    );
 
     shadow
-        .track_shadow_task(async move {
-            let _permit = permit;
-            let request = build_llm_request(&job, &body_text, &shadow_config);
-            match perform_llm_request(&shadow_config, &shadow_endpoint, &shadow_api_key, &request)
+        .track_shadow_task(
+            async move {
+                let _permit = permit;
+                let request = build_llm_request(&job, &body_text, &shadow_config);
+                match perform_llm_request(
+                    &shadow_config,
+                    &shadow_endpoint,
+                    &shadow_api_key,
+                    &request,
+                    &message_id,
+                    trace_id.clone(),
+                )
                 .await
-            {
-                Ok(shadow_resp) => {
-                    let diff = if shadow_resp.extracted
-                        == job.partial_fields.clone().unwrap_or_default()
-                    {
-                        "match"
-                    } else {
-                        "diff"
-                    };
-                    info!(
-                        message_id = %job.message_id,
-                        %shadow_provider,
-                        %primary_provider,
-                        diff,
-                        shadow_model_used = shadow_resp.model_used,
-                        shadow_latency_ms = shadow_resp.latency_ms,
-                        "shadow comparison completed",
-                    );
-                }
-                Err(err) => {
-                    let err_message = match err {
-                        JobError::Retryable { ref message, .. } => message.clone(),
-                        JobError::Permanent { ref message } => message.clone(),
-                    };
-                    info!(
-                        message_id = %job.message_id,
-                        %shadow_provider,
-                        %primary_provider,
-                        error = %err_message,
-                        "shadow comparison failed",
-                    );
+                {
+                    Ok(shadow_resp) => {
+                        let diff = if shadow_resp.extracted
+                            == job.partial_fields.clone().unwrap_or_default()
+                        {
+                            "match"
+                        } else {
+                            "diff"
+                        };
+                        info!(
+                            worker_id = %worker_label,
+                            message_id = %message_id,
+                            job_id = job_id,
+                            %shadow_provider,
+                            %primary_provider,
+                            diff,
+                            shadow_model_used = shadow_resp.model_used,
+                            shadow_latency_ms = shadow_resp.latency_ms,
+                            "shadow comparison completed",
+                        );
+                    }
+                    Err(err) => {
+                        let err_message = match err {
+                            JobError::Retryable { ref message, .. } => message.clone(),
+                            JobError::Permanent { ref message } => message.clone(),
+                        };
+                        info!(
+                            worker_id = %worker_label,
+                            message_id = %message_id,
+                            job_id = job_id,
+                            %shadow_provider,
+                            %primary_provider,
+                            error = %err_message,
+                            "shadow comparison failed",
+                        );
+                    }
                 }
             }
-        })
+            .instrument(shadow_span),
+        )
         .await;
 
     true
@@ -741,7 +748,15 @@ async fn handle_llm_job(
     job: &ExtractionJob,
     body_text: &str,
     config: &LlmRuntimeConfig,
+    worker_id: &str,
 ) -> Result<JobOutcome, JobError> {
+    let _span_guard = info_span!(
+        "llm_job",
+        worker_id = %worker_id,
+        message_id = %job.message_id,
+        job_id = job.id
+    )
+    .entered();
     if job.recommended_method != Some(RecommendedMethod::LlmRecommended) {
         return Err(JobError::Permanent {
             message: "non-llm job routed to sr-llm-worker".into(),
@@ -765,7 +780,15 @@ async fn handle_llm_job(
 
     let request = build_llm_request(job, body_text, config);
     let started = Utc::now();
-    let response = perform_llm_request(config, &config.endpoint, &config.api_key, &request).await?;
+    let response = perform_llm_request(
+        config,
+        &config.endpoint,
+        &config.api_key,
+        &request,
+        &job.message_id,
+        current_trace_id(),
+    )
+    .await?;
     let latency = response
         .latency_ms
         .or_else(|| (Utc::now() - started).num_milliseconds().try_into().ok());
@@ -893,6 +916,7 @@ async fn process_locked_job(
     info!(
         worker_id = %worker_id,
         message_id = %locked.message_id,
+        job_id = locked.id,
         "starting locked job processing"
     );
 
@@ -903,6 +927,7 @@ async fn process_locked_job(
             warn!(
                 worker_id = %worker_id,
                 message_id = %locked.message_id,
+                job_id = locked.id,
                 "missing source_text in anken_emails; skipping job"
             );
             let (processed, _) = apply_outcome(
@@ -918,6 +943,7 @@ async fn process_locked_job(
             warn!(
                 worker_id = %worker_id,
                 message_id = %locked.message_id,
+                job_id = locked.id,
                 error = %err,
                 "failed to fetch email body"
             );
@@ -933,7 +959,7 @@ async fn process_locked_job(
         }
     };
 
-    let outcome = handle_llm_job(&locked, &body_text, llm_config).await;
+    let outcome = handle_llm_job(&locked, &body_text, llm_config, worker_id).await;
     if let Err(err) = &outcome {
         let err_message = match err {
             JobError::Retryable { message, .. } => message.as_str(),
@@ -942,6 +968,7 @@ async fn process_locked_job(
         warn!(
             worker_id = %worker_id,
             message_id = %locked.message_id,
+            job_id = locked.id,
             error = %err_message,
             "llm job finished with error"
         );
@@ -949,6 +976,7 @@ async fn process_locked_job(
         info!(
             worker_id = %worker_id,
             message_id = %locked.message_id,
+            job_id = locked.id,
             "llm job finished successfully"
         );
     }
@@ -966,6 +994,7 @@ async fn process_locked_job(
         rows,
         worker_id = %worker_id,
         message_id = %processed.message_id,
+        job_id = processed.id,
         status = %status.as_str(),
         "persisted processed job",
     );
@@ -976,12 +1005,20 @@ async fn process_locked_job(
             "worker_id" => worker_label
         )
         .increment(1);
-        spawn_shadow_compare(processed.clone(), body_text, llm_config, shadow_config).await;
+        spawn_shadow_compare(
+            processed.clone(),
+            body_text,
+            llm_config,
+            shadow_config,
+            worker_id,
+        )
+        .await;
     }
 
     info!(
         worker_id = %worker_id,
         message_id = %processed.message_id,
+        job_id = processed.id,
         status = %processed.status.as_str(),
         "finished locked job processing"
     );
@@ -993,7 +1030,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
     install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
-    init_metrics();
+    init_metrics("METRICS_PORT", 9898);
 
     let args = Cli::parse();
     let llm_config = LlmRuntimeConfig::from_env();
@@ -1039,7 +1076,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "process_job",
             job_id = job.id,
             message_id = %job.message_id,
-            worker_id = %args.worker_id
+            worker_id = %args.worker_id,
+            request_id = %job.message_id
         );
         let _entered = job_span.enter();
         metrics::counter!(
@@ -1047,13 +1085,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "worker_id" => worker_label.clone()
         )
         .increment(1);
-        metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone())
-            .set(1.0);
+        metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone()).set(1.0);
 
         process_locked_job(&pool, &args.worker_id, job, &llm_config, &shadow_runtime).await?;
         processed_jobs += 1;
-        metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone())
-            .set(0.0);
+        metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone()).set(0.0);
     }
 
     Ok(())
@@ -1242,7 +1278,7 @@ mod tests {
         queue.process_next_with_worker("sr-llm-worker", |j| {
             tokio::runtime::Runtime::new()
                 .unwrap()
-                .block_on(handle_llm_job(j, "body", &llm_config))
+                .block_on(handle_llm_job(j, "body", &llm_config, "sr-llm-worker"))
         });
 
         let job = &queue.jobs[0];
@@ -1484,7 +1520,7 @@ mod tests {
             queue.process_next_with_worker("sr-llm-worker", |j| {
                 tokio::runtime::Runtime::new()
                     .unwrap()
-                    .block_on(handle_llm_job(j, "body", &llm_config))
+                    .block_on(handle_llm_job(j, "body", &llm_config, "sr-llm-worker"))
             });
 
             let job = &queue.jobs[0];
@@ -1512,7 +1548,7 @@ mod tests {
             queue.process_next_with_worker("sr-llm-worker", |j| {
                 tokio::runtime::Runtime::new()
                     .unwrap()
-                    .block_on(handle_llm_job(j, "body", &llm_config))
+                    .block_on(handle_llm_job(j, "body", &llm_config, "sr-llm-worker"))
             });
 
             let job = &queue.jobs[0];
@@ -1561,7 +1597,8 @@ mod tests {
 
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
-        let spawned = spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime).await;
+        let spawned =
+            spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime, "test-worker").await;
         assert!(spawned, "shadow compare should spawn");
         shadow_runtime.wait_for_all().await;
 
@@ -1589,7 +1626,8 @@ mod tests {
 
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
-        let spawned = spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime).await;
+        let spawned =
+            spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime, "test-worker").await;
         assert!(!spawned);
     }
 
@@ -1635,10 +1673,12 @@ mod tests {
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
         let spawned_first =
-            spawn_shadow_compare(job1, "body".into(), &config, &shadow_runtime).await;
+            spawn_shadow_compare(job1, "body".into(), &config, &shadow_runtime, "test-worker")
+                .await;
         assert!(spawned_first, "first shadow compare should spawn");
         let spawned_second =
-            spawn_shadow_compare(job2, "body".into(), &config, &shadow_runtime).await;
+            spawn_shadow_compare(job2, "body".into(), &config, &shadow_runtime, "test-worker")
+                .await;
         assert!(
             !spawned_second,
             "second shadow compare should be limited by in-flight semaphore"
