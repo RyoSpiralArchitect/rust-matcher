@@ -25,15 +25,15 @@ Phase 2 完了 ─────────────────────�
 | 3 | 1 | match_results DDL + 保存 | ✅ 完了 |
 | 3 | 2 | LLM shadow 10% 比較 | ✅ 完了 |
 | 3 | 3 | systemd 本番ループ | ✅ 完了 |
-| 3 | 3-A | Two-Tower 骨格 (HashTwoTower) | 🔴 着手予定 |
+| 3 | 3-A | Two-Tower 骨格 (HashTwoTower) | ✅ 完了 |
 | 3 | 3-B | interaction_logs DDL | ✅ 完了 |
 | 3.5 | A | HTTP API (Axum) — sr-api 基盤 | ✅ 完了 |
 | 3.5 | B | MatchResponse DTO + MatchConfig | ✅ 完了 |
 | 3.5 | C | QueueDashboard DTO + API | ✅ 完了 |
 | 3.5 | D | feedback_events DDL（統一版） | ✅ 完了 |
 | 3.5 | E | スキーマ堅牢化（FK型整合・UPSERT・run_id自動生成） | ✅ 完了 |
-| 3.5 | F | **GUI (Next.js)** | 🎯 **ゴール** |
-| 4 | - | Two-Tower 学習（interaction_logs + feedback_events 蓄積後） | 🔜 将来 |
+| 3.5 | F | **GUI (Next.js)** | ✅ 完了 |
+| 4 | - | Two-Tower 学習（interaction_logs + feedback_events 蓄積後） | ↩️Pending |
 
 ---
 
