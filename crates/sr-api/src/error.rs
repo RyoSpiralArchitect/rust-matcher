@@ -1,6 +1,10 @@
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    http::{header::RETRY_AFTER, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use serde::Serialize;
-use std::{borrow::Cow, future::Future};
+use std::{borrow::Cow, future::Future, time::Duration};
 use thiserror::Error;
 use tracing::error;
 
@@ -11,6 +15,48 @@ use sr_common::db::{
 
 tokio::task_local! {
     static REQUEST_ID: String;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitMeta {
+    pub limit: u32,
+    pub remaining: u32,
+    pub reset_after: Duration,
+    pub retry_after: Option<Duration>,
+}
+
+impl RateLimitMeta {
+    fn seconds_value(duration: Duration) -> String {
+        // Keep millisecond precision for debugging without leaking floating point artifacts.
+        format!("{:.3}", duration.as_secs_f64())
+    }
+
+    fn retry_after_seconds(duration: Duration) -> String {
+        duration
+            .as_secs()
+            .saturating_add((duration.subsec_nanos() > 0) as u64)
+            .to_string()
+    }
+
+    pub fn apply_headers(&self, headers: &mut HeaderMap) {
+        headers
+            .entry(HeaderName::from_static("ratelimit-limit"))
+            .or_insert_with(|| HeaderValue::from_str(&self.limit.to_string()).unwrap());
+        headers
+            .entry(HeaderName::from_static("ratelimit-remaining"))
+            .or_insert_with(|| HeaderValue::from_str(&self.remaining.to_string()).unwrap());
+        headers
+            .entry(HeaderName::from_static("ratelimit-reset"))
+            .or_insert_with(|| {
+                HeaderValue::from_str(Self::seconds_value(self.reset_after).as_str()).unwrap()
+            });
+
+        if let Some(retry_after) = self.retry_after {
+            headers.entry(RETRY_AFTER).or_insert_with(|| {
+                HeaderValue::from_str(&Self::retry_after_seconds(retry_after)).unwrap()
+            });
+        }
+    }
 }
 
 fn sanitize_message(message: &str) -> String {
@@ -83,8 +129,11 @@ pub enum ApiError {
     BadRequest(String),
     #[error("conflict: {0}")]
     Conflict(String),
-    #[error("too many requests: {0}")]
-    TooManyRequests(String),
+    #[error("too many requests: {message}")]
+    TooManyRequests {
+        message: String,
+        rate_limit: Option<RateLimitMeta>,
+    },
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
     #[error("internal server error: {0}")]
@@ -132,7 +181,17 @@ impl IntoResponse for ApiError {
             request_id,
         });
 
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+
+        if let ApiError::TooManyRequests {
+            rate_limit: Some(rate_limit),
+            ..
+        } = &self
+        {
+            rate_limit.apply_headers(response.headers_mut());
+        }
+
+        response
     }
 }
 
@@ -144,7 +203,7 @@ impl ApiError {
             ApiError::Forbidden(_) => "forbidden",
             ApiError::NotFound(_) => "not_found",
             ApiError::Conflict(_) => "conflict",
-            ApiError::TooManyRequests(_) => "too_many_requests",
+            ApiError::TooManyRequests { .. } => "too_many_requests",
             ApiError::ServiceUnavailable(_) => "service_unavailable",
             ApiError::Database { .. } => "database_error",
             ApiError::Internal(_) => "internal_error",
@@ -158,7 +217,7 @@ impl ApiError {
             ApiError::Forbidden(_) => Cow::Borrowed("forbidden"),
             ApiError::NotFound(msg) => Cow::Owned(sanitize_message(msg)),
             ApiError::Conflict(msg) => Cow::Owned(sanitize_message(msg)),
-            ApiError::TooManyRequests(_) => Cow::Borrowed("too many requests"),
+            ApiError::TooManyRequests { .. } => Cow::Borrowed("too many requests"),
             ApiError::ServiceUnavailable(_) => Cow::Borrowed("service unavailable"),
             ApiError::Database { .. } | ApiError::Internal(_) => {
                 Cow::Borrowed("internal server error")
@@ -173,7 +232,7 @@ impl ApiError {
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
-            ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Database { .. } | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -189,6 +248,7 @@ impl ApiError {
         match self {
             ApiError::Database { internal } => internal.as_deref().map(sanitize_message),
             ApiError::Internal(msg) => Some(sanitize_message(msg)),
+            ApiError::TooManyRequests { message, .. } => Some(sanitize_message(message)),
             _ => None,
         }
     }
