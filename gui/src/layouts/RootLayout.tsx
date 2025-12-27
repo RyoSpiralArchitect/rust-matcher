@@ -1,4 +1,6 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
+import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useFlags } from "@/lib/auth";
 
@@ -9,6 +11,7 @@ const navItems = [
 ];
 
 export function RootLayout() {
+  const { t } = useI18n();
   const location = useLocation();
   const { isQueueAdmin } = useFlags();
 
@@ -30,10 +33,10 @@ export function RootLayout() {
                 key={item.href}
                 to={item.href}
                 className={cn(
-                  "text-sm font-medium transition-colors hover:text-primary",
+                  "inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm font-medium transition-colors hover:text-primary",
                   location.pathname === item.href ||
                     location.pathname.startsWith(item.href + "/")
-                    ? "text-primary"
+                    ? "bg-primary/10 text-primary"
                     : "text-muted-foreground"
                 )}
               >

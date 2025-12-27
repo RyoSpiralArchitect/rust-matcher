@@ -19,6 +19,16 @@ const JobDetailPage = lazy(() =>
     default: module.JobDetailPage,
   })),
 );
+const TalentsPage = lazy(() =>
+  import("./pages/TalentsPage").then((module) => ({
+    default: module.TalentsPage,
+  })),
+);
+const TalentDetailPage = lazy(() =>
+  import("./pages/TalentDetailPage").then((module) => ({
+    default: module.TalentDetailPage,
+  })),
+);
 const CandidatesPage = lazy(() =>
   import("./pages/CandidatesPage").then((module) => ({
     default: module.CandidatesPage,
@@ -44,10 +54,10 @@ export const router = createBrowserRouter([
     path: "/",
     element: <RootLayout />,
     children: [
-      // / → /queue にリダイレクト
+      // / → /projects にリダイレクト
       {
         index: true,
-        element: <Navigate to="/queue" replace />,
+        element: <Navigate to="/projects" replace />,
       },
       // Queue Dashboard
       {
@@ -76,16 +86,16 @@ export const router = createBrowserRouter([
           </QueueRouteGuard>
         ),
       },
+      // Talents
+      {
+        path: "talents",
+        element: withSuspense(<TalentsPage />),
+      },
+      {
+        path: "talents/:talentId",
+        element: withSuspense(<TalentDetailPage />),
+      },
       // Project 一覧
-      {
-        path: "projects",
-        element: withSuspense(<ProjectsListPage />),
-      },
-      // 候補一覧（プロジェクト単位）
-      {
-        path: "projects/:projectId/candidates",
-        element: withSuspense(<CandidatesPage />),
-      },
       {
         path: "projects",
         element: withSuspense(<ProjectsIndexPage />),
@@ -93,6 +103,11 @@ export const router = createBrowserRouter([
       {
         path: "projects/:projectId",
         element: withSuspense(<ProjectDetailPage />),
+      },
+      // 候補一覧（プロジェクト単位）
+      {
+        path: "projects/:projectId/candidates",
+        element: withSuspense(<CandidatesPage />),
       },
     ],
   },
