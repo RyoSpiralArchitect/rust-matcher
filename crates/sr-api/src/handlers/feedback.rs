@@ -34,15 +34,15 @@ pub async fn submit_feedback(
         .pool
         .get()
         .await
-        .map_err(|err| ApiError::Database(err.to_string()))?;
+        .map_err(|err| ApiError::database_error(err))?;
     let tx = client
         .transaction()
         .await
-        .map_err(|err| ApiError::Database(err.to_string()))?;
+        .map_err(|err| ApiError::database_error(err))?;
     let response = insert_feedback_event_tx(&tx, &auth.subject, &payload).await?;
     tx.commit()
         .await
-        .map_err(|err| ApiError::Database(err.to_string()))?;
+        .map_err(|err| ApiError::database_error(err))?;
     Ok(Json(response))
 }
 
