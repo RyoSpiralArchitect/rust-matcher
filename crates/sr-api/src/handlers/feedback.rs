@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use sr_common::api::feedback_request::FeedbackRequest;
+use sr_common::api::feedback_request::{FeedbackRequest, FeedbackType};
 use sr_common::api::feedback_response::FeedbackResponse;
 use sr_common::api::models::queue::FeedbackEventRow;
 use sr_common::db::{fetch_feedback_history, insert_feedback_event_tx};
@@ -13,14 +13,20 @@ use crate::SharedState;
 
 const MAX_COMMENT_LEN: usize = 1_000;
 
-pub async fn submit_feedback(
-    State(state): State<SharedState>,
-    auth: AuthUser,
-    Json(payload): Json<FeedbackRequest>,
-) -> Result<Json<FeedbackResponse>, ApiError> {
-    if payload
-        .comment
-        .as_ref()
+fn validate_feedback_payload(payload: &FeedbackRequest) -> Result<(), ApiError> {
+    if payload.interaction_id <= 0 {
+        return Err(ApiError::BadRequest(
+            "interaction_id must be positive".into(),
+        ));
+    }
+
+    let trimmed_comment = payload.comment.as_ref().map(|c| c.trim());
+
+    if trimmed_comment.map(|c| c.is_empty()).unwrap_or(false) {
+        return Err(ApiError::BadRequest("comment cannot be empty".into()));
+    }
+
+    if trimmed_comment
         .map(|c| c.len() > MAX_COMMENT_LEN)
         .unwrap_or(false)
     {
@@ -29,6 +35,39 @@ pub async fn submit_feedback(
             MAX_COMMENT_LEN
         )));
     }
+
+    if matches!(
+        payload.feedback_type,
+        FeedbackType::ThumbsDown | FeedbackType::ReviewNg | FeedbackType::Rejected
+    ) && payload.ng_reason_category.is_none()
+    {
+        return Err(ApiError::BadRequest(
+            "ng_reason_category is required for negative feedback".into(),
+        ));
+    }
+
+    // Explicit validation makes sure payloads are not bypassing the client.
+    match payload.feedback_type {
+        FeedbackType::ThumbsUp
+        | FeedbackType::ThumbsDown
+        | FeedbackType::ReviewOk
+        | FeedbackType::ReviewNg
+        | FeedbackType::ReviewPending
+        | FeedbackType::Accepted
+        | FeedbackType::Rejected
+        | FeedbackType::InterviewScheduled
+        | FeedbackType::NoResponse => {}
+    }
+
+    Ok(())
+}
+
+pub async fn submit_feedback(
+    State(state): State<SharedState>,
+    auth: AuthUser,
+    Json(payload): Json<FeedbackRequest>,
+) -> Result<Json<FeedbackResponse>, ApiError> {
+    validate_feedback_payload(&payload)?;
 
     let mut client = state
         .pool

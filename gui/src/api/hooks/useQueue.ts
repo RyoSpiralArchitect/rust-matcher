@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { get, post } from "../client";
 import type { QueueDashboard, QueueJobListResponse, QueueJobDetailResponse } from "../types";
 
@@ -38,6 +38,48 @@ export function useQueueJobs(params?: {
   return useQuery({
     queryKey: ["queue", "jobs", params],
     queryFn: () => get<QueueJobListResponse>(path),
+  });
+}
+
+export function useInfiniteQueueJobs(params?: {
+  limit?: number;
+  status?: string;
+  requiresManualReview?: boolean;
+}) {
+  const baseSearchParams = new URLSearchParams();
+  if (params?.status) baseSearchParams.set("status", params.status);
+  if (params?.requiresManualReview !== undefined) {
+    baseSearchParams.set(
+      "requires_manual_review",
+      String(params.requiresManualReview),
+    );
+  }
+
+  const limit = params?.limit ?? 50;
+  const queryKey = [
+    "queue",
+    "jobs",
+    "infinite",
+    limit,
+    params?.status ?? null,
+    params?.requiresManualReview ?? null,
+  ] as const;
+
+  return useInfiniteQuery({
+    queryKey,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => {
+      const searchParams = new URLSearchParams(baseSearchParams);
+      searchParams.set("limit", String(limit));
+      searchParams.set("offset", String(pageParam));
+
+      const query = searchParams.toString();
+      const path = query ? `/api/queue/jobs?${query}` : "/api/queue/jobs";
+
+      return get<QueueJobListResponse>(path);
+    },
+    getNextPageParam: (lastPage) =>
+      lastPage.hasMore ? lastPage.offset + lastPage.limit : undefined,
   });
 }
 
