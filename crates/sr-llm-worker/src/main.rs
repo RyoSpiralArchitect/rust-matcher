@@ -15,15 +15,42 @@ use sr_common::queue::{
     RecommendedMethod,
 };
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
+use std::sync::OnceLock;
+use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info, info_span, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompareMode {
     None,
     Shadow,
+}
+
+static PROMETHEUS_HANDLE: OnceLock<metrics_exporter_prometheus::PrometheusHandle> = OnceLock::new();
+
+fn init_metrics() {
+    let port = std::env::var("METRICS_PORT")
+        .ok()
+        .and_then(|raw| raw.parse::<u16>().ok())
+        .unwrap_or(9898);
+
+    if PROMETHEUS_HANDLE.get().is_some() {
+        return;
+    }
+
+    match metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], port))
+        .install_recorder()
+    {
+        Ok(handle) => {
+            let _ = PROMETHEUS_HANDLE.set(handle);
+            info!(metrics_port = port, "started prometheus exporter");
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to start prometheus exporter");
+        }
+    }
 }
 
 fn provider_defaults(provider: &str) -> (String, String) {
@@ -222,6 +249,7 @@ struct ShadowCompareConfig {
 struct ShadowCompareRuntime {
     config: ShadowCompareConfig,
     in_flight: Arc<Semaphore>,
+    tasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<()>>>,
 }
 
 impl ShadowCompareRuntime {
@@ -230,11 +258,38 @@ impl ShadowCompareRuntime {
         Self {
             in_flight: Arc::new(Semaphore::new(max_in_flight)),
             config,
+            tasks: Arc::new(tokio::sync::Mutex::new(tokio::task::JoinSet::new())),
         }
     }
 
     fn config(&self) -> &ShadowCompareConfig {
         &self.config
+    }
+
+    async fn track_shadow_task<F>(&self, task: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.tasks.lock().await;
+        tasks.spawn(task);
+        Self::drain_finished_tasks(&mut tasks);
+    }
+
+    async fn wait_for_all(&self) {
+        let mut tasks = self.tasks.lock().await;
+        while let Some(result) = tasks.join_next().await {
+            if let Err(err) = result {
+                warn!(error = %err, "shadow comparison task failed");
+            }
+        }
+    }
+
+    fn drain_finished_tasks(tasks: &mut tokio::task::JoinSet<()>) {
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(err) = result {
+                warn!(error = %err, "shadow comparison task failed");
+            }
+        }
     }
 }
 
@@ -318,12 +373,13 @@ pub fn run_sample_flow_with_worker(worker_id: &str) -> ExtractionQueue {
 
     if let Some(processed) = queue.jobs.first() {
         if processed.canary_target {
-            let _ = spawn_shadow_compare(
+            rt.block_on(spawn_shadow_compare(
                 processed.clone(),
                 sample_body.to_string(),
                 &llm_config,
                 &shadow_runtime,
-            );
+            ));
+            rt.block_on(shadow_runtime.wait_for_all());
         }
     }
 
@@ -431,6 +487,18 @@ async fn perform_llm_request(
     api_key: &str,
     request: &LlmRequest,
 ) -> Result<LlmResponse, JobError> {
+    let request_id = request.message_id.clone();
+    let provider = config.provider.clone();
+    let model = request.model.clone();
+    let span = info_span!(
+        "perform_llm_request",
+        %request_id,
+        %endpoint,
+        %provider,
+        %model
+    );
+    let _entered = span.enter();
+    let start = Instant::now();
     // Disable environment proxies so local mock servers (used in tests) are hit directly
     // instead of being tunneled through corporate MITM proxies that would block the request.
     let client = Client::builder()
@@ -443,17 +511,37 @@ async fn perform_llm_request(
         })?;
 
     for attempt in 0..=config.max_retries {
-        let response = client
+        let mut request_builder = client
             .post(endpoint)
             .bearer_auth(api_key)
-            .json(request)
-            .send()
-            .await;
+            .header("x-request-id", &request_id)
+            .json(request);
+
+        if let Some(span_id) = tracing::Span::current().id() {
+            request_builder = request_builder.header("x-trace-id", format!("{:?}", span_id));
+        }
+
+        let response = request_builder.send().await;
 
         match response {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    metrics::histogram!(
+                        "llm_request_latency_ms",
+                        "provider" => provider.clone(),
+                        "model" => model.clone(),
+                        "outcome" => "success"
+                    )
+                    .record(latency_ms);
+                    metrics::counter!(
+                        "llm_request_total",
+                        "provider" => provider.clone(),
+                        "model" => model.clone(),
+                        "outcome" => "success"
+                    )
+                    .increment(1);
                     return resp
                         .json::<LlmResponse>()
                         .await
@@ -463,12 +551,26 @@ async fn perform_llm_request(
                 }
 
                 if is_retryable_status(status) && attempt < config.max_retries {
+                    metrics::counter!(
+                        "llm_request_total",
+                        "provider" => provider.clone(),
+                        "model" => model.clone(),
+                        "outcome" => "retry"
+                    )
+                    .increment(1);
                     sleep(Duration::from_secs(config.retry_backoff_secs)).await;
                     continue;
                 }
 
                 let body = resp.text().await.unwrap_or_default();
                 let message = format!("llm call failed with status {status}: {body}");
+                metrics::counter!(
+                    "llm_request_total",
+                    "provider" => provider.clone(),
+                    "model" => model.clone(),
+                    "outcome" => if is_retryable_status(status) { "retryable_failure" } else { "failure" }
+                )
+                .increment(1);
                 if is_retryable_status(status) {
                     return Err(JobError::Retryable {
                         message,
@@ -482,9 +584,24 @@ async fn perform_llm_request(
             }
             Err(err) => {
                 if attempt < config.max_retries {
+                    metrics::counter!(
+                        "llm_request_total",
+                        "provider" => provider.clone(),
+                        "model" => model.clone(),
+                        "outcome" => "retry"
+                    )
+                    .increment(1);
                     sleep(Duration::from_secs(config.retry_backoff_secs)).await;
                     continue;
                 }
+
+                metrics::counter!(
+                    "llm_request_total",
+                    "provider" => provider.clone(),
+                    "model" => model.clone(),
+                    "outcome" => "failure"
+                )
+                .increment(1);
 
                 return Err(JobError::Retryable {
                     message: format!("llm request error: {err}"),
@@ -493,6 +610,14 @@ async fn perform_llm_request(
             }
         }
     }
+
+    metrics::counter!(
+        "llm_request_total",
+        "provider" => provider,
+        "model" => model,
+        "outcome" => "exhausted"
+    )
+    .increment(1);
 
     Err(JobError::Retryable {
         message: "llm retries exhausted".into(),
@@ -522,16 +647,16 @@ fn shadow_endpoint_and_model(config: &LlmRuntimeConfig) -> (String, String) {
     )
 }
 
-fn spawn_shadow_compare(
+async fn spawn_shadow_compare(
     job: ExtractionJob,
     body_text: String,
     config: &LlmRuntimeConfig,
     shadow: &ShadowCompareRuntime,
-) -> Option<tokio::task::JoinHandle<()>> {
+) -> bool {
     let shadow_config = shadow.config();
 
     if shadow_config.mode != CompareMode::Shadow || !job.canary_target {
-        return None;
+        return false;
     }
 
     let permit = match shadow.in_flight.clone().try_acquire_owned() {
@@ -542,7 +667,7 @@ fn spawn_shadow_compare(
                 max_in_flight = shadow_config.max_in_flight,
                 "skipping shadow comparison because in-flight limit has been reached",
             );
-            return None;
+            return false;
         }
     };
 
@@ -560,50 +685,56 @@ fn spawn_shadow_compare(
             %shadow_model,
             "skipping shadow comparison because no API key is configured",
         );
-        return None;
+        return false;
     }
     let shadow_provider = shadow_config.shadow_provider.clone();
     let primary_provider = shadow_config.primary_provider.clone();
     let mut shadow_config = config.clone();
     shadow_config.model = shadow_model;
 
-    Some(tokio::spawn(async move {
-        let _permit = permit;
-        let request = build_llm_request(&job, &body_text, &shadow_config);
-        match perform_llm_request(&shadow_config, &shadow_endpoint, &shadow_api_key, &request).await
-        {
-            Ok(shadow_resp) => {
-                let diff =
-                    if shadow_resp.extracted == job.partial_fields.clone().unwrap_or_default() {
+    shadow
+        .track_shadow_task(async move {
+            let _permit = permit;
+            let request = build_llm_request(&job, &body_text, &shadow_config);
+            match perform_llm_request(&shadow_config, &shadow_endpoint, &shadow_api_key, &request)
+                .await
+            {
+                Ok(shadow_resp) => {
+                    let diff = if shadow_resp.extracted
+                        == job.partial_fields.clone().unwrap_or_default()
+                    {
                         "match"
                     } else {
                         "diff"
                     };
-                info!(
-                    message_id = %job.message_id,
-                    %shadow_provider,
-                    %primary_provider,
-                    diff,
-                    shadow_model_used = shadow_resp.model_used,
-                    shadow_latency_ms = shadow_resp.latency_ms,
-                    "shadow comparison completed",
-                );
+                    info!(
+                        message_id = %job.message_id,
+                        %shadow_provider,
+                        %primary_provider,
+                        diff,
+                        shadow_model_used = shadow_resp.model_used,
+                        shadow_latency_ms = shadow_resp.latency_ms,
+                        "shadow comparison completed",
+                    );
+                }
+                Err(err) => {
+                    let err_message = match err {
+                        JobError::Retryable { ref message, .. } => message.clone(),
+                        JobError::Permanent { ref message } => message.clone(),
+                    };
+                    info!(
+                        message_id = %job.message_id,
+                        %shadow_provider,
+                        %primary_provider,
+                        error = %err_message,
+                        "shadow comparison failed",
+                    );
+                }
             }
-            Err(err) => {
-                let err_message = match err {
-                    JobError::Retryable { ref message, .. } => message.clone(),
-                    JobError::Permanent { ref message } => message.clone(),
-                };
-                info!(
-                    message_id = %job.message_id,
-                    %shadow_provider,
-                    %primary_provider,
-                    error = %err_message,
-                    "shadow comparison failed",
-                );
-            }
-        }
-    }))
+        })
+        .await;
+
+    true
 }
 
 async fn handle_llm_job(
@@ -824,6 +955,13 @@ async fn process_locked_job(
 
     let (processed, status) = apply_outcome(locked.clone(), outcome);
     let rows = upsert_extraction_job(pool, &processed).await?;
+    let worker_label = worker_id.to_string();
+    metrics::counter!(
+        "llm_jobs_completed_total",
+        "worker_id" => worker_label.clone(),
+        "status" => status.as_str().to_string()
+    )
+    .increment(1);
     info!(
         rows,
         worker_id = %worker_id,
@@ -833,7 +971,12 @@ async fn process_locked_job(
     );
 
     if shadow_selected {
-        let _ = spawn_shadow_compare(processed.clone(), body_text, llm_config, shadow_config);
+        metrics::counter!(
+            "shadow_comparisons_spawned_total",
+            "worker_id" => worker_label
+        )
+        .increment(1);
+        spawn_shadow_compare(processed.clone(), body_text, llm_config, shadow_config).await;
     }
 
     info!(
@@ -850,6 +993,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
     install_tracing_panic_hook(env!("CARGO_PKG_NAME"));
+    init_metrics();
 
     let args = Cli::parse();
     let llm_config = LlmRuntimeConfig::from_env();
@@ -874,6 +1018,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut processed_jobs = 0usize;
     let max_jobs = args.max_jobs.unwrap_or(usize::MAX);
+    let worker_label = args.worker_id.clone();
 
     while processed_jobs < max_jobs {
         let maybe_job = lock_next_pending_job(&pool, &args.worker_id, Utc::now()).await?;
@@ -890,8 +1035,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
 
+        let job_span = info_span!(
+            "process_job",
+            job_id = job.id,
+            message_id = %job.message_id,
+            worker_id = %args.worker_id
+        );
+        let _entered = job_span.enter();
+        metrics::counter!(
+            "llm_jobs_started_total",
+            "worker_id" => worker_label.clone()
+        )
+        .increment(1);
+        metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone())
+            .set(1.0);
+
         process_locked_job(&pool, &args.worker_id, job, &llm_config, &shadow_runtime).await?;
         processed_jobs += 1;
+        metrics::gauge!("llm_jobs_inflight", "worker_id" => worker_label.clone())
+            .set(0.0);
     }
 
     Ok(())
@@ -1399,15 +1561,16 @@ mod tests {
 
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
-        let handle = spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime)
-            .expect("shadow compare spawned");
-        handle.await.expect("shadow join ok");
+        let spawned = spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime).await;
+        assert!(spawned, "shadow compare should spawn");
+        shadow_runtime.wait_for_all().await;
 
         shadow_hit.assert();
     }
 
-    #[test]
-    fn shadow_compare_skips_without_key() {
+    #[tokio::test]
+    #[serial]
+    async fn shadow_compare_skips_without_key() {
         let mut job = ExtractionJob::new("shadow-skip", "subject", Utc::now(), "hash");
         job.recommended_method = Some(RecommendedMethod::LlmRecommended);
         job.canary_target = true;
@@ -1426,8 +1589,8 @@ mod tests {
 
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
-        let handle = spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime);
-        assert!(handle.is_none());
+        let spawned = spawn_shadow_compare(job, "body".into(), &config, &shadow_runtime).await;
+        assert!(!spawned);
     }
 
     #[tokio::test]
@@ -1471,11 +1634,16 @@ mod tests {
 
         let shadow_runtime = ShadowCompareRuntime::new(shadow_cfg);
 
-        let handle1 =
-            spawn_shadow_compare(job1, "body".into(), &config, &shadow_runtime).expect("first");
-        let handle2 = spawn_shadow_compare(job2, "body".into(), &config, &shadow_runtime);
-        assert!(handle2.is_none(), "second shadow compare should be limited");
+        let spawned_first =
+            spawn_shadow_compare(job1, "body".into(), &config, &shadow_runtime).await;
+        assert!(spawned_first, "first shadow compare should spawn");
+        let spawned_second =
+            spawn_shadow_compare(job2, "body".into(), &config, &shadow_runtime).await;
+        assert!(
+            !spawned_second,
+            "second shadow compare should be limited by in-flight semaphore"
+        );
 
-        handle1.await.expect("shadow join ok");
+        shadow_runtime.wait_for_all().await;
     }
 }
