@@ -1,127 +1,12 @@
-import { useMemo, type KeyboardEvent } from "react";
+import { useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { LoadingState } from "@/components/LoadingState";
 import { useProjects, type ProjectListItem } from "@/api";
 import { useI18n } from "@/lib/i18n";
-
-import type { TranslationKey } from "@/lib/messages";
-
-function formatBudgetRange(
-  min: number | null,
-  max: number | null,
-  locale: string,
-  format: (key: TranslationKey, values?: Record<string, string | number>) => string,
-) {
-  if (min == null && max == null) {
-    return format("projects.budget.unknown");
-  }
-
-  const formatter = new Intl.NumberFormat(locale === "ja" ? "ja-JP" : "en-US", {
-    style: "currency",
-    currency: "JPY",
-    maximumFractionDigits: 0,
-  });
-
-  if (min != null && max != null) {
-    return format("projects.budget.range", {
-      min: formatter.format(min),
-      max: formatter.format(max),
-    });
-  }
-
-  if (min != null) {
-    return format("projects.budget.min", { min: formatter.format(min) });
-  }
-
-  if (max != null) {
-    return format("projects.budget.max", { max: formatter.format(max) });
-  }
-
-  return format("projects.budget.unknown");
-}
-
-type ProjectCardProps = {
-  project: ProjectListItem;
-  locale: string;
-  onOpen: (project: ProjectListItem) => void;
-};
-
-function ProjectCard({ project, locale, onOpen }: ProjectCardProps) {
-  const { t } = useI18n();
-  const projectId = project.id ?? project.projectId;
-
-  const budgetLabel = useMemo(
-    () =>
-      formatBudgetRange(
-        project.monthlyTankaMin,
-        project.monthlyTankaMax,
-        locale,
-        t,
-      ),
-    [project.monthlyTankaMin, project.monthlyTankaMax, locale, t],
-  );
-
-  const handleOpen = () => {
-    if (!projectId) return;
-    onOpen(project);
-  };
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      handleOpen();
-    }
-  };
-
-  return (
-    <Card
-      role="button"
-      tabIndex={0}
-      onClick={handleOpen}
-      onKeyDown={handleKeyDown}
-      aria-label={
-        project.projectName
-          ? t("projects.card.ariaLabel", { name: project.projectName })
-          : undefined
-      }
-      className="cursor-pointer transition hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-    >
-      <CardHeader>
-        <CardTitle>{project.projectName}</CardTitle>
-        <CardDescription>{budgetLabel}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-wrap gap-2">
-          <Badge variant="secondary">
-            {t("projects.counts.matched", {
-              count: project.matchedCount ?? 0,
-            })}
-          </Badge>
-          <Badge variant="outline">
-            {t("projects.counts.proposed", {
-              count: project.proposedCount ?? 0,
-            })}
-          </Badge>
-          <Badge variant="outline">
-            {t("projects.counts.interviewing", {
-              count: project.interviewingCount ?? 0,
-            })}
-          </Badge>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
+import { ProjectCard } from "@/components/projects/ProjectCard";
 
 export function ProjectsList({ canCreateProject = true }: { canCreateProject?: boolean } = {}) {
   const navigate = useNavigate();
@@ -182,6 +67,7 @@ export function ProjectsList({ canCreateProject = true }: { canCreateProject?: b
               project={project}
               onOpen={handleOpenProject}
               locale={locale}
+              formatMessage={t}
             />
           ))}
         </div>
