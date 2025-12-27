@@ -24,6 +24,8 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 jsonwebtoken.workspace = true
 subtle.workspace = true
+metrics.workspace = true
+sr-metrics = { path = "../sr-metrics" }
 
 [dev-dependencies]
 http-body-util = "0.1"
