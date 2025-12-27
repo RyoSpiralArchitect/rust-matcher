@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { href: "/queue", label: "Dashboard" },
   { href: "/jobs", label: "Jobs" },
+  { href: "/talents", label: "Talents" },
 ];
 
 export function RootLayout() {

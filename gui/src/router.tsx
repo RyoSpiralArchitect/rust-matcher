@@ -23,6 +23,11 @@ const CandidatesPage = lazy(() =>
     default: module.CandidatesPage,
   })),
 );
+const TalentsPage = lazy(() =>
+  import("./pages/TalentsPage").then((module) => ({
+    default: module.TalentsPage,
+  })),
+);
 
 function withSuspense(element: ReactNode) {
   return <Suspense fallback={<LoadingState />}>{element}</Suspense>;
@@ -57,6 +62,11 @@ export const router = createBrowserRouter([
       {
         path: "projects/:projectId/candidates",
         element: withSuspense(<CandidatesPage />),
+      },
+      // タレント一覧
+      {
+        path: "talents",
+        element: withSuspense(<TalentsPage />),
       },
     ],
   },
