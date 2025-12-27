@@ -1039,6 +1039,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn security_txt_returns_not_modified_when_etag_matches() {
+        let state = test_state("test-key");
+        let app = create_router(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/security.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let etag = first.headers().get(header::ETAG).unwrap().clone();
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/security.txt")
+                    .header(header::IF_NONE_MATCH, etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            second.headers().get(header::CACHE_CONTROL),
+            Some(HeaderValue::from_static(STATIC_CACHE_CONTROL)).as_ref()
+        );
+        assert_eq!(
+            second.headers().get(header::ETAG),
+            first.headers().get(header::ETAG)
+        );
+    }
+
+    #[tokio::test]
     async fn cacheable_json_sets_etag_and_cache_control() {
         let payload = serde_json::json!({ "hello": "world" });
         let response = CacheableJson::new(payload, SHORT_CACHE_CONTROL).into_response();
