@@ -16,6 +16,7 @@ use sr_common::db::{
 };
 use sr_common::logging::{init_tracing_subscriber, install_tracing_panic_hook};
 use std::collections::HashSet;
+use tokio::task::spawn_blocking;
 use tokio::time::{interval, timeout, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -221,7 +222,14 @@ impl GmailIngestor {
                 .await
                 .map_err(|_| IngestError::GmailTimeout("get message"))??;
 
-                let mut email = self.parse_message(message)?;
+                let mut email = spawn_blocking(move || Self::parse_message(message))
+                    .await
+                    .map_err(|err| {
+                        IngestError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("failed to join parsing task: {err}"),
+                        ))
+                    })??;
                 email.message_id = msg_id.clone();
                 if let Some(received_at) = email.received_at.as_ref() {
                     debug!(
@@ -259,16 +267,13 @@ impl GmailIngestor {
         Ok(processed)
     }
 
-    fn parse_message(
-        &self,
-        message: google_gmail1::api::Message,
-    ) -> Result<EmailData, IngestError> {
+    fn parse_message(message: google_gmail1::api::Message) -> Result<EmailData, IngestError> {
         let payload = message.payload.unwrap_or_default();
         let thread_id = message.thread_id;
-        let subject = self.header_value(&payload, "Subject");
-        let from = self.header_value(&payload, "From");
-        let received_at = self.extract_received_at(&payload, message.internal_date)?;
-        let body_text = self.extract_body(&payload)?;
+        let subject = Self::header_value(&payload, "Subject");
+        let from = Self::header_value(&payload, "From");
+        let received_at = Self::extract_received_at(&payload, message.internal_date)?;
+        let body_text = Self::extract_body(&payload)?;
 
         let (sender_name, sender_address) = parse_sender(&from);
 
@@ -283,7 +288,7 @@ impl GmailIngestor {
         })
     }
 
-    fn header_value(&self, payload: &MessagePart, name: &str) -> Option<String> {
+    fn header_value(payload: &MessagePart, name: &str) -> Option<String> {
         payload
             .headers
             .as_ref()
@@ -301,11 +306,10 @@ impl GmailIngestor {
     }
 
     fn extract_received_at(
-        &self,
         payload: &MessagePart,
         internal_date: Option<i64>,
     ) -> Result<Option<DateTime<Utc>>, IngestError> {
-        if let Some(date_header) = self.header_value(payload, "Date") {
+        if let Some(date_header) = Self::header_value(payload, "Date") {
             if let Ok(parsed) = DateTime::parse_from_rfc2822(&date_header) {
                 return Ok(Some(parsed.with_timezone(&Utc)));
             } else {
@@ -322,14 +326,14 @@ impl GmailIngestor {
         Ok(None)
     }
 
-    fn extract_body(&self, payload: &MessagePart) -> Result<Option<String>, IngestError> {
-        if let Some(part) = self.find_part_with_mime(payload, "text/plain") {
+    fn extract_body(payload: &MessagePart) -> Result<Option<String>, IngestError> {
+        if let Some(part) = Self::find_part_with_mime(payload, "text/plain") {
             if let Some(body) = decode_part_body(part)? {
                 return Ok(Some(body));
             }
         }
 
-        if let Some(part) = self.find_part_with_mime(payload, "text/html") {
+        if let Some(part) = Self::find_part_with_mime(payload, "text/html") {
             if let Some(body) = decode_part_body(part)? {
                 let text = from_read(body.as_bytes(), usize::MAX)?;
                 return Ok(Some(text.trim().to_string()));
@@ -343,11 +347,7 @@ impl GmailIngestor {
         Ok(None)
     }
 
-    fn find_part_with_mime<'a>(
-        &self,
-        part: &'a MessagePart,
-        target: &str,
-    ) -> Option<&'a MessagePart> {
+    fn find_part_with_mime<'a>(part: &'a MessagePart, target: &str) -> Option<&'a MessagePart> {
         if let Some(mime) = &part.mime_type {
             if mime.eq_ignore_ascii_case(target) {
                 return Some(part);
@@ -356,7 +356,7 @@ impl GmailIngestor {
 
         if let Some(parts) = &part.parts {
             for child in parts {
-                if let Some(found) = self.find_part_with_mime(child, target) {
+                if let Some(found) = Self::find_part_with_mime(child, target) {
                     return Some(found);
                 }
             }
