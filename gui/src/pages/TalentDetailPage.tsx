@@ -15,6 +15,7 @@ import { LoadingState } from "@/components/LoadingState";
 import { useI18n } from "@/lib/i18n";
 import { useMatchDecision, useTalentDetail, type TalentMatchProject, type TalentMatchStatus, type TalentProfile } from "@/api";
 import type { TranslationKey } from "@/lib/messages";
+import { Breadcrumbs } from "@/components/Breadcrumbs";
 
 export function TalentDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -58,6 +59,16 @@ export function TalentDetailPage() {
 
   return (
     <div className="space-y-8">
+      <Breadcrumbs
+        items={[
+          { label: t("navigation.talents"), href: "/talents" },
+          {
+            label: data.talent.name ?? t("talentDetail.titleFallback", { id: talentId }),
+            isCurrent: true,
+          },
+        ]}
+      />
+
       <ProfileHeader talent={data.talent} />
       <MatchedProjects
         matches={data.matches}

@@ -1,5 +1,5 @@
 import { Suspense, lazy, type ReactNode } from "react";
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 import { RootLayout } from "./layouts/RootLayout";
 import { LoadingState } from "./components/LoadingState";
 
@@ -23,14 +23,24 @@ const CandidatesPage = lazy(() =>
     default: module.CandidatesPage,
   })),
 );
-const ProjectsIndexPage = lazy(() =>
-  import("./pages/projects/ProjectsIndexPage").then((module) => ({
-    default: module.ProjectsIndexPage,
+const ProjectsListPage = lazy(() =>
+  import("./pages/projects/ProjectsList").then((module) => ({
+    default: module.ProjectsList,
   })),
 );
 const ProjectDetailPage = lazy(() =>
   import("./pages/projects/ProjectDetailPage").then((module) => ({
     default: module.ProjectDetailPage,
+  })),
+);
+const TalentsPage = lazy(() =>
+  import("./pages/TalentsPage").then((module) => ({
+    default: module.TalentsPage,
+  })),
+);
+const TalentDetailPage = lazy(() =>
+  import("./pages/TalentDetailPage").then((module) => ({
+    default: module.TalentDetailPage,
   })),
 );
 
@@ -63,23 +73,40 @@ export const router = createBrowserRouter([
         path: "jobs/:jobId",
         element: withSuspense(<JobDetailPage />),
       },
-      // Project 一覧
+      // Projects セクション
       {
         path: "projects",
-        element: withSuspense(<ProjectsListPage />),
+        element: <Outlet />,
+        children: [
+          {
+            index: true,
+            element: withSuspense(<ProjectsListPage />),
+          },
+          {
+            path: ":projectId",
+            element: withSuspense(<ProjectDetailPage />),
+          },
+          // 候補一覧（プロジェクト単位）
+          {
+            path: ":projectId/candidates",
+            element: withSuspense(<CandidatesPage />),
+          },
+        ],
       },
-      // 候補一覧（プロジェクト単位）
+      // Talents セクション
       {
-        path: "projects/:projectId/candidates",
-        element: withSuspense(<CandidatesPage />),
-      },
-      {
-        path: "projects",
-        element: withSuspense(<ProjectsIndexPage />),
-      },
-      {
-        path: "projects/:projectId",
-        element: withSuspense(<ProjectDetailPage />),
+        path: "talents",
+        element: <Outlet />,
+        children: [
+          {
+            index: true,
+            element: withSuspense(<TalentsPage />),
+          },
+          {
+            path: ":id",
+            element: withSuspense(<TalentDetailPage />),
+          },
+        ],
       },
     ],
   },
