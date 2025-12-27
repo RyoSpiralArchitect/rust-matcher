@@ -50,9 +50,18 @@ pub fn calculate_subject_hash(subject: &str) -> String {
     hex
 }
 
+fn normalize_body_for_hash(body_text: &str) -> String {
+    let normalized_newlines = body_text.replace("\r\n", "\n");
+    let collapsed_whitespace = normalized_newlines
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    collapsed_whitespace.trim().to_string()
+}
+
 /// メール本文から SHA-256 で content_hash を生成（先頭16文字）
 pub fn calculate_content_hash(body_text: &str) -> String {
-    let normalized = body_text.trim();
+    let normalized = normalize_body_for_hash(body_text);
     let mut hasher = Sha256::new();
     hasher.update(normalized.as_bytes());
     let bytes = hasher.finalize();
@@ -113,5 +122,12 @@ mod tests {
         let hash2 = calculate_content_hash("body");
         assert_eq!(hash1, hash2);
         assert_eq!(hash1.len(), 16);
+    }
+
+    #[test]
+    fn calculate_content_hash_normalizes_newlines_and_spaces() {
+        let hash1 = calculate_content_hash("line1  line2\nline3");
+        let hash2 = calculate_content_hash("line1 line2\r\nline3");
+        assert_eq!(hash1, hash2);
     }
 }

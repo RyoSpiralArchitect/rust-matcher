@@ -85,6 +85,8 @@ lazy_static! {
         r"(?i)(フルリモート|完全在宅|常時リモート|full\s*remote|在宅フル対応)"
     )
     .unwrap();
+    static ref FULL_REMOTE_OPTIONAL_RE: Regex =
+        Regex::new(r"(?i)(フルリモート可|フルリモート相談可|原則フルリモート)").unwrap();
     static ref PARTIAL_REMOTE_RE: Regex = Regex::new(
         r"(?i)(週\s*[1-4１-４一二三四]\s*リモート|リモート併用|ハイブリッド|一部リモート|部分リモート|一部在宅)"
     )
@@ -247,7 +249,16 @@ pub fn extract_all_fields_with_skills(
 
 /// メール本文からリモート/出社形態を抽出して ENUM 補正
 pub fn extract_remote_onsite(body_text: &str) -> Option<String> {
+    let has_onsite = ONSITE_RE.is_match(body_text);
+
+    if FULL_REMOTE_OPTIONAL_RE.is_match(body_text) {
+        return Some("リモート併用".to_string());
+    }
+
     if FULL_REMOTE_RE.is_match(body_text) {
+        if has_onsite {
+            return Some("リモート併用".to_string());
+        }
         return Some("フルリモート".to_string());
     }
 
@@ -259,7 +270,7 @@ pub fn extract_remote_onsite(body_text: &str) -> Option<String> {
         return Some("リモート併用".to_string());
     }
 
-    if ONSITE_RE.is_match(body_text) {
+    if has_onsite {
         return correct_remote_onsite("フル出社");
     }
 
@@ -423,6 +434,7 @@ mod tests {
         assert_eq!(extract_tanka("〜90万円まで"), Some((70, 90)));
         assert_eq!(extract_tanka("70万～"), Some((70, 90)));
         assert_eq!(extract_tanka("～90万"), Some((70, 90)));
+        assert_eq!(extract_tanka("～90万円+税"), Some((70, 90)));
         assert_eq!(extract_tanka("80万円程度"), Some((80, 80)));
         assert_eq!(extract_tanka("25万円"), None);
     }
@@ -534,6 +546,10 @@ mod tests {
         assert_eq!(
             extract_remote_onsite("フルリモートで参画可能"),
             Some("フルリモート".to_string())
+        );
+        assert_eq!(
+            extract_remote_onsite("フルリモート可、出社頻度は相談"),
+            Some("リモート併用".to_string())
         );
         assert_eq!(
             extract_remote_onsite("一部リモート相談可、週2リモート"),
