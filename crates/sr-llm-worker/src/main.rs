@@ -185,7 +185,7 @@ impl LlmRuntimeConfig {
             })
             .unwrap_or_default();
 
-        let enabled = parse_bool("LLM_ENABLED", true);
+        let enabled = parse_bool("LLM_ENABLED", false);
         if enabled && api_key.is_empty() {
             warn!(
                 provider = %provider,
@@ -1096,7 +1096,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if shadow_runtime.config().mode == CompareMode::Shadow && shadow_runtime.config().max_in_flight > 0 {
+    if shadow_runtime.config().mode == CompareMode::Shadow
+        && shadow_runtime.config().max_in_flight > 0
+    {
         if llm_config.shadow_api_key.is_empty() && llm_config.api_key.is_empty() {
             warn!(
                 shadow_provider = %shadow_runtime.config().shadow_provider,
