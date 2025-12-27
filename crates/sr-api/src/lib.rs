@@ -404,6 +404,7 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/health", get(health::readyz))
         .route("/livez", get(health::livez))
         .route("/readyz", get(health::readyz))
+        .nest("/api/v1", api_routes.clone())
         .nest("/api", api_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),

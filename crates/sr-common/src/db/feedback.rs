@@ -173,15 +173,20 @@ pub async fn insert_feedback_event_tx(
         )
         .await?;
 
-    let response = match row {
-        Some(row) => FeedbackResponse {
-            id: Some(row.get("id")),
-            status: FeedbackStatus::Created,
-        },
-        None => FeedbackResponse {
-            id: None,
-            status: FeedbackStatus::AlreadyExists,
-        },
+    let (id, status) = match row {
+        Some(row) => (Some(row.get("id")), FeedbackStatus::Created),
+        None => (None, FeedbackStatus::AlreadyExists),
+    };
+
+    let response = FeedbackResponse {
+        id,
+        status,
+        feedback_type: request.feedback_type.clone(),
+        interaction_id: interaction.interaction_id,
+        match_result_id: interaction.match_result_id,
+        match_run_id: interaction.match_run_id,
+        project_id: interaction.project_id,
+        talent_id: interaction.talent_id,
     };
 
     // Keep interaction_logs outcome in sync with the highest-priority, latest feedback.

@@ -89,7 +89,7 @@ struct LlmRuntimeConfig {
 impl Default for LlmRuntimeConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             provider: "deepseek".into(),
             model: "deepseek-chat".into(),
             endpoint: "http://localhost:8000/api/v1/extract".into(),
