@@ -3,6 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use metrics::gauge;
 use sr_common::api::queue_dashboard::QueueDashboard;
 use sr_common::api::queue_job::{
     JobDetailIncludes, Pagination, QueueJobDetailResponse, QueueJobFilter, QueueJobListResponse,
@@ -126,6 +127,24 @@ pub async fn dashboard(
     ensure_admin(&auth)?;
     info!(user = %auth.subject, "fetching queue dashboard");
     let dashboard = fetch_dashboard(&state.pool).await?;
+    gauge!(
+        "queue_depth",
+        "status" => "pending",
+        "bucket" => "llm"
+    )
+    .set(dashboard.status_counts.pending as f64);
+    gauge!(
+        "queue_depth",
+        "status" => "processing",
+        "bucket" => "llm"
+    )
+    .set(dashboard.status_counts.processing as f64);
+    gauge!(
+        "queue_depth",
+        "status" => "completed",
+        "bucket" => "llm"
+    )
+    .set(dashboard.status_counts.completed as f64);
     Ok(Json(dashboard))
 }
 

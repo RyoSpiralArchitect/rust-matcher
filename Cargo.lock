@@ -2530,10 +2530,12 @@ dependencies = [
  "governor",
  "http-body-util",
  "jsonwebtoken",
+ "metrics 0.23.1",
  "serde",
  "serde_json",
  "serial_test",
  "sr-common",
+ "sr-metrics",
  "subtle",
  "thiserror 1.0.69",
  "tokio",
@@ -2610,7 +2612,6 @@ dependencies = [
  "clap",
  "dotenvy",
  "metrics 0.23.1",
- "metrics-exporter-prometheus",
  "mockito",
  "rand 0.8.5",
  "reqwest",
@@ -2618,9 +2619,18 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sr-common",
+ "sr-metrics",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "sr-metrics"
+version = "0.1.0"
+dependencies = [
+ "metrics-exporter-prometheus",
+ "tracing",
 ]
 
 [[package]]

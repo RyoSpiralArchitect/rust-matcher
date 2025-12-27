@@ -19,7 +19,7 @@ rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 metrics.workspace = true
-metrics-exporter-prometheus.workspace = true
+sr-metrics = { path = "../sr-metrics" }
 
 [dev-dependencies]
 mockito = "1"

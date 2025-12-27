@@ -88,25 +88,45 @@ fn build_options() -> Option<String> {
     }
 }
 
+fn parse_env_duration_ms(keys: &[&str]) -> Option<Duration> {
+    parse_env::<u64>(keys).map(Duration::from_millis)
+}
+
 pub fn create_pool_from_url(db_url: &str) -> Result<PgPool, DbPoolError> {
-    let _ = tokio_postgres::Config::from_str(db_url)
+    let mut pg_config = tokio_postgres::Config::from_str(db_url)
         .map_err(|e| DbPoolError::InvalidConfig(e.to_string()))?;
+
+    if let Some(connect_timeout) =
+        parse_env_duration_ms(&["SR_DB_POOL_CONNECT_TIMEOUT_MS", "SR_DB_CONNECT_TIMEOUT_MS"])
+    {
+        pg_config.connect_timeout(connect_timeout);
+    }
 
     let mut cfg = Config::new();
     cfg.url = Some(db_url.to_string());
+    cfg.connect_timeout = pg_config.get_connect_timeout().cloned();
 
     cfg.pool = Some(PoolConfig {
         max_size: parse_env::<usize>(&["SR_DB_POOL_MAX_SIZE", "SR_DB_MAX_SIZE"]).unwrap_or(16),
         timeouts: Timeouts {
-            wait: Some(Duration::from_secs(
-                parse_env::<u64>(&["SR_DB_TIMEOUT_WAIT_SECS"]).unwrap_or(5),
-            )),
-            create: Some(Duration::from_secs(
-                parse_env::<u64>(&["SR_DB_TIMEOUT_CREATE_SECS"]).unwrap_or(5),
-            )),
-            recycle: Some(Duration::from_secs(
-                parse_env::<u64>(&["SR_DB_TIMEOUT_RECYCLE_SECS"]).unwrap_or(5),
-            )),
+            wait: parse_env_duration_ms(&[
+                "SR_DB_POOL_WAIT_TIMEOUT_MS",
+                "SR_DB_TIMEOUT_WAIT_MS",
+                "SR_DB_TIMEOUT_WAIT_SECS",
+            ])
+            .or_else(|| parse_env::<u64>(&["SR_DB_TIMEOUT_WAIT_SECS"]).map(Duration::from_secs)),
+            create: parse_env_duration_ms(&[
+                "SR_DB_POOL_CREATE_TIMEOUT_MS",
+                "SR_DB_TIMEOUT_CREATE_MS",
+                "SR_DB_TIMEOUT_CREATE_SECS",
+            ])
+            .or_else(|| parse_env::<u64>(&["SR_DB_TIMEOUT_CREATE_SECS"]).map(Duration::from_secs)),
+            recycle: parse_env_duration_ms(&[
+                "SR_DB_POOL_RECYCLE_TIMEOUT_MS",
+                "SR_DB_TIMEOUT_RECYCLE_MS",
+                "SR_DB_TIMEOUT_RECYCLE_SECS",
+            ])
+            .or_else(|| parse_env::<u64>(&["SR_DB_TIMEOUT_RECYCLE_SECS"]).map(Duration::from_secs)),
         },
         ..Default::default()
     });

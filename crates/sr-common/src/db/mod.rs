@@ -44,6 +44,7 @@ pub use extraction_queue::{
     get_job_by_id, get_job_detail_with_includes, list_jobs, lock_next_pending_job, pending_copy,
     recover_stuck_jobs, retry_job, upsert_extraction_job, QueueStorageError,
 };
+pub use feedback::insert_feedback_event_tx;
 pub use feedback::{insert_feedback_event, FeedbackStorageError};
 pub use feedback_history::{fetch_feedback_history, FeedbackHistoryError};
 pub use interaction_events::{insert_interaction_event, InteractionEventStorageError};
