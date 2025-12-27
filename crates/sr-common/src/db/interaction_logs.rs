@@ -55,7 +55,15 @@ pub async fn insert_interaction_log(
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
             )
-            ON CONFLICT (match_run_id, talent_id, project_id) DO NOTHING",
+            ON CONFLICT (match_run_id, talent_id, project_id) DO UPDATE SET
+                match_result_id = COALESCE(EXCLUDED.match_result_id, ses.interaction_logs.match_result_id),
+                engine_version = COALESCE(EXCLUDED.engine_version, ses.interaction_logs.engine_version),
+                config_version = COALESCE(EXCLUDED.config_version, ses.interaction_logs.config_version),
+                two_tower_score = COALESCE(EXCLUDED.two_tower_score, ses.interaction_logs.two_tower_score),
+                two_tower_embedder = COALESCE(EXCLUDED.two_tower_embedder, ses.interaction_logs.two_tower_embedder),
+                two_tower_version = COALESCE(EXCLUDED.two_tower_version, ses.interaction_logs.two_tower_version),
+                business_score = COALESCE(EXCLUDED.business_score, ses.interaction_logs.business_score),
+                variant = COALESCE(EXCLUDED.variant, ses.interaction_logs.variant)",
         )
         .await?;
 

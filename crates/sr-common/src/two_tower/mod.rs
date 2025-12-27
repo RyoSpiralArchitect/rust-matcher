@@ -123,5 +123,13 @@ pub fn load_config_from_env() -> TwoTowerConfig {
             .ok()
             .map(|s| s == "true" || s == "1")
             .unwrap_or(false),
+        score_min: std::env::var("TWO_TOWER_SCORE_MIN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0),
+        score_max: std::env::var("TWO_TOWER_SCORE_MAX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
     }
 }

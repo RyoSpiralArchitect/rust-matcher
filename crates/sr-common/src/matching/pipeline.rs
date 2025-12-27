@@ -134,12 +134,13 @@ impl MatchingEngine {
             let detailed_score = calculate_detailed_score(project, talent);
             let business_score = detailed_score.total;
             let tt_score = talent.id.and_then(|id| two_tower_scores.get(&id).copied());
+            let normalized_tt_score = tt_score.map(|s| two_tower_config.normalize_score(s));
 
             let total_score = calculate_total_score_with_two_tower(
                 business_score,
                 0.0,
                 0.0,
-                tt_score,
+                normalized_tt_score,
                 &total_weights,
                 two_tower_config,
             );
@@ -151,7 +152,7 @@ impl MatchingEngine {
                 prefilter_score: candidate.match_score,
                 detailed_score,
                 total_score,
-                two_tower_score: tt_score,
+                two_tower_score: normalized_tt_score,
                 two_tower_embedder: embedder_meta.as_ref().map(|m| m.0.to_string()),
                 two_tower_version: embedder_meta.as_ref().map(|m| m.1.clone()),
             });
@@ -324,13 +325,7 @@ impl MatchRunner {
                     .id
                     .and_then(|id| match_result_ids.and_then(|m| m.get(&id).copied()));
 
-                let ko_reasons: Vec<String> =
-                    r.ko.decisions
-                        .iter()
-                        .filter_map(|(name, decision)| {
-                            decision.reason().map(|reason| format!("[{name}] {reason}"))
-                        })
-                        .collect();
+                let ko_reasons = r.ko.prioritized_reasons();
 
                 let score_breakdown =
                     build_score_breakdown_json(&r.detailed_score, r.total_score, r.two_tower_score);
