@@ -27,7 +27,7 @@ const FILTER_DEBOUNCE_MS = 300;
 const COLUMN_LAYOUT =
   "grid grid-cols-[90px_210px_130px_100px_80px_90px_180px] items-center";
 
-export function QueueJobsPage() {
+export function QueueJobsPage({ canCreateJob = true }: { canCreateJob?: boolean } = {}) {
   const { t, locale } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -215,8 +215,16 @@ export function QueueJobsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <h1 className="text-2xl font-bold">{t("queue.jobs.title")}</h1>
+        {canCreateJob && (
+          <Button asChild>
+            {/* TODO: Replace with the actual job creation route or modal trigger once implemented. */}
+            <Link to="/jobs/new">
+              {t("queue.jobs.ctaCreate")}
+            </Link>
+          </Button>
+        )}
       </div>
 
       {/* Filters */}

@@ -10,7 +10,7 @@ import { useI18n } from "@/lib/i18n";
 
 const DEFAULT_LIMIT = 20;
 
-export function TalentsPage() {
+export function TalentsPage({ canCreateTalent = true }: { canCreateTalent?: boolean } = {}) {
   const { t } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -67,9 +67,19 @@ export function TalentsPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <h1 className="text-2xl font-bold">{t("talents.title")}</h1>
-          <Badge variant="secondary">{t("talents.resultCount", { count: total })}</Badge>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold">{t("talents.title")}</h1>
+            <Badge variant="secondary">{t("talents.resultCount", { count: total })}</Badge>
+          </div>
+          {canCreateTalent && (
+            <Button asChild>
+              {/* TODO: Replace with the actual talent creation flow when available. */}
+              <Link to="/talents/new">
+                {t("talents.list.ctaCreate")}
+              </Link>
+            </Button>
+          )}
         </div>
         <p className="text-sm text-muted-foreground">
           {t("talents.subtitle")}
