@@ -46,6 +46,7 @@ CREATE TABLE ses.extraction_queue (
 
 CREATE INDEX idx_extraction_queue_status_priority ON ses.extraction_queue(status, priority DESC, next_retry_at);
 CREATE INDEX idx_extraction_queue_pending ON ses.extraction_queue(created_at, id) WHERE status = 'pending';
+CREATE INDEX idx_extraction_queue_status_created ON ses.extraction_queue(status, created_at, id);
 CREATE INDEX idx_extraction_queue_message_id ON ses.extraction_queue(message_id);
 CREATE INDEX idx_extraction_queue_subject_hash ON ses.extraction_queue(subject_hash, created_at);
 CREATE INDEX idx_extraction_queue_canary ON ses.extraction_queue(canary_target, created_at);
@@ -637,6 +638,7 @@ mod tests {
             "manual_review_reason",
             "reprocess_after",
             "idx_extraction_queue_status_priority",
+            "idx_extraction_queue_status_created",
         ] {
             assert!(EXTRACTION_QUEUE_DDL.contains(required));
         }
