@@ -501,23 +501,10 @@ pub async fn list_jobs(
 ) -> Result<QueueJobListResponse, QueueStorageError> {
     let client = pool.get().await?;
 
-    let mut count_query = QueryBuilder::new("SELECT COUNT(*) FROM ses.extraction_queue WHERE 1=1");
-    apply_job_filters(&mut count_query, filter);
-    let (count_sql, count_values) = count_query.finish();
-    let count_params = params_from_values(&count_values);
-
-    let total_rows = client
-        .timed_query_cached(count_sql.as_str(), &count_params, "count_jobs")
-        .await?;
-    let total: i64 = total_rows
-        .get(0)
-        .map(|row| row.get::<_, i64>(0))
-        .unwrap_or(0);
-
     // Guardrail: dynamic fragments must only append "AND column OP $n" clauses so that
     // the placeholder numbering stays correct and no raw user data is interpolated.
     let mut query = QueryBuilder::new(
-        "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at FROM ses.extraction_queue WHERE 1=1",
+        "SELECT id, message_id, status, priority, retry_count, next_retry_at, final_method, requires_manual_review, manual_review_reason, decision_reason, created_at, updated_at, COUNT(*) OVER() AS total_count FROM ses.extraction_queue WHERE 1=1",
     );
 
     apply_job_filters(&mut query, filter);
@@ -535,6 +522,10 @@ pub async fn list_jobs(
         .await?;
 
     let items: Vec<QueueJobListItem> = rows.iter().map(row_to_list_item).collect();
+    let total = rows
+        .first()
+        .map(|row| row.get::<_, i64>("total_count"))
+        .unwrap_or(0);
     let has_more = pagination.offset + (items.len() as i64) < total;
 
     Ok(QueueJobListResponse {
